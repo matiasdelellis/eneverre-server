@@ -1,0 +1,1288 @@
+openapi: 3.0.3
+
+info:
+  title: Eneverre NVR API
+  version: 1.0.0
+  description: |
+    API for camera management, streaming and playback.
+
+    Typical flow:
+    1. GET /api/cameras
+    2. Pick a camera (playback=true if you want recordings)
+    3. GET /api/camera/{id}/playback/list
+    4. GET /api/camera/{id}/playback/get
+
+servers:
+  - url: http://localhost:8080
+
+# Most endpoints accept either HTTP Basic or a Bearer access token.
+security:
+  - basicAuth: []
+  - bearerAuth: []
+
+paths:
+  /api/health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: eneverre-api
+
+  /api/auth/login:
+    post:
+      summary: Login (username/password)
+      description: >-
+        Returns a short-lived access token plus a long-lived refresh token
+        (both on the same session). `device_name` is optional and labels the
+        session in GET /api/users/me/sessions.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                device_name:
+                  type: string
+      responses:
+        '200':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  expires_at:
+                    type: integer
+                    format: int64
+                    description: Unix seconds (access-token expiry)
+                  refresh_token:
+                    type: string
+                  refresh_expires_at:
+                    type: integer
+                    format: int64
+                  username:
+                    type: string
+                  first_name:
+                    type: string
+                    nullable: true
+                  last_name:
+                    type: string
+                    nullable: true
+                  role:
+                    type: string
+                  is_admin:
+                    type: boolean
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+  /api/auth/refresh:
+    post:
+      summary: Renew the session with the refresh token
+      description: >-
+        Rotates both secrets in place on the same row and slides both expiries
+        forward. Device (TV) sessions have no refresh token and cannot use this
+        endpoint.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Session renewed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  expires_at:
+                    type: integer
+                    format: int64
+                  refresh_token:
+                    type: string
+                  refresh_expires_at:
+                    type: integer
+                    format: int64
+        '401':
+          description: Invalid or expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+  /api/auth/logout:
+    post:
+      summary: Log out the current session
+      description: Revokes the presented Bearer token.
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/NotFound'
+
+  /api/cameras:
+    get:
+      summary: List cameras
+      responses:
+        '200':
+          description: List of cameras
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Camera'
+
+  /api/camera/{camera_id}/ptz/move:
+    post:
+      summary: Move camera (PTZ)
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: x
+          in: query
+          schema:
+            type: number
+          example: 1
+        - name: y
+          in: query
+          schema:
+            type: number
+          example: -1
+      responses:
+        '200':
+          description: Raw response from the Thingino camera
+          content:
+            application/json:
+              schema:
+                type: object
+
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/camera/{camera_id}/ptz/home:
+    post:
+      summary: Move the camera to its home position (configured home_x/home_y)
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: Raw response from the Thingino camera
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/camera/{camera_id}/ptz/recalibrate:
+    post:
+      summary: Recalibrate the PTZ motor
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: Raw response from the Thingino camera
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/camera/{camera_id}/privacy:
+    post:
+      summary: Enable/disable privacy mode
+      description: >-
+        Enables or disables the lens blackout (prudynt). When enabling, if the
+        camera has a privacy position configured (privacy_x/privacy_y >= 0) the
+        PTZ is first moved there; when disabling it returns to home_x/home_y.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: enable
+          in: query
+          required: true
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Raw response from the Thingino camera
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Missing or invalid 'enable' query param
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/camera/{camera_id}/thumbnail:
+    get:
+      summary: JPEG snapshot of the camera
+      description: Proxies the Thingino snapshot. Requires a configured thingino_api_key.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: JPEG image
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/camera/{camera_id}/playback/list:
+    get:
+      summary: List recordings
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: start
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          example: "2026-05-04T10:00:00Z"
+        - name: end
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          example: "2026-05-04T11:00:00Z"
+      responses:
+        '200':
+          description: Recording segments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Recording'
+              examples:
+                example:
+                  value:
+                    - start: "2026-05-04T10:00:00Z"
+                      duration: 60
+
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/playback/get:
+    get:
+      summary: Get recorded video
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: start
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: duration
+          in: query
+          required: true
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Video stream (MP4)
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/auth:
+    post:
+      summary: MediaMTX authentication probe
+      description: |
+        Endpoint MediaMTX calls to validate RTSP/HLS credentials.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+  /api/cameras/{camera_id}/events:
+    get:
+      summary: List motion events
+      description: |
+        Returns the motion (or other) events recorded for a camera, filtered by
+        a unix-or-RFC3339 timestamp range. Supports pagination with `limit` and
+        `offset`. Used by the UI timeline to draw the red (Major1) markers over
+        the recordings.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: since
+          in: query
+          schema:
+            type: string
+          description: Start timestamp (unix seconds or RFC3339). Optional.
+        - name: until
+          in: query
+          schema:
+            type: string
+          description: End timestamp (unix seconds or RFC3339). Optional.
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Event list + total
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+                  total:
+                    type: integer
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/cameras/{camera_id}/events/{event_id}:
+    delete:
+      summary: Delete an event
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: event_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Event deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/events:
+    post:
+      summary: Event webhook (motion/IO/etc.)
+      description: |
+        Endpoint cameras (or external integrations) use to record a motion,
+        privacy, I/O, etc. event. Requires `[events] webhook_secret`, sent in
+        the `X-Webhook-Secret` header or as `?token=...` (query). Accepts any
+        body; if it cannot be parsed as valid JSON, the event is stored with the
+        raw body in `source` and type `motion`.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: token
+          in: query
+          schema:
+            type: string
+          description: Alternative to the X-Webhook-Secret header
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                timestamp:
+                  oneOf:
+                    - type: integer
+                      description: Unix seconds
+                    - type: string
+                      format: date-time
+                event:
+                  type: string
+                duration_seconds:
+                  type: integer
+                  minimum: 0
+      responses:
+        '201':
+          description: Event recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '401':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: webhook_secret not configured on the server
+
+  # --- device-login flow (TV / headless clients) --------------------------
+  /api/auth/device:
+    get:
+      summary: Start pairing a device
+      description: >-
+        The device requests a device_code / user_code pair. The user approves
+        the user_code from an authenticated session (POST
+        /api/auth/device/verify) while the device polls with the device_code.
+      security: []
+      parameters:
+        - name: device_name
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Codes issued (expire in 5 minutes)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_code:
+                    type: string
+                  user_code:
+                    type: string
+                  expires_in:
+                    type: integer
+                    example: 300
+                  device_name:
+                    type: string
+                    nullable: true
+
+  /api/auth/device/{device_code}:
+    get:
+      summary: Poll the device status
+      security: []
+      parameters:
+        - name: device_code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current status (pending / approved / expired)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [pending, approved, expired]
+                  token:
+                    type: string
+                    description: Only present when status = approved
+                  expires_at:
+                    type: integer
+                    format: int64
+                  device_name:
+                    type: string
+                    nullable: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/auth/device/verify:
+    post:
+      summary: Approve a user_code from an authenticated session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code]
+              properties:
+                user_code:
+                  type: string
+      responses:
+        '200':
+          description: Result (approved / expired / invalid)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [approved, expired, invalid]
+                  device_name:
+                    type: string
+                    nullable: true
+
+  # --- users ----------------------------------------------------------------
+  /api/users:
+    get:
+      summary: List users (admin)
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      summary: Create user (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                role:
+                  type: string
+                  enum: [admin, user]
+                  default: user
+                first_name:
+                  type: string
+                  nullable: true
+                last_name:
+                  type: string
+                  nullable: true
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users/me/password:
+    put:
+      summary: Change my password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_password]
+              properties:
+                current_password:
+                  type: string
+                new_password:
+                  type: string
+      responses:
+        '200':
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/users/me/name:
+    put:
+      summary: Change my name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NameUpdate'
+      responses:
+        '200':
+          description: Name updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+  /api/users/me/sessions:
+    get:
+      summary: List my sessions (active and expired)
+      responses:
+        '200':
+          description: Sessions grouped by status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+                  expired:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+
+  /api/users/me/sessions/{session_id}:
+    delete:
+      summary: Revoke one of my sessions
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Session revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/users/{username}/role:
+    put:
+      summary: Change a user's role (admin)
+      parameters:
+        - $ref: '#/components/parameters/username'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [admin, user]
+      responses:
+        '200':
+          description: Role updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users/{username}/password:
+    put:
+      summary: Reset a user's password (admin)
+      parameters:
+        - $ref: '#/components/parameters/username'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users/{username}/name:
+    put:
+      summary: Change a user's name (admin)
+      parameters:
+        - $ref: '#/components/parameters/username'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NameUpdate'
+      responses:
+        '200':
+          description: Name updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/users/{username}:
+    delete:
+      summary: Delete a user (admin)
+      parameters:
+        - $ref: '#/components/parameters/username'
+      responses:
+        '200':
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/app/tv/update:
+    get:
+      summary: Latest available build for the Android TV client
+      description: |
+        Returns the current manifest for the TV track, or `204 No Content`
+        when no build has been published yet. Used by `EneverreTV` on cold
+        start to check for an update. Anonymous (no auth). See `doc/UPDATES.md`
+        for the full client protocol.
+      security: []
+      responses:
+        '200':
+          description: A build is available
+          headers:
+            Cache-Control:
+              schema: { type: string, example: "no-store" }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateManifest'
+        '204':
+          description: No build has been published for this track
+        '503':
+          description: Auto-update is not configured on this server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/app/phone/update:
+    get:
+      summary: Latest available build for the Android phone client
+      description: Same shape as the TV endpoint, separate track. Anonymous.
+      security: []
+      responses:
+        '200':
+          description: A build is available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateManifest'
+        '204':
+          description: No build has been published for this track
+        '503':
+          description: Auto-update is not configured on this server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/admin/app/updates/tv:
+    post:
+      summary: Publish a new build for the TV track
+      description: |
+        Accepts a `multipart/form-data` body with the APK and its metadata.
+        Writes the file to the track's storage directory, computes SHA-256,
+        and persists the sidecar manifest. Subsequent `GET /api/app/tv/update`
+        returns the new manifest. Old APKs are kept on disk so in-flight
+        downloads survive a release.
+
+        **Auth:** `Authorization: Bearer <publish_token>`. User/password
+        and session Bearer tokens are not accepted. Returns `503` if the
+        server has no `publish_token` configured.
+      security:
+        - updateToken: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [apk, versionName, versionCode]
+              properties:
+                apk: { type: string, format: binary, description: "Universal APK (opaque binary)" }
+                versionName: { type: string, example: "1.0.1" }
+                versionCode: { type: integer, example: 10101, description: "Non-negative integer. Common scheme: MAJOR*10000+MINOR*100+PATCH" }
+                releaseNotes: { type: string, description: "Optional; surfaced to the user in the update dialog" }
+                mandatory: { type: boolean, default: false, description: "Optional; if true the dialog is non-cancelable" }
+                url: { type: string, format: uri, description: "Optional override for the manifest's `url` field (e.g. a CDN URL)" }
+      responses:
+        '200':
+          description: Publish succeeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  versionName: { type: string }
+                  versionCode: { type: integer }
+                  sha256: { type: string, description: "Hex SHA-256 of the uploaded APK bytes" }
+                  apkFilename: { type: string, description: "The basename of the file as it lives in the storage directory" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/admin/app/updates/phone:
+    post:
+      summary: Publish a new build for the phone track
+      description: |
+        Same shape as the TV publish endpoint, separate track. See the TV
+        endpoint for the auth rules.
+      security:
+        - updateToken: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [apk, versionName, versionCode]
+              properties:
+                apk: { type: string, format: binary }
+                versionName: { type: string }
+                versionCode: { type: integer }
+                releaseNotes: { type: string }
+                mandatory: { type: boolean, default: false }
+                url: { type: string, format: uri }
+      responses:
+        '200':
+          description: Publish succeeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  versionName: { type: string }
+                  versionCode: { type: integer }
+                  sha256: { type: string }
+                  apkFilename: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/app/updates/tv/{filename}:
+    get:
+      summary: Download the current TV APK
+      description: |
+        Serves the file named in the current TV manifest. A request for a
+        different filename is 404 — only the current build is fetchable.
+        Anonymous.
+      security: []
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          schema: { type: string, example: "eneverre-tv-universal-1.0.1.apk" }
+      responses:
+        '200':
+          description: APK bytes
+          content:
+            application/vnd.android.package-archive:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: Auto-update is not configured on this server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/app/updates/phone/{filename}:
+    get:
+      summary: Download the current phone APK
+      description: Same shape as the TV download endpoint, separate track.
+      security: []
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          schema: { type: string, example: "eneverre-universal-1.0.0.apk" }
+      responses:
+        '200':
+          description: APK bytes
+          content:
+            application/vnd.android.package-archive:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: Auto-update is not configured on this server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Access token issued by POST /api/auth/login (or the device flow).
+    updateToken:
+      type: http
+      scheme: bearer
+      description: |
+        Publish-only bearer token matching the server's `[updates] publish_token`
+        (or `ENEVERRE_UPDATES_PUBLISH_TOKEN`). The publish endpoints
+        (POST /api/admin/app/updates/{tv,phone}) accept ONLY this token;
+        user/password and session Bearer are rejected. If no token is
+        configured on the server, the publish endpoints return 503.
+
+  parameters:
+    camera_id:
+      name: camera_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: "interior"
+    username:
+      name: username
+      in: path
+      required: true
+      schema:
+        type: string
+      example: "admin"
+
+  schemas:
+
+    Camera:
+      type: object
+      required:
+        - id
+        - name
+        - capabilities
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        comment:
+          type: string
+        location:
+          type: string
+        capabilities:
+          $ref: '#/components/schemas/Capabilities'
+        rtsp:
+          type: string
+          description: >-
+            RTSP URL. Dynamically generated with rotating credentials when the
+            MediaMTX integration is enabled; otherwise the raw `live` INI value.
+        webrtc:
+          type: string
+          description: WebRTC (WHEP) URL, generated when MediaMTX is enabled.
+        hls:
+          type: string
+          description: HLS URL, generated when MediaMTX is enabled.
+        width:
+          type: integer
+        height:
+          type: integer
+        home_x:
+          type: number
+          description: PTZ home X (-1 if unset).
+        home_y:
+          type: number
+          description: PTZ home Y (-1 if unset).
+        privacy_x:
+          type: number
+          description: PTZ privacy-position X (-1 if unset).
+        privacy_y:
+          type: number
+          description: PTZ privacy-position Y (-1 if unset).
+        privacy:
+          type: boolean
+          description: Current lens-blackout (privacy) state.
+        live:
+          type: string
+          description: Compatibility alias for `rtsp` (older clients).
+        playback:
+          type: boolean
+          description: Compatibility alias for `capabilities.playback`.
+        ptz:
+          type: boolean
+          description: Compatibility alias for `capabilities.ptz`.
+
+    Capabilities:
+      type: object
+      properties:
+        privacy:
+          type: boolean
+        thumbnail:
+          type: boolean
+        playback:
+          type: boolean
+        ptz:
+          type: boolean
+
+    Recording:
+      type: object
+      properties:
+        start:
+          type: string
+          format: date-time
+        duration:
+          type: number
+
+    Message:
+      type: object
+      description: >-
+        Status/error responses. OK responses use `message`; errors use `detail`
+        (FastAPI HTTPException-compatible shape).
+      properties:
+        message:
+          type: string
+        detail:
+          type: string
+
+    UpdateManifest:
+      type: object
+      description: |
+        Body of `GET /api/app/<track>/update` when a build is available.
+        Clients upgrade iff `versionCode` is strictly greater than their
+        installed `BuildConfig.VERSION_CODE`. The `url` points to the
+        currently advertised APK; `sha256` lets the client verify the
+        download. `mandatory` removes the "Later" / "Skip" buttons in the
+        dialog.
+      required: [versionName, versionCode, apkFilename, sha256, url]
+      properties:
+        versionName:
+          type: string
+          example: "1.0.1"
+        versionCode:
+          type: integer
+          example: 10101
+        apkFilename:
+          type: string
+          description: Basename of the APK as stored on the server
+          example: "eneverre-tv-universal-1.0.1.apk"
+        url:
+          type: string
+          format: uri
+          description: Absolute URL the client should GET to download the APK
+        sha256:
+          type: string
+          description: Lowercase hex SHA-256 of the APK bytes
+          example: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        mandatory:
+          type: boolean
+          default: false
+        releaseNotes:
+          type: string
+          description: Optional release notes shown in the update dialog
+    Error:
+      type: object
+      description: FastAPI-compatible error body
+      properties:
+        detail:
+          type: string
+
+    Event:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        camera_id:
+          type: string
+        start_ts:
+          type: string
+          format: date-time
+          description: RFC3339 UTC
+        end_ts:
+          type: string
+          format: date-time
+          description: RFC3339 UTC
+        type:
+          type: string
+          example: motion
+        source:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC
+
+    User:
+      type: object
+      properties:
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, user]
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+
+    NameUpdate:
+      type: object
+      properties:
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+
+    Session:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        fingerprint:
+          type: string
+          description: First 10 hex chars of the token's SHA-256
+        created_at:
+          type: integer
+          format: int64
+          description: Unix seconds
+        expires_at:
+          type: integer
+          format: int64
+          description: >-
+            Unix seconds. For a renewable session this is the refresh-token
+            expiry; otherwise the access-token expiry.
+        renewable:
+          type: boolean
+        is_current:
+          type: boolean
+        device_name:
+          type: string
+          nullable: true
+
+  responses:
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Message'
+
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Message'
+
+    Forbidden:
+      description: Admin role required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Message'
+
+    BadGateway:
+      description: Camera or upstream unreachable / rejected the request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Message'
+
+    ServiceUnavailable:
+      description: Optional subsystem not configured on this server
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Message'

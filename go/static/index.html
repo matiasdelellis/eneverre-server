@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1419" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Eneverre</title>
+  <link rel="icon" type="image/svg+xml" href="/eneverre.svg" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("eneverre.theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.dataset.theme = t;
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css" />
+  <script>
+    (function () {
+      try {
+        if (localStorage.getItem("eneverre.token")) {
+          document.documentElement.classList.add("booting");
+        }
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <div id="boot" class="boot-overlay" aria-hidden="true">
+    <div class="boot-spinner" role="status" aria-label="Loading"></div>
+  </div>
+
+  <div id="login" class="screen">
+    <form id="login-form" class="card">
+      <div class="brand brand-login">
+        <img class="brand-icon" src="/eneverre.svg" alt="" />
+        <h1>Eneverre</h1>
+      </div>
+      <p class="muted">Sign in to view your cameras.</p>
+      <label>Username <input name="username" autocomplete="username" required /></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
+      <button type="submit">Sign in</button>
+      <p id="login-error" class="error" hidden></p>
+    </form>
+  </div>
+
+  <div id="app" hidden>
+    <aside class="viewer-side" id="viewer-side">
+      <header class="viewer-side-header">
+        <div class="brand brand-side">
+          <img class="brand-icon" src="/eneverre.svg" alt="" />
+          <span class="brand-text"><strong>Eneverre</strong></span>
+        </div>
+        <button class="viewer-toggle" id="viewer-toggle" title="Collapse sidebar" aria-label="Toggle sidebar">‹</button>
+        <button class="sidebar-close" id="sidebar-close" title="Close camera list" aria-label="Close camera list">✕</button>
+      </header>
+      <div class="viewer-side-scroll" id="viewer-side-scroll"></div>
+    </aside>
+    <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
+    <div class="app-main">
+      <header class="topbar">
+        <button id="sidebar-open" class="ghost icon-btn sidebar-open" title="Open camera list" aria-label="Open camera list">☰</button>
+        <div class="view-toggle" role="tablist">
+          <button id="view-live" class="toggle" role="tab" title="All cameras as a grid">Live</button>
+          <button id="view-playback" class="toggle" role="tab" title="Synchronized playback with timeline">Playback</button>
+        </div>
+        <span class="grow"></span>
+        <button id="audio-toggle" class="ghost icon-btn topbar-hide-sm" title="Toggle audio" aria-label="Toggle audio">🔇</button>
+        <button id="theme-toggle" class="ghost icon-btn topbar-hide-sm" title="Toggle theme" aria-label="Toggle theme">🌓</button>
+        <div class="user-menu" id="user-menu" hidden>
+          <button id="user-menu-trigger" class="ghost user-menu-trigger" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu-list">
+            <span class="user-menu-name" id="user-menu-name"></span>
+            <span class="user-menu-caret" aria-hidden="true">▾</span>
+          </button>
+          <ul id="user-menu-list" class="user-menu-list" role="menu" hidden>
+            <li role="none">
+              <button id="users-btn" class="user-menu-item" role="menuitem" hidden>Manage users</button>
+            </li>
+            <li role="none" class="user-menu-item-sm" hidden>
+              <button id="audio-toggle-menu" class="user-menu-item" role="menuitem" hidden>Toggle audio</button>
+            </li>
+            <li role="none" class="user-menu-item-sm" hidden>
+              <button id="theme-toggle-menu" class="user-menu-item" role="menuitem" hidden>Toggle theme</button>
+            </li>
+            <li role="none" class="user-menu-separator" aria-hidden="true"></li>
+            <li role="none">
+              <button id="logout" class="user-menu-item" role="menuitem">Log out</button>
+            </li>
+          </ul>
+        </div>
+      </header>
+      <main>
+        <div class="main-body">
+          <div class="content-area" id="content-area">
+            <div id="wall" class="wall" hidden></div>
+          </div>
+          <div id="playback-bar" class="playback-bar" hidden>
+            <button id="pb-play" class="pb-btn" title="Play/Pause" aria-label="Play">▶</button>
+            <canvas id="pb-canvas" class="pb-canvas"></canvas>
+            <button id="pb-live" class="pb-btn pb-live-btn">Live</button>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div id="ptz-modal" class="ptz-modal" hidden>
+    <header class="ptz-modal-header" id="ptz-modal-handle">
+      <h2 id="ptz-modal-title">PTZ</h2>
+      <button id="ptz-modal-close" class="ghost" aria-label="Close">&times;</button>
+    </header>
+    <div class="ptz-modal-body" id="ptz-modal-body"></div>
+  </div>
+
+  <button id="ptz-fab" class="ptz-fab" hidden type="button"
+    aria-label="Open PTZ panel" title="Open PTZ panel">PTZ</button>
+
+  <section id="device-auth-view" class="users-view" hidden>
+    <header class="users-topbar">
+      <strong>Authorize device</strong>
+      <span class="grow"></span>
+    </header>
+    <div class="users-body">
+      <p id="device-auth-status" class="muted">A device is asking for access. Confirm the code matches the one shown on the device screen.</p>
+      <div class="users-card">
+        <h2 id="device-auth-name-heading">Device</h2>
+        <p class="device-auth-name" id="device-auth-name">Unknown device</p>
+        <h2>Device code</h2>
+        <p class="device-auth-code" id="device-auth-code">&mdash;</p>
+        <p class="muted">Expires in <span id="device-auth-expires">5:00</span>.</p>
+        <div class="user-edit-actions">
+          <button type="button" id="device-auth-deny" class="ghost">Deny</button>
+          <button type="button" id="device-auth-allow" class="primary">Allow</button>
+        </div>
+        <p id="device-auth-result" class="error" hidden></p>
+      </div>
+    </div>
+  </section>
+
+  <section id="users-view" class="users-view" hidden>
+    <header class="users-topbar">
+      <button id="users-back" class="ghost">&larr; Back to cameras</button>
+      <strong>Users</strong>
+      <span class="grow"></span>
+      <button id="users-new" class="primary" hidden>+ New user</button>
+    </header>
+    <div class="users-body">
+      <p id="users-status" class="error" hidden></p>
+
+      <section id="users-list-section" class="users-card" hidden>
+        <h2>All users</h2>
+        <div class="users-table">
+          <div class="users-row users-header">
+            <div>Name</div>
+            <div>Username</div>
+            <div>Role</div>
+            <div class="users-actions-col">Actions</div>
+          </div>
+          <div id="users-rows"></div>
+        </div>
+      </section>
+
+      <section class="users-card">
+        <h2>My account</h2>
+        <p class="muted">Signed in as <span id="me-username"></span> (<span id="me-role"></span>)</p>
+
+        <h3>My name</h3>
+        <form id="my-name-form" class="users-form">
+          <label>First name
+            <input name="first_name" autocomplete="given-name" />
+          </label>
+          <label>Last name
+            <input name="last_name" autocomplete="family-name" />
+          </label>
+          <button type="submit">Update name</button>
+          <p id="my-name-status" class="muted users-inline-status" hidden></p>
+        </form>
+
+        <h3>Change my password</h3>
+        <form id="my-pass-form" class="users-form">
+          <label>Current password
+            <input name="current_password" type="password" autocomplete="current-password" required />
+          </label>
+          <label>New password
+            <input name="new_password" type="password" autocomplete="new-password" required />
+          </label>
+          <label>Confirm new password
+            <input name="confirm_password" type="password" autocomplete="new-password" required />
+          </label>
+          <button type="submit">Update password</button>
+          <p id="my-pass-status" class="muted users-inline-status" hidden></p>
+        </form>
+
+        <h3>Active sessions</h3>
+        <p class="muted">Revoke a session to immediately invalidate its token.</p>
+
+        <h4 class="sessions-group-title">Valid</h4>
+        <div id="sessions-list-active" class="sessions-list"></div>
+
+        <h4 class="sessions-group-title">Expired</h4>
+        <p class="muted sessions-group-hint">Expired tokens can no longer authenticate; they are kept here for reference and can be removed individually.</p>
+        <div id="sessions-list-expired" class="sessions-list"></div>
+      </section>
+    </div>
+  </section>
+
+  <div id="user-edit-modal" class="user-edit-modal" hidden>
+    <div class="user-edit-card">
+      <h2 id="user-edit-title">New user</h2>
+      <form id="user-edit-form" class="users-form">
+        <label>Username
+          <input name="username" autocomplete="username" required />
+        </label>
+        <label>Password
+          <input name="password" type="password" autocomplete="new-password" required />
+        </label>
+        <label>First name
+          <input name="first_name" autocomplete="given-name" />
+        </label>
+        <label>Last name
+          <input name="last_name" autocomplete="family-name" />
+        </label>
+        <label>Role
+          <select name="role">
+            <option value="user">user</option>
+            <option value="admin">admin</option>
+          </select>
+        </label>
+        <p id="user-edit-status" class="error" hidden></p>
+        <div class="user-edit-actions">
+          <button type="button" id="user-edit-cancel" class="ghost">Cancel</button>
+          <button type="submit" class="primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="dlg-modal" class="dlg-modal" hidden role="dialog" aria-modal="true" aria-labelledby="dlg-title">
+    <div class="dlg-card">
+      <h2 id="dlg-title" class="dlg-title">Confirm</h2>
+      <p id="dlg-body" class="dlg-body"></p>
+      <label id="dlg-input-wrap" class="dlg-input-wrap" hidden>
+        <span id="dlg-input-label"></span>
+        <input id="dlg-input" type="text" autocomplete="off" />
+      </label>
+      <label id="dlg-input2-wrap" class="dlg-input-wrap" hidden>
+        <span id="dlg-input2-label"></span>
+        <input id="dlg-input2" type="text" autocomplete="off" />
+      </label>
+      <p id="dlg-error" class="dlg-error" hidden></p>
+      <div class="dlg-actions">
+        <button type="button" id="dlg-cancel" class="ghost">Cancel</button>
+        <button type="button" id="dlg-ok" class="primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="hls.min.js"></script>
+  <script src="timeline.js"></script>
+  <script src="app.js" type="module"></script>
+</body>
+</html>

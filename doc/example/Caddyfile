@@ -1,0 +1,84 @@
+# Example Caddyfile for Eneverre.
+#
+# Topology assumed by this file:
+#   - Caddy          : public entry point, ports 80/443 (TLS via Let's Encrypt)
+#   - Eneverre (this): 127.0.0.1:8080  - serves the static UI at / and the
+#                       REST API at /api/*
+#   - MediaMTX       : 127.0.0.1:8888 (HLS), :9997 (control API)
+#
+# HLS URLs returned by /api/cameras already embed MediaMTX basic-auth
+# credentials (e.g. https://user:pass@host/hls/<id>/index.m3u8), so the
+# browser re-sends them on every segment request. MediaMTX accepts them as
+# long as /etc/mediamtx/mediamtx.yml has `authMethod: http` pointing back
+# at the Eneverre API — see `doc/example/mediamtx.yml` for the full
+# template.
+#
+# The `/hls/` prefix below is configurable: eneverre.ini has
+# `[mediamtx] hls_path = /hls/`. Whatever path you set there MUST match
+# the `handle_path` rule below — both the prefix and the trailing slash
+# matter. If you change it to `/streams/hls/`, change the rule to
+# `handle_path /streams/hls/*` and reload Caddy.
+
+nvr.example.com {
+    encode gzip zstd
+
+    # Static UI + REST API. Specific path matchers below win first;
+    # anything else falls through to Eneverre.
+    reverse_proxy 127.0.0.1:8080
+
+    # HLS playback consumed by hls.js in the browser. The API generates
+    # URLs like /hls/<cam_id>/index.m3u8, but MediaMTX serves them at
+    # /<cam_id>/index.m3u8 (no /hls/ prefix). `handle_path` strips the
+    # matched prefix before proxying, so MediaMTX sees /<cam_id>/...
+    handle_path /hls/* {
+        reverse_proxy :8888
+    }
+
+    # MediaMTX control API (recordings list, path management). Not used by
+    # the Eneverre UI; remove or restrict with basicauth if you don't need
+    # it from the public internet.
+    @mtx_api path /mediamtx/api/* /mediamtx/paths*
+    reverse_proxy @mtx_api 127.0.0.1:9997
+
+    # WebRTC (UDP-heavy, with STUN/TURN) and RTSP are usually NOT
+    # proxied through Caddy - they need raw TCP/UDP and break the moment
+    # Caddy sits in the middle. Expose MediaMTX's 8554/8889 ports
+    # directly (firewall them off) or behind a separate tunnel.
+    #
+    # That said, the WHEP/WHIP HTTP signaling endpoint CAN go through
+    # Caddy (it's plain HTTP). The browser then connects to MediaMTX
+    # directly for the actual media (UDP/ICE). To do that, uncomment the
+    # rule below and make sure `[mediamtx] webrtc_path` in eneverre.ini
+    # matches the `handle_path` prefix:
+    # handle_path /whep/* {
+    #     reverse_proxy 127.0.0.1:8889
+    # }
+
+    header {
+        # The UI and HLS share the same origin here, so no CORS is needed.
+        # If you ever split them, uncomment and tighten the origin:
+        # Access-Control-Allow-Origin https://nvr.example.com
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    log {
+        output file /var/log/caddy/eneverre.log {
+            roll_size 100mb
+            roll_keep 5
+        }
+    }
+}
+
+# -------------------------------------------------------------------
+# Optional: a second public hostname that puts Caddy-level HTTP Basic
+# Auth in front of the same backend. Useful if you want to share a
+# camera feed with someone without giving them an Eneverre account.
+# Generate the hash with: caddy hash-password
+# -------------------------------------------------------------------
+# nvr-share.example.com {
+#     basicauth {
+#         guest   JDJhJDE0JDhCYzZTaW1YekcuUUlzN0Z1...
+#     }
+#     reverse_proxy 127.0.0.1:8080
+# }

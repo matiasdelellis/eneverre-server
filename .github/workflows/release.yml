@@ -1,0 +1,100 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.0.0). Leave empty to use the current ref."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+          cache-dependency-path: go/go.sum
+
+      - name: go test
+        run: go -C go test ./...
+
+      - name: go vet
+        run: go -C go vet ./...
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-amd64,   goos: linux,  goarch: amd64 }
+          - { target: linux-arm64,   goos: linux,  goarch: arm64 }
+          - { target: linux-arm,     goos: linux,  goarch: arm   }
+          - { target: darwin-amd64,  goos: darwin, goarch: amd64 }
+          - { target: darwin-arm64,  goos: darwin, goarch: arm64 }
+          - { target: windows-amd64, goos: windows, goarch: amd64 }
+          - { target: windows-arm64, goos: windows, goarch: arm64 }
+    steps:
+      - name: Ensure scripts dir exists
+        run: mkdir -p scripts
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+          cache-dependency-path: go/go.sum
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # On a tag push this returns the tag itself (e.g. v1.0.0).
+            VERSION=$(git describe --tags --always --dirty)
+            echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build tarball and checksum
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.version.outputs.value }}
+        run: make dist-tar dist-checksums
+
+      - name: Upload artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.value }}
+          name: ${{ steps.version.outputs.value }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256

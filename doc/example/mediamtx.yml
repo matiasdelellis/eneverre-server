@@ -1,0 +1,119 @@
+# Example MediaMTX config for the Eneverre integration.
+#
+# Install:
+#   sudo install -m0644 doc/example/mediamtx.yml /etc/mediamtx/mediamtx.yml
+#   sudo systemctl restart mediamtx
+#
+# Auth is delegated to Eneverre. Do NOT add a static `users:` block — the
+# `authMethod: http` line below is authoritative, and a static user list
+# would let MediaMTX reject requests before the probe is even made. See
+# `doc/MEDIAMTX.md` for the full `POST /api/auth` protocol and the
+# credential-rotation story.
+#
+# Topology assumed below:
+#   - Eneverre : 127.0.0.1:8080   (the API; /api/auth is unauthenticated
+#                                   and meant to be reachable from
+#                                   MediaMTX, not from the public)
+#   - MediaMTX : 127.0.0.1:8554   (RTSP), :8888 (HLS), :8889 (WebRTC),
+#                :9997 (control API), :9996 (playback server)
+#
+# Adjust the `authHTTPAddress` if Eneverre runs on a different host.
+
+logLevel: info
+api: yes
+apiAddress: :9997
+
+# RTSP listener — this is the one clients connect to when playing. Keep it
+# bound to localhost or a private interface; expose it through a tunnel or
+# a dedicated firewall rule, NOT through Caddy (raw TCP / UDP doesn't
+# proxy over HTTP).
+rtspAddress: :8554
+rtspsAddress: :8322
+rtpAddress: :8000
+rtcpAddress: :8001
+
+# HLS — served over HTTP, proxies cleanly through Caddy. The path on the
+# wire is /<cam_id>/index.m3u8; Caddy's handle_path /hls/* rule strips
+# the /hls/ prefix before proxying.
+hlsAddress: :8888
+hlsEncryption: no
+hlsAllowOrigin: '*'
+
+# WebRTC — signaling is HTTP (WHEP/WHIP) and CAN go through Caddy. The
+# actual media is UDP/ICE and must NOT — expose these ports directly or
+# tunnel them.
+webrtcAddress: :8889
+webrtcEncryption: no
+webrtcAllowOrigin: '*'
+
+# RTMP / SRT — off by default; uncomment if you have a push source that
+# uses either.
+# rtmpAddress: :1935
+# srtAddress: :8890
+
+# ----------------------------------------------------------------------------
+# Auth — delegated to Eneverre. The probe is `POST /api/auth`; see
+# `doc/MEDIAMTX.md` for the request/response shape. The credentials in
+# the request are the rotating pair Eneverre embeds in
+# GET /api/cameras; they have nothing to do with the camera's own
+# onboard user.
+# ----------------------------------------------------------------------------
+authMethod: http
+authHTTPAddress: http://127.0.0.1:8080/api/auth
+
+# ----------------------------------------------------------------------------
+# Path defaults — applied to every path that doesn't override them. The
+# camera ids here (`front_door`, `backyard`) MUST match the `id = …`
+# line in each `data/cameras.d/<id>.ini` — the auth probe echoes the
+# MediaMTX path back to Eneverre.
+# ----------------------------------------------------------------------------
+pathDefaults:
+  # Run RTSP/HLS/WebRTC only when a client asks for it (saves bandwidth
+  # on idle cameras).
+  sourceOnDemand: yes
+  sourceOnDemandStartTimeout: 10s
+  sourceOnDemandCloseAfter: 10s
+
+  # Recordings — written to the path below. Pick a partition with room;
+  # at 1080p a busy scene can chew 5-10 GB/hour per camera. Adjust
+  # recordDeleteAfter to taste; `10d` is a reasonable default.
+  record: yes
+  recordPath: /var/lib/mediamtx/recordings/%path/%Y-%m-%d/%H/%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 1h
+  recordDeleteAfter: 10d
+
+  # Optional: cap the bitrate so a misbehaving source can't fill the
+  # disk. Comment out to keep the source bitrate as-is.
+  # maxBitrate: 4M
+
+# ----------------------------------------------------------------------------
+# Paths — one entry per camera. The key MUST match the camera `id` in
+# Eneverre (the `[camera] id = …` field of the matching
+# /etc/eneverre/cameras.d/<id>.ini).
+# ----------------------------------------------------------------------------
+paths:
+  # Plain fixed camera — RTSP pull from the camera's own IP.
+  front_door:
+    source: rtsp://user:pass@192.168.1.91:554/stream
+
+  # PTZ Thingino camera — same shape. Recording and the on-demand source
+  # are inherited from `pathDefaults` above.
+  backyard:
+    source: rtsp://user:pass@192.168.1.92:554/stream
+
+  # Camera with overrides — recording disabled, source always on (so
+  # WebRTC connects in <100 ms), and the HLS segment duration shortened
+  # to 30 s for finer-grained scrubbing in the timeline.
+  # driveway:
+  #   source: rtsp://user:pass@192.168.1.93:554/stream
+  #   sourceOnDemand: no
+  #   record: no
+  #   hlsSegmentDuration: 30s
+
+  # Push source (the camera pushes to MediaMTX, MediaMTX doesn't pull).
+  # Leave the `source:` line out and configure the camera to push to
+  # rtmp://mediamtx-host:1935/<key> (or srt://mediamtx-host:8890/<key>).
+  # pushed:
+  #   sourceOnDemand: no

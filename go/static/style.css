@@ -1,0 +1,1482 @@
+/* Palette taken from EspSmartDash's :root tokens (see go/static/js sample).
+   Dark stays the default; the brand is the same blue→violet pair in both
+   themes. The two extra border shades and the soft accent are derived
+   from the source palette (border sits a few units lighter, accent-soft
+   is the brand color at 12-16% alpha). */
+:root,
+:root[data-theme="dark"] {
+  --bg: #0f1419;
+  --panel: #1a212b;
+  --panel-2: #222c38;
+  --fg: #e6edf3;
+  --muted: #8b98a5;
+  --border: #2c3846;
+  --border-strong: #3a4757;
+  --border-hover: #4a5869;
+  --accent: #3b82f6;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --danger: #ef4444;
+  --good: #22c55e;
+  --video-bg: #000;
+  --scrim: rgba(0, 0, 0, 0.55);
+  --scrim-strong: rgba(0, 0, 0, 0.7);
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  --radius: 10px;
+  /* Width of the left sidebar. Set on :root so both the sidebar and the
+     topbar (which is a sibling, not a descendant) can read it. Updated
+     from JS when the sidebar collapses/expands. */
+  --sidebar-w: 280px;
+}
+
+:root[data-theme="light"] {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --panel-2: #eceff3;
+  --fg: #1a2330;
+  --muted: #5d6b7a;
+  --border: #dde3ea;
+  --border-strong: #c8d0db;
+  --border-hover: #b3bcc8;
+  --accent: #3b82f6;
+  --accent-soft: rgba(59, 130, 246, 0.12);
+  --danger: #ef4444;
+  --good: #22c55e;
+  --video-bg: #000;
+  --scrim: rgba(15, 20, 25, 0.4);
+  --scrim-strong: rgba(15, 20, 25, 0.55);
+  --shadow: 0 4px 16px rgba(15, 20, 25, 0.08);
+  --radius: 10px;
+}
+
+/* No data-theme attribute: follow the OS preference. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg: #f3f5f8;
+    --panel: #ffffff;
+    --panel-2: #eceff3;
+    --fg: #1a2330;
+    --muted: #5d6b7a;
+    --border: #dde3ea;
+    --border-strong: #c8d0db;
+    --border-hover: #b3bcc8;
+    --accent: #3b82f6;
+    --accent-soft: rgba(59, 130, 246, 0.12);
+    --danger: #ef4444;
+    --good: #22c55e;
+    --video-bg: #000;
+    --scrim: rgba(15, 20, 25, 0.4);
+    --scrim-strong: rgba(15, 20, 25, 0.55);
+    --shadow: 0 4px 16px rgba(15, 20, 25, 0.08);
+    --radius: 10px;
+  }
+}
+
+* { box-sizing: border-box; }
+
+/* The HTML `hidden` attribute is overridden by `display: flex` declared on
+   .screen and #app (class/id selectors win over the attribute selector), so
+   the login screen and app shell stay visible when they should be hidden.
+   `!important` makes `hidden` win regardless of element-level display rules. */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  height: 100%;
+  overflow: hidden; /* hard guarantee: no scroll on the page */
+}
+
+/* iOS zooms in on focused <input> if the computed font-size is < 16px.
+   Force inputs to 16px (inputs and selects); visible font-size is kept
+   in sync via the input rule below so the layout doesn't shift. */
+input, select, textarea { font-size: 16px; }
+
+.muted { color: var(--muted); }
+.grow { flex: 1; }
+.error { color: var(--danger); }
+.hidden { display: none !important; }
+
+button {
+  background: var(--accent);
+  color: white;
+  border: 0;
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+button:hover { filter: brightness(1.06); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Themed keyboard-focus ring for form fields, matching buttons. Mouse focus
+   stays clean (:focus-visible only fires for keyboard/programmatic focus).
+   Dialog inputs keep their own .dlg-input-wrap treatment (higher specificity). */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.ghost {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border-hover);
+}
+button.danger { background: var(--danger); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+input {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font: inherit;
+  width: 100%;
+}
+
+.screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  width: 360px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.card h1 { margin: 0; }
+.card label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+
+/* Brand mark: app icon + wordmark. Same SVG works in both themes
+   because the icon is recolored per-theme via a CSS filter. */
+.brand { display: inline-flex; align-items: center; gap: 10px; }
+.brand-topbar { gap: 8px; }
+.brand-login { gap: 12px; }
+.brand h1, .brand strong { font-size: inherit; font-weight: inherit; }
+.brand-icon { width: 1.4em; height: 1.4em; flex-shrink: 0; display: block; }
+/* Dark theme: invert the black SVG so it reads as white on the dark panel. */
+:root[data-theme="dark"] .brand-icon { filter: invert(1); }
+/* Honor OS preference when no explicit choice was made. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .brand-icon { filter: invert(1); }
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+/* The right column holds the topbar (top) and the camera wall (below).
+   It must be a vertical flex container so the topbar takes its natural
+   height and the wall fills the remaining space. */
+.app-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#app main {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Main body: wraps content-area + (optional) playback bar below it. */
+.main-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Content area: the part of main that is NOT the sidebar. Holds the
+   wall (used by both Live and Playback). */
+.content-area {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Playback bar: horizontal timeline under the content area, shown
+   only in playback mode. */
+.playback-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.pb-btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  color: var(--fg);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+.pb-btn:hover { border-color: var(--border-hover); }
+.pb-live-btn { background: var(--accent); border-color: var(--accent); color: white; }
+.pb-live-btn:hover { filter: brightness(1.1); }
+.pb-canvas {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  cursor: pointer;
+  background: var(--panel-2);
+  border-radius: var(--radius);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 52px;
+  flex-shrink: 0;
+  padding: 0 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
+}
+.viewer-side-header { box-sizing: border-box; }
+.brand-side, .brand { line-height: 1; }
+
+/* User menu: a single trigger in the topbar (the signed-in user's name
+   + caret) that opens a small dropdown with the account-level actions
+   (Manage users for admins, Log out for everyone). Replaces the
+   separate #users-btn + #logout buttons that used to sit in the bar. */
+.user-menu { position: relative; }
+.user-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  padding: 6px 12px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.user-menu-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-menu-caret {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+.user-menu-trigger[aria-expanded="true"] .user-menu-caret { transform: rotate(180deg); }
+.user-menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 180px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.user-menu-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.user-menu-item:hover { background: var(--panel-2); }
+.user-menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.user-menu-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 6px;
+  list-style: none;
+}
+/* The audio/theme items are duplicates of the topbar buttons, shown
+   only on mobile (where the topbar runs out of room). Hidden on
+   desktop. */
+.user-menu-item-sm { display: none; }
+
+/* Segmented control: pill-shaped container with two options. */
+.view-toggle {
+  display: inline-flex;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 0;
+}
+.view-toggle button.toggle {
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  padding: 5px 18px;
+  font-weight: 500;
+  font-size: 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+.view-toggle button.toggle:hover:not(.active) { color: var(--fg); }
+.view-toggle button.toggle.active {
+  background: var(--accent);
+  color: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+button.icon-btn {
+  padding: 6px 10px;
+  font-size: 15px;
+  line-height: 1;
+  min-width: 36px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+/* ---------- Wall + collapsible left sidebar ---------- */
+
+.viewer-side {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--panel);
+  /* Border is rendered via a box-shadow so it doesn't affect the
+     flex-item width — that way the topbar (in the adjacent column)
+     lines up flush with the sidebar's content edge. */
+  border-right: 0;
+  box-shadow: 1px 0 0 0 var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  transition: width 0.25s ease;
+  overflow: hidden;
+}
+.viewer-side.collapsed { width: 52px; }
+
+.viewer-side-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  height: 52px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
+}
+.viewer-side.collapsed .viewer-side-header {
+  justify-content: center;
+  padding: 10px 0;
+}
+/* Brand inside the sidebar header. The icon stays visible when the
+   sidebar is collapsed; the wordmark hides so the bar stays narrow. */
+.brand-side { flex: 1; min-width: 0; }
+.brand-side .brand-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.viewer-side.collapsed .brand-side .brand-text { display: none; }
+.viewer-side.collapsed .brand-side {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+/* When the sidebar is collapsed, the brand fills the header and the
+   toggle button is taken out of the flow (absolutely positioned) so it
+   doesn't push the icon. It's hidden by default and revealed on hover
+   of the header — that's how the user re-expands the sidebar. The
+   stretched top/0/bottom/0 + flex centering keeps the button in the
+   same vertical position as in expanded mode (centered in the 44px
+   header). */
+.viewer-side.collapsed .viewer-toggle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 6px;
+  margin: auto 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(180deg);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.viewer-side.collapsed .viewer-side-header:hover .viewer-toggle {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.viewer-toggle {
+  background: transparent;
+  border: 1px solid var(--border-hover);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0;
+  flex-shrink: 0;
+  font-weight: 700;
+  transition: transform 0.25s ease, color 0.15s ease, border-color 0.15s ease;
+}
+/* Mobile-only close (✕) button in the sidebar header; on desktop the
+   desktop collapse/expand button (`.viewer-toggle`) does the same job. */
+.sidebar-close {
+  background: transparent;
+  border: 1px solid var(--border-hover);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  flex-shrink: 0;
+  font-weight: 700;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.sidebar-close:hover { color: var(--fg); border-color: var(--fg); }
+.sidebar-close {
+  /* The close button only makes sense in the mobile drawer layout;
+     hidden on desktop where the desktop toggle (`#viewer-toggle`)
+     performs the same role. */
+  display: none;
+}
+.sidebar-open {
+  /* Shown only via the mobile media query below; hidden by default so
+     the desktop layout is unchanged. */
+  display: none;
+}
+/* Scrim is only meaningful in the mobile drawer layout. The element is
+   `position: fixed; inset: 0` so without this it'd cover the whole UI
+   on desktop. The mobile media query uses `.shown` to fade it in. */
+.sidebar-scrim {
+  display: none;
+}
+.viewer-toggle:hover { color: var(--fg); border-color: var(--fg); }
+.viewer-side.collapsed .viewer-toggle { transform: rotate(180deg); }
+
+.viewer-side-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.viewer-side-scroll .viewer-status { padding: 12px; margin: 0; }
+
+.viewer-location-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.85;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.1s ease;
+}
+.viewer-location-header:hover { color: var(--fg); }
+.viewer-location-header.active { color: var(--accent); opacity: 1; }
+.viewer-location-header:first-child { padding-top: 0; }
+.viewer-location-header .loc-icon { display: none; font-size: 14px; line-height: 1; }
+/* Collapsed: hide the text label completely and show a centered icon
+   in its place — the location header is still a working filter, just
+   compact. Using display:none (not visibility:hidden) on the text is
+   important so the icon actually centers; with visibility:hidden the
+   text still takes up width and pushes the icon off to the left. */
+.viewer-side.collapsed .viewer-location-header {
+  justify-content: center;
+  padding: 8px 0;
+  visibility: visible;
+}
+.viewer-side.collapsed .viewer-location-header .loc-text { display: none; }
+.viewer-side.collapsed .viewer-location-header .loc-icon { display: inline; }
+
+.viewer-thumb {
+  background: var(--panel-2);
+  border: 2px solid transparent;
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.1s ease;
+  flex-shrink: 0;
+}
+.viewer-thumb:hover { border-color: var(--border-hover); }
+.viewer-thumb.active { border-color: var(--accent); }
+.viewer-thumb .thumb-preview {
+  aspect-ratio: 16 / 9;
+  background: var(--video-bg);
+  position: relative;
+  overflow: hidden;
+}
+.viewer-side.collapsed .viewer-thumb .thumb-preview { aspect-ratio: 1 / 1; }
+.viewer-thumb .thumb-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.viewer-thumb .thumb-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+  z-index: 1;
+}
+.viewer-side.collapsed .viewer-thumb .thumb-loading { display: none; }
+.viewer-thumb .thumb-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 6px 8px;
+  color: white;
+  font-size: 12px;
+  font-weight: 500;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.viewer-side.collapsed .viewer-thumb .thumb-caption { display: none; }
+
+@media (max-width: 900px) {
+  /* On mobile the camera list lives in a slide-in drawer, not a column.
+     Hide it by default and reveal it via the hamburger button (#sidebar-open
+     in the topbar). The "collapsed" class is repurposed to mean "drawer
+     open" — we toggle it from JS, but the state on the rest of the page
+     (the sidebarCollapsed boolean in state.js) still means "drawer open"
+     here, so we keep the same class name to avoid touching logic. */
+  .viewer-side {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(86vw, 340px);
+    z-index: 70;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: 1px 0 0 0 var(--border), 4px 0 18px rgba(0, 0, 0, 0.35);
+  }
+  /* The drawer is "closed" by default; `.collapsed` flips it open. */
+  .viewer-side.collapsed { transform: translateX(0); }
+  .viewer-toggle { display: none; }
+  .sidebar-close { display: inline-flex; }
+  .sidebar-open { display: inline-flex; }
+
+  .sidebar-scrim {
+    position: fixed;
+    inset: 0;
+    display: block;
+    background: var(--scrim);
+    z-index: 65;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s ease;
+  }
+  .sidebar-scrim.shown {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Vertical list (matching desktop) reads better than a horizontal
+     strip in a drawer — the user is choosing a camera, not paging
+     through a feed. */
+  .viewer-side-scroll {
+    flex-direction: column;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .viewer-thumb { width: 100%; }
+  .viewer-thumb .thumb-preview { aspect-ratio: 16 / 9; }
+
+  /* Full-width main content; the sidebar is overlay-only. */
+  .app-main { width: 100%; }
+  /* Padding above the wall so the floating PTZ FAB (bottom-right) and
+     any tile action button row don't get clipped by the browser's URL
+     bar on notched devices. */
+  .content-area { padding-bottom: env(safe-area-inset-bottom, 0); }
+  /* In playback mode the bottom of the screen is the playback bar, not
+     the wall. Push the bar's controls above the home indicator so they
+     stay tappable. */
+  .playback-bar { padding-bottom: calc(8px + env(safe-area-inset-bottom, 0)); }
+
+  /* PTZ modal: bottom sheet spanning the full width with safe-area
+     padding at the bottom. The drag-to-move logic in ptz.js still
+     applies (touch events work), but on mobile it makes more sense
+     to anchor it to the bottom and remove the absolute left/top
+     that the desktop styles set. */
+  .ptz-modal {
+    top: auto;
+    right: 0;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    max-height: 70vh;
+    border-radius: var(--radius) var(--radius) 0 0;
+    transform: none;
+  }
+  .ptz-modal-body { padding-bottom: calc(12px + env(safe-area-inset-bottom, 0)); }
+
+  /* PTZ FAB: anchored to the bottom-right, ignoring the (irrelevant on
+     mobile) sidebar width. The desktop formula reads
+     `left: calc(var(--sidebar-w) + 16px)`, which on a drawer-based
+     mobile layout would push the button off-screen. */
+  .ptz-fab {
+    left: auto;
+    right: calc(16px + env(safe-area-inset-right, 0));
+    bottom: calc(16px + env(safe-area-inset-bottom, 0));
+    min-width: 44px;
+    min-height: 44px;
+    height: 44px;
+    padding: 0 16px;
+  }
+
+  /* Wall tile action buttons: bigger tap targets. The desktop values
+     (4px 10px padding) are too small for thumbs. */
+  .wall-actions button {
+    padding: 8px 12px;
+    font-size: 16px;
+    min-height: 36px;
+    min-width: 36px;
+  }
+  .wall-name { font-size: 15px; }
+  /* On touch devices we keep the overlay always visible — hover doesn't
+     exist and the user shouldn't need to tap twice to see what a tile
+     can do. Pointer-fine devices (mouse) still get the hover behaviour
+     via the existing `.wall-tile:hover .wall-overlay` rule. */
+  @media (hover: none) {
+    .wall-overlay { opacity: 1; }
+  }
+
+  /* Topbar is tighter on mobile so the segmented control + user menu
+     fit comfortably on a 360px screen. */
+  .topbar {
+    height: 48px;
+    padding: 0 10px;
+    gap: 8px;
+  }
+  .view-toggle button.toggle { padding: 5px 12px; }
+  .user-menu-trigger { padding: 5px 8px; max-width: 140px; }
+  .icon-btn { min-width: 40px; min-height: 40px; }
+  /* On a 360px screen the topbar doesn't have room for every action.
+     Move the audio/theme toggles into the user dropdown on mobile —
+     the per-tile mute button covers the audio case while watching,
+     and the theme is still two taps away. */
+  .topbar-hide-sm { display: none; }
+  .user-menu-item-sm { display: block; }
+
+  /* Playback bar: canvas gets more space, controls stay tappable. */
+  .playback-bar { padding: 8px 10px; gap: 8px; }
+  .pb-btn {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 6px 10px;
+    font-size: 15px;
+  }
+}
+
+.wall {
+  --cols: 3;
+  --tile-w: 33.33%;
+  --gap: 0;
+  --pad: 6px;
+  /* Tiles wrap after `cols` per row. The tile's flex-basis (--tile-w,
+     in percent of wall width) is computed at runtime by gridLayout()
+     so 16:9 tiles always fit inside the wall — no vertical overflow.
+     When tilePct * cols < 100% there is a small right gutter; this
+     beats cutting off the bottom row. The whole tile block is
+     centered (justify-content centers incomplete rows horizontally;
+     align-content centers the row stack vertically). */
+  width: 100%;
+  height: 100%;
+  padding: var(--pad);
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-content: center;
+  gap: var(--gap);
+}
+.wall-status { padding: 20px; }
+.wall-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--video-bg);
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+  padding: 0;
+}
+.wall-no-recording {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--video-bg);
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+  padding: 0;
+  text-align: center;
+}
+.wall-no-recording-icon {
+  font-size: 32px;
+  opacity: 0.5;
+}
+.wall-tile {
+  position: relative;
+  background: var(--video-bg);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  aspect-ratio: 16 / 9;
+  flex: 0 0 var(--tile-w);
+  max-width: 100%;
+  border: 1px solid var(--border);
+}
+.wall-tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.wall-tile:fullscreen { border: 0; border-radius: 0; }
+.wall-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, transparent 60%, var(--scrim) 100%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.wall-tile:hover .wall-overlay,
+.wall-tile:focus-within .wall-overlay { opacity: 1; }
+.wall-bottom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.wall-name {
+  color: white;
+  font-weight: 600;
+  font-size: 14px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wall-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  pointer-events: auto;
+}
+.wall-actions button {
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+}
+.wall-actions button:hover { background: rgba(0, 0, 0, 0.8); }
+
+.cam {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.1s ease, border-color 0.1s ease;
+}
+.cam:hover { transform: translateY(-2px); border-color: var(--accent); }
+.cam-preview {
+  aspect-ratio: 16 / 9;
+  background: var(--video-bg);
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+.cam-preview img, .cam-preview video { width: 100%; height: 100%; object-fit: cover; }
+.cam-meta { padding: 12px 14px; }
+.cam-name { font-weight: 600; }
+.cam-loc { color: var(--muted); font-size: 13px; }
+.badges { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.badge.on { background: rgba(34, 197, 94, 0.15); color: var(--good); }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim-strong);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  z-index: 100;
+}
+.modal[hidden] { display: none; }
+.modal-body {
+  background: var(--panel);
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.modal-body > header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-body > header h2 { margin: 0; font-size: 18px; }
+.modal-body > header button.ghost { font-size: 24px; padding: 0 14px; }
+
+.ptz-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 60px);
+  grid-template-rows: repeat(3, 60px);
+  gap: 6px;
+  justify-content: center;
+}
+.ptz-pad button { padding: 0; font-size: 22px; }
+.ptz-pad .empty { visibility: hidden; }
+
+.ptz-actions { display: flex; flex-direction: column; gap: 8px; }
+
+.playback-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.playback-form input { font-size: 13px; padding: 6px 10px; }
+.segments { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
+.segments button {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  text-align: left;
+  font-weight: 400;
+  font-size: 13px;
+  padding: 8px 10px;
+}
+.segments button.active { background: var(--accent); color: white; }
+
+/* ---------- Floating PTZ panel (Live mode, single cam) ----------
+   Sits above the wall as an absolute-positioned panel. Drag the header
+   to move; the "×" closes it. */
+.ptz-modal {
+  position: fixed;
+  top: 80px;
+  right: 16px;
+  width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ptz-modal[hidden] { display: none; }
+.ptz-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border-strong);
+  cursor: grab;
+  user-select: none;
+}
+.ptz-modal.dragging .ptz-modal-header { cursor: grabbing; }
+.ptz-modal-header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ptz-modal-header button {
+  font-size: 20px;
+  padding: 0 8px;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.ptz-modal-header button:hover { color: var(--fg); }
+.ptz-modal-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ptz-modal-body h3 { margin: 0 0 4px; font-size: 13px; color: var(--muted); }
+
+/* Floating action button that re-opens the PTZ panel after the user
+   has dismissed it. Bottom-left, above the wall but below the modal. */
+.ptz-fab {
+  position: fixed;
+  left: calc(var(--sidebar-w, 280px) + 16px);
+  bottom: 16px;
+  z-index: 40;
+  min-width: 56px;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+.ptz-fab:hover { filter: brightness(1.1); }
+.ptz-fab[hidden] { display: none; }
+
+/* ---------- Users view ----------
+   Full-screen section that replaces the camera app while open. The
+   `#app` shell is left in the DOM under `hidden`; toggling between
+   views is a single attribute flip. */
+.users-view {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  z-index: 200;
+  overflow-y: auto;
+}
+.users-topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.users-topbar strong { font-size: 16px; }
+
+.users-body {
+  flex: 1;
+  padding: 20px;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  box-sizing: border-box;
+}
+
+.users-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.users-card h2 { margin: 0; font-size: 18px; }
+.users-card h3 { margin: 8px 0 4px; font-size: 14px; color: var(--muted); }
+
+.users-table { display: flex; flex-direction: column; gap: 4px; }
+.users-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 90px auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+.users-row.users-header {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 700;
+  padding-bottom: 4px;
+}
+.users-row:not(.users-header):not(.users-empty) {
+  background: var(--panel-2);
+}
+.users-row.users-empty { justify-content: center; padding: 20px; }
+.users-name { font-weight: 500; word-break: break-all; }
+.users-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.users-actions button {
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  color: var(--fg);
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.users-actions button:hover { border-color: var(--accent); }
+.users-actions button.danger { color: var(--danger); }
+.users-actions button.danger:hover { background: var(--danger); color: white; border-color: var(--danger); }
+.users-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+.users-actions button:disabled:hover { border-color: var(--border-strong); background: var(--panel); color: var(--fg); }
+
+.role-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.role-badge.role-admin { background: rgba(59, 130, 246, 0.18); color: var(--accent); }
+.role-badge.role-user { background: rgba(154, 163, 178, 0.15); color: var(--muted); }
+
+.users-form { display: flex; flex-direction: column; gap: 10px; max-width: 360px; }
+.users-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.users-form select {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font: inherit;
+  width: 100%;
+}
+.users-form button[type=submit] { align-self: flex-start; }
+.users-inline-status { font-size: 13px; }
+.users-inline-status.ok { color: var(--good); }
+
+button.primary {
+  background: var(--accent);
+  color: white;
+  border: 0;
+  border-radius: var(--radius);
+  padding: 8px 14px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.primary:hover { filter: brightness(1.1); }
+button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.sessions-list { display: flex; flex-direction: column; gap: 6px; }
+.sessions-group-title {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 700;
+}
+.sessions-group-hint { margin: 0 0 6px; font-size: 12px; }
+.session-row.session-row-expired { opacity: 0.65; }
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border-radius: 6px;
+}
+.session-row code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: var(--panel);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.session-row .session-meta { font-size: 12px; }
+.session-row button {
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  color: var(--fg);
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-left: auto;
+}
+.session-row button:hover { border-color: var(--danger); color: var(--danger); }
+.session-row button:disabled { opacity: 0.4; cursor: not-allowed; }
+.session-row button:disabled:hover { border-color: var(--border-strong); color: var(--fg); }
+
+/* New-user modal: dimmed backdrop + centered card. */
+.user-edit-modal {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+  padding: 20px;
+}
+.user-edit-modal[hidden] { display: none; }
+.user-edit-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+  width: 360px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.user-edit-card h2 { margin: 0; font-size: 18px; }
+.user-edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* Generic confirm/prompt/alert dialog — used to replace native
+   window.confirm / window.prompt / window.alert, which the browser
+   throttles after a few uses ("Prevent this page from creating
+   additional dialogs"). */
+.dlg-modal {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 400;
+  padding: 20px;
+}
+.dlg-modal[hidden] { display: none; }
+.dlg-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+  width: 380px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: var(--shadow);
+}
+.dlg-title { margin: 0; font-size: 18px; }
+.dlg-body { margin: 0; color: var(--fg); white-space: pre-wrap; }
+.dlg-input-wrap { display: flex; flex-direction: column; gap: 4px; }
+.dlg-input-wrap span { color: var(--muted); font-size: 13px; }
+.dlg-input-wrap input {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+}
+.dlg-input-wrap input:focus { outline: none; border-color: var(--accent); }
+
+/* Password reveal: wraps any <input type="password"> and overlays an eye
+   toggle on the right edge. The input keeps full width — the button is
+   absolutely positioned so layouts are unaffected. */
+.pw-wrap {
+  position: relative;
+  display: block;
+}
+.pw-wrap input[type="password"],
+.pw-wrap input[type="text"] {
+  padding-right: 40px;
+}
+.pw-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.pw-toggle:hover { color: var(--fg); background: var(--panel-2); }
+.pw-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pw-toggle svg { width: 18px; height: 18px; display: block; }
+
+/* Boot overlay: covers the viewport while the JS decides between login
+   and the app shell, so a logged-in user never sees the login screen
+   flash on a page refresh. Removed as soon as showApp/showLogin runs. */
+.boot-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.boot-overlay[hidden] { display: none !important; }
+.boot-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: boot-spin 0.8s linear infinite;
+}
+/* While the inline head script is deciding whether to show the login
+   screen or the app, hide every direct child of <body> except the boot
+   overlay. Without this, a logged-in user sees the login screen flash
+   for one frame before showApp() runs. */
+html.booting body > *:not(#boot) { display: none !important; }
+@keyframes boot-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  /* Neutralize decorative motion (the ~11 transitions, hover filters, modal
+     and sidebar animations) for users who ask for reduced motion. */
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Keep the loading spinner turning (a frozen spinner reads as a hang),
+     just slower than its default. */
+  .boot-spinner {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+.dlg-error { color: var(--danger); margin: 0; font-size: 13px; }
+.dlg-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+.ok { color: var(--good); }
+
+@media (max-width: 700px) {
+  .users-body { padding: 12px; gap: 14px; }
+  .users-card { padding: 14px; }
+  .users-row { grid-template-columns: 1fr 1fr 70px; }
+  .users-row .users-actions-col { grid-column: 1 / -1; }
+  .users-actions { justify-content: flex-start; }
+  .session-row { flex-wrap: wrap; }
+  .session-row button { margin-left: 0; }
+  .user-edit-modal { padding: 12px; }
+  .user-edit-card { padding: 16px; }
+  .dlg-modal { padding: 12px; }
+  .dlg-card { padding: 16px; }
+  /* On narrow phones the user table still has a lot to fit in each
+     cell — drop the per-button text down to a tighter size so the
+     four actions (Name, Promote, Password, Delete) don't wrap. */
+  .users-actions button { padding: 5px 8px; font-size: 12px; }
+}
+
+/* ---------- Upgrade prompt (Android TV / phone) ---------- */
+/* A non-intrusive floating banner that appears on Android devices when the
+   server has a build available. The user can tap "Download" to fetch the
+   APK (the system package installer takes over) or ✕ to dismiss for the
+   remainder of the session. */
+
+.upgrade-prompt {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translate(-50%, 24px);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 80;                /* below modals (100+) and user menu (60) wraps */
+  max-width: calc(100vw - 24px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.upgrade-prompt-shown {
+  transform: translate(-50%, 0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.upgrade-prompt-text {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.upgrade-prompt-icon {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.upgrade-prompt-main {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.upgrade-prompt-version {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.upgrade-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.upgrade-prompt-dl {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+.upgrade-prompt-dl:hover { filter: brightness(1.08); }
+.upgrade-prompt-dl:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.upgrade-prompt-dismiss {
+  padding: 6px 10px;
+  font-size: 16px;
+  line-height: 1;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.upgrade-prompt-dismiss:hover {
+  color: var(--fg);
+  background: var(--panel-2);
+}
+.upgrade-prompt-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 480px) {
+  .upgrade-prompt {
+    bottom: 10px;
+    gap: 10px;
+    padding: 10px 12px;
+    width: calc(100vw - 20px);
+  }
+  .upgrade-prompt-main { white-space: normal; }
+  .upgrade-prompt-version { display: block; }
+}

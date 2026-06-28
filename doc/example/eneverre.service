@@ -1,0 +1,80 @@
+# Example systemd unit for the Eneverre NVR API.
+#
+# Install:
+#   sudo install -m0755 eneverre /usr/local/bin/eneverre
+#   sudo install -d /etc/eneverre/cameras.d
+#   sudo install -m0644 doc/example/eneverre.ini /etc/eneverre/eneverre.ini
+#   sudo cp doc/example/cameras.d/*.ini /etc/eneverre/cameras.d/
+#   sudo install -m0644 doc/example/eneverre.service /etc/systemd/system/eneverre.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now eneverre
+#
+# Then check it:  systemctl status eneverre   /   journalctl -u eneverre -f
+#
+# Config is read from /etc/eneverre/eneverre.ini and /etc/eneverre/cameras.d/.
+# Persistent state is a single SQLite DB (it also holds the rotating MediaMTX
+# credentials) in /var/lib/eneverre, created and owned automatically via
+# StateDirectory.
+#
+# NOTE on file modes: DynamicUser=yes runs the service as a transient UID/GID,
+# so config files must stay readable by it (0644, as above). If eneverre.ini
+# holds secrets ([events] webhook_secret, MediaMTX details) on a multi-user
+# host, switch to a dedicated account instead: drop `DynamicUser=yes`, create
+# `eneverre` (e.g. `useradd --system --no-create-home --shell /usr/sbin/nologin
+# eneverre`), set `User=eneverre` / `Group=eneverre`, and
+# `chown root:eneverre /etc/eneverre/eneverre.ini && chmod 0640` it.
+
+[Unit]
+Description=Eneverre NVR API
+Documentation=https://github.com/matiasdelellis/eneverre-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/eneverre
+Restart=on-failure
+RestartSec=2
+
+# Run as a transient, isolated system user (no useradd needed). systemd creates
+# /var/lib/eneverre, owns it as that user, and keeps it across restarts.
+DynamicUser=yes
+StateDirectory=eneverre
+WorkingDirectory=/var/lib/eneverre
+Environment=ENEVERRE_DB_PATH=/var/lib/eneverre/eneverre.db
+
+# Admin user, seeded ONLY on first run (when the users table is empty). Change
+# the password, start once, then remove these lines (or override them with a
+# drop-in) — they are ignored once the user exists.
+Environment=ENEVERRE_ADMIN_USER=admin
+Environment=ENEVERRE_ADMIN_PASS=change-me
+
+# Log level (debug | info | warn | error). The access log is one line/request.
+Environment=ENEVERRE_LOG_LEVEL=info
+
+# --- Hardening ------------------------------------------------------------
+# The default listen port is 8080. To bind a privileged port (< 1024), add:
+#   AmbientCapabilities=CAP_NET_BIND_SERVICE
+#   CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# otherwise the empty CapabilityBoundingSet below drops all capabilities.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

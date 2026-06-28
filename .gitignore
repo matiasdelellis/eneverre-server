@@ -1,0 +1,14 @@
+# Build output
+/eneverre
+/eneverre.exe
+go/eneverre
+go/eneverre.exe
+/dist
+
+# Runtime data (config, sqlite db, mediamtx credentials)
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+*.log
