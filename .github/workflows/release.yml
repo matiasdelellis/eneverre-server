@@ -29,7 +29,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.26"
           cache: true
           cache-dependency-path: go/go.sum
 
@@ -55,9 +55,6 @@ jobs:
           - { target: windows-amd64, goos: windows, goarch: amd64 }
           - { target: windows-arm64, goos: windows, goarch: arm64 }
     steps:
-      - name: Ensure scripts dir exists
-        run: mkdir -p scripts
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -65,7 +62,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.26"
           cache: true
           cache-dependency-path: go/go.sum
 
