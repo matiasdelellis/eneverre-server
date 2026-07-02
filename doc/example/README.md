@@ -74,6 +74,11 @@ live = rtsp://username:password@camera_url:port/path
 playback = true
 width = 1920
 height = 1080
+; Optional: direct RTSP URL to the camera for two-way audio (ONVIF Profile T).
+; Unlike `live`, this must point at the camera itself — not MediaMTX — and is
+; never rewritten by the MediaMTX integration. Its presence enables the
+; push-to-talk endpoint.
+backchannel = rtsp://username:password@192.168.1.91:554/ch0
 
 ; The [thingino] section is optional. Its presence (specifically a
 ; thingino_api_key) is what enables the thumbnail and privacy capabilities;
@@ -103,6 +108,12 @@ privacy_y = 1600
    MediaMTX. Ignored without the integration.
  * **width / height:** Pixel dimensions, used to give the playback boxes the
    right aspect ratio (default 16×9).
+ * **backchannel:** Optional direct RTSP URL (with credentials) to the camera's
+   ONVIF Profile T two-way-audio backchannel. **Must point at the camera
+   itself**, not MediaMTX (which does not relay the backchannel), so it is kept
+   raw and never rewritten by the MediaMTX integration. Its presence enables the
+   `talk` capability and the `GET /api/camera/{id}/talk` push-to-talk WebSocket.
+   Never exposed in API responses.
 
 ### `[thingino]` keys (optional)
 

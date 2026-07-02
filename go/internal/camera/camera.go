@@ -21,6 +21,9 @@ type Capabilities struct {
 	Thumbnail bool `json:"thumbnail"`
 	Playback  bool `json:"playback"`
 	PTZ       bool `json:"ptz"`
+	// Talk is true when the camera INI defines a `backchannel` URL, enabling the
+	// two-way-audio (ONVIF Profile T) push-to-talk endpoint.
+	Talk bool `json:"talk"`
 }
 
 // Camera is the public-facing camera model. The Thingino credential fields are
@@ -43,6 +46,11 @@ type Camera struct {
 	// Private — never serialized in API responses.
 	ThinginoURL    string `json:"-"`
 	ThinginoAPIKey string `json:"-"`
+	// Backchannel is the direct RTSP URL (with credentials) used for two-way
+	// audio. It must point at the camera itself, not the MediaMTX republish, so
+	// it is stored raw and never rebuilt by WithMediaMTXURLs. Tagged json:"-" so
+	// the credentials never leak in API responses.
+	Backchannel string `json:"-"`
 
 	HomeX    float64 `json:"home_x"`
 	HomeY    float64 `json:"home_y"`
@@ -115,6 +123,7 @@ func loadOne(path string) (Camera, bool) {
 	rtsp := cam.Key("live").String()
 	webrtc := cam.Key("webrtc").String()
 	hls := cam.Key("hls").String()
+	backchannel := strings.TrimSpace(cam.Key("backchannel").String())
 
 	hasAPIKey := thingino["thingino_api_key"] != ""
 	ptz := strings.ToLower(strings.TrimSpace(thingino["ptz"])) == "true"
@@ -130,10 +139,12 @@ func loadOne(path string) (Camera, bool) {
 			Thumbnail: hasAPIKey,
 			Playback:  playback,
 			PTZ:       ptz,
+			Talk:      backchannel != "",
 		},
 		RTSP:           rtsp,
 		WebRTC:         webrtc,
 		HLS:            hls,
+		Backchannel:    backchannel,
 		Width:          cam.Key("width").MustInt(16),
 		Height:         cam.Key("height").MustInt(9),
 		ThinginoURL:    thingino["thingino_url"],

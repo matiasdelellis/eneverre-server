@@ -283,6 +283,42 @@ paths:
         '502':
           $ref: '#/components/responses/BadGateway'
 
+  /api/camera/{camera_id}/talk:
+    get:
+      summary: Push-to-talk WebSocket (two-way audio)
+      description: >
+        Upgrades to a WebSocket that relays client microphone audio to the
+        camera's ONVIF Profile T backchannel. Enabled only for cameras whose INI
+        defines a `backchannel` URL (`capabilities.talk = true`); at most one
+        session per camera. Because a browser cannot set an `Authorization`
+        header on a WebSocket upgrade, the access token is carried in the
+        `Sec-WebSocket-Protocol` header — the client offers `["eneverre-talk",
+        <token>]` and the server echoes only `eneverre-talk` — which keeps the
+        token out of the URL and access logs; a `?token=` query param and a
+        Bearer header are accepted as fallbacks. Auth is validated before the
+        upgrade. After the upgrade the client sends a JSON handshake
+        `{"sampleRate": N}` then binary mono S16LE PCM frames; once the camera
+        backchannel is live the server sends one text `{"status":"ready"}`, then
+        the socket is receive-only apart from keepalive pings (25s; the session
+        is dropped if no pong or audio arrives within 60s).
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: token
+          in: query
+          required: false
+          description: Access token (alternative to the Authorization header).
+          schema:
+            type: string
+      responses:
+        '101':
+          description: Switching Protocols — WebSocket established
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Two-way audio not available for this camera
+        '409':
+          description: An active talk session already exists for this camera
+
   /api/camera/{camera_id}/playback/list:
     get:
       summary: List recordings
@@ -1254,6 +1290,13 @@ components:
 
     NotFound:
       description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Message'
+
+    Unauthorized:
+      description: Missing or invalid credentials
       content:
         application/json:
           schema:

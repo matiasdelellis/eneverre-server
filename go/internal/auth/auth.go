@@ -46,7 +46,14 @@ func VerifyBearer(db *sql.DB, r *http.Request) *CurrentUser {
 	if !strings.HasPrefix(h, "Bearer ") {
 		return nil
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+	return VerifyToken(db, strings.TrimSpace(strings.TrimPrefix(h, "Bearer ")))
+}
+
+// VerifyToken authenticates a raw access token against the tokens table,
+// rejecting empty or expired tokens. It backs both VerifyBearer (header) and the
+// query-param path used by browser WebSockets, which cannot set an
+// Authorization header on the upgrade request.
+func VerifyToken(db *sql.DB, token string) *CurrentUser {
 	if token == "" {
 		return nil
 	}

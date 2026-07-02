@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bufio"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -40,6 +42,18 @@ func (r *statusRecorder) Flush() {
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack forwards to the underlying ResponseWriter so WebSocket upgrades (the
+// push-to-talk endpoint) work through the access-log middleware. The connection
+// is taken over by the caller, so the logged status stays at its default (the
+// handler never calls WriteHeader on a hijacked response).
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
+	}
+	return h.Hijack()
 }
 
 // accessLog logs one line per request at INFO (method, path, status, duration,

@@ -3,6 +3,7 @@ module eneverre
 go 1.26
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	golang.org/x/crypto v0.53.0
 	gopkg.in/ini.v1 v1.67.0
 	modernc.org/sqlite v1.53.0

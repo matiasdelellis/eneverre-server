@@ -32,6 +32,9 @@ response bodies on every data-bearing route).
   anything in `internal/mediamtx` or `handlers_auth.go:handleMediaMTXAuth`.
 - [`doc/UPDATES.md`](doc/UPDATES.md) — the auto-update protocol for the
   Android clients.
+- [`doc/TALK.md`](doc/TALK.md) — the two-way-audio (push-to-talk) WebSocket
+  protocol and the Android (Kotlin/OkHttp) client implementation guide. Read
+  this before touching `handlers_talk.go` or `internal/backchannel`.
 - [`doc/RELEASES.md`](doc/RELEASES.md) — release process, supported
   platforms, and how to verify a download.
 - [`doc/openapi.yaml`](doc/openapi.yaml) — machine-readable API spec;
@@ -85,6 +88,14 @@ All code lives under `go/` (module `eneverre`).
   `POST /api/auth` probe are in `doc/MEDIAMTX.md`.
 - `go/internal/thingino` — direct HTTP calls to Thingino cameras (`Move` for
   PTZ, `Thumb` for JPEG). Unreachable/non-2xx → caller maps to `502`.
+- `go/internal/backchannel` — two-way-audio (push-to-talk) to a camera's ONVIF
+  Profile T backchannel, a library port of the standalone `web2rtsp` PoC.
+  `Dial` opens the RTSP session (OPTIONS/DESCRIBE/SETUP/PLAY, Basic+Digest auth),
+  `Session.FeedPCM` takes native-rate mono S16LE and does anti-alias LPF →
+  linear resample to 8 kHz → G.711 (A-law/µ-law) → 160-sample RTP frames every
+  20 ms → RTSP interleaved (`$`-framing, channel 0). Hand-implemented RTSP/G.711/
+  RTP with the stdlib; only new external dep is `gorilla/websocket` (transport
+  used by the handler). Trace via `ENEVERRE_LOG_LEVEL=debug`.
 - `go/internal/events` — `Event` model (RFC3339-on-the-wire, unix-internally)
   plus record/list/get/delete. `RecordMotion` extends an overlapping row to
   the union of ranges.
@@ -180,6 +191,26 @@ MediaMTX auth and see request query strings.
   auto-move). `GET /api/cameras` reflects the current privacy state per camera.
 - `playback` talks to MediaMTX on `http://localhost:<playback_port>` — both
   must run on the same host. Unreachable upstreams surface as `502`.
+- **Two-way audio (push-to-talk).** `GET /api/camera/{id}/talk` upgrades to a
+  WebSocket that relays client mic audio to the camera's ONVIF backchannel
+  (see `internal/backchannel`). It is enabled only when the camera INI defines a
+  `backchannel` RTSP URL (→ `Capabilities.Talk`); that URL must reach the camera
+  directly, since MediaMTX does not relay backchannel. Auth (validated **before**
+  the upgrade, by `auth.VerifyToken`): the access token rides the
+  `Sec-WebSocket-Protocol` carrier — the browser offers `["eneverre-talk",
+  <token>]` and the server echoes only `eneverre-talk`, keeping the token out of
+  the URL and reverse-proxy logs — with a `?token=` query param and a Bearer
+  header as fallbacks. Sessions are one per camera — a second client gets `409`
+  — tracked in `App.talk` (guarded by `talkMu`; a nil placeholder reserves the
+  slot during the RTSP handshake). Wire protocol: client sends JSON
+  `{"sampleRate": N}` then binary S16LE PCM; once the RTSP session is live the
+  server sends one text `{"status":"ready"}` (so the UI switches
+  connecting→talking) and thereafter pings every 25s (drops the session if no
+  pong/audio within 60s, reclaiming the slot from dead clients). The browser
+  client is `static/js/util/talk-client.js`, wired to a hold-to-talk button
+  (pointer-capture, no leaked listeners) in the PTZ/control modal
+  (`static/js/views/ptz.js`). Note: WebSocket over HTTP/3 fails behind Caddy —
+  restrict it to `protocols h1 h2` (see the project memory note).
 
 ## Adding an API endpoint
 - Register the route in `server.go`'s `Handler()` with a method+pattern

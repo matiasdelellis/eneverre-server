@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"eneverre/internal/auth"
+	"eneverre/internal/backchannel"
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
 	"eneverre/internal/mediamtx"
@@ -54,6 +55,13 @@ type App struct {
 	// Empty when the [updates] section is not configured; in that case the
 	// /api/app/* endpoints answer 503.
 	updates map[string]*updates.Store
+
+	// talk tracks the live two-way-audio backchannel session per camera id.
+	// A camera is present in the map (possibly with a nil placeholder during
+	// RTSP setup) while a client is talking, so a second client is rejected.
+	// Guarded by talkMu since talk handlers run concurrently.
+	talkMu sync.Mutex
+	talk   map[string]*backchannel.Session
 }
 
 // Token-lifetime defaults, used when nothing (flag/env/[auth]) sets them.
@@ -92,6 +100,7 @@ func New(cfg *config.Config, db *sql.DB, creds *mediamtx.Store, cameras []camera
 		refreshTTL:         refreshTTL,
 		privacy:            make(map[string]bool),
 		updates:            updateStores,
+		talk:               make(map[string]*backchannel.Session),
 	}
 	// Precompute the embedded UI (ETag + gzip) so repeat loads revalidate
 	// cheaply instead of re-downloading. Only used when no on-disk dir wins.
@@ -157,6 +166,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/recalibrate", a.handlePTZRecalibrate)
 	mux.HandleFunc("POST /api/camera/{cam_id}/privacy", a.handlePrivacy)
 	mux.HandleFunc("GET /api/camera/{cam_id}/thumbnail", a.handleThumbnail)
+	mux.HandleFunc("GET /api/camera/{cam_id}/talk", a.handleTalk)
 	mux.HandleFunc("GET /api/camera/{cam_id}/playback/list", a.handlePlaybackList)
 	mux.HandleFunc("GET /api/camera/{cam_id}/playback/get", a.handlePlaybackGet)
 

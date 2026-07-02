@@ -3,6 +3,7 @@ import { get, set } from "../util/storage.js";
 import { getState, setLastPtzCam, on } from "../state.js";
 import { api, fetchCameras } from "../api.js";
 import { alertModal } from "../ui/dialog.js";
+import { createTalkClient } from "../util/talk-client.js";
 
 const STEP = 50;
 const PTZ_MODAL_POS_KEY = "eneverre.ptzModalPos";
@@ -61,7 +62,8 @@ function applyPtzModalPos() {
 export function showPtzModal(cam) {
   const modal = $("#ptz-modal");
   if (!modal) return;
-  $("#ptz-modal-title").textContent = `PTZ — ${cam.name || cam.id}`;
+  const kind = cam.capabilities?.ptz ? "PTZ" : "Control";
+  $("#ptz-modal-title").textContent = `${kind} — ${cam.name || cam.id}`;
   const body = $("#ptz-modal-body");
   body.innerHTML = "";
   body.appendChild(buildPtzPanel(cam));
@@ -82,7 +84,7 @@ function ptzFabVisible() {
   const { viewMode, wallFilter, lastPtzCam } = getState();
   if (viewMode !== "live" || wallFilter.type !== "cam") return false;
   if (!$("#ptz-modal")?.hidden) return false;
-  return lastPtzCam?.capabilities?.ptz === true;
+  return lastPtzCam?.capabilities?.ptz === true || lastPtzCam?.capabilities?.talk === true;
 }
 
 function setPtzFab(visible) {
@@ -115,7 +117,7 @@ export async function updatePtzModal() {
   }
   const cam = cams.find((c) => c.id === wallFilter.value) || null;
   setLastPtzCam(cam);
-  if (!cam || !cam.capabilities || !cam.capabilities.ptz) {
+  if (!cam || !cam.capabilities || !(cam.capabilities.ptz || cam.capabilities.talk)) {
     hidePtzModal();
     syncPtzFab();
     return;
@@ -126,8 +128,11 @@ export async function updatePtzModal() {
 
 function buildPtzPanel(cam) {
   const wrap = document.createElement("div");
-  wrap.innerHTML = `
-    <h3>PTZ</h3>
+  const hasPtz = cam.capabilities?.ptz === true;
+  const hasTalk = cam.capabilities?.talk === true;
+  let html = `<h3>${hasPtz ? "PTZ" : "Control"}</h3>`;
+  if (hasPtz) {
+    html += `
     <div class="ptz-pad">
       <span class="empty"></span>
       <button data-dx="0" data-dy="-${STEP}" title="Up">↑</button>
@@ -142,8 +147,16 @@ function buildPtzPanel(cam) {
     <div class="ptz-actions">
       <button data-go="home">Home</button>
       <button data-go="privacy">${privacyLabel(cam.privacy === true)}</button>
-    </div>
-  `;
+    </div>`;
+  }
+  if (hasTalk) {
+    html += `
+    <div class="ptz-talk">
+      <button type="button" class="talk-btn" data-talk>🎤 Hold to talk</button>
+    </div>`;
+  }
+  wrap.innerHTML = html;
+  if (hasTalk) wireTalkButton(wrap.querySelector("[data-talk]"), cam);
   wrap.addEventListener("click", async (e) => {
     const btn = e.target.closest("button");
     if (!btn) return;
@@ -169,6 +182,46 @@ function buildPtzPanel(cam) {
     }
   });
   return wrap;
+}
+
+// wireTalkButton turns the button into a press-and-hold push-to-talk control:
+// the mic streams while the pointer is held down and stops on release or a
+// server-side close. It uses pointer capture so the release is delivered even if
+// the pointer drifts off the button — no document-level listener to leak across
+// modal re-renders.
+function wireTalkButton(btn, cam) {
+  if (!btn) return;
+  const idle = "🎤 Hold to talk";
+  const connecting = "⏳ Connecting…";
+  const live = "🔴 Talking — go ahead";
+  const setState = (cls, text) => {
+    btn.classList.remove("connecting", "talking");
+    if (cls) btn.classList.add(cls);
+    btn.textContent = text;
+  };
+  const reset = () => setState(null, idle);
+  const client = createTalkClient(cam.id, {
+    onReady: () => { if (client.isActive()) setState("talking", live); },
+    onEnd: reset,
+  });
+  const begin = (e) => {
+    e.preventDefault();
+    if (client.isActive()) return;
+    try { btn.setPointerCapture(e.pointerId); } catch {}
+    setState("connecting", connecting);
+    client.start().catch((err) => {
+      reset();
+      alertModal(`Microphone/connection error: ${err.message || err}`, { title: "Talk error" });
+    });
+  };
+  const end = (e) => {
+    e.preventDefault();
+    try { if (e.pointerId != null) btn.releasePointerCapture(e.pointerId); } catch {}
+    client.stop();
+  };
+  btn.addEventListener("pointerdown", begin);
+  btn.addEventListener("pointerup", end);
+  btn.addEventListener("pointercancel", end);
 }
 
 function initPtzDrag() {
