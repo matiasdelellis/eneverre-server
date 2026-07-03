@@ -168,6 +168,59 @@ func TestBuildRTPPacket(t *testing.T) {
 	}
 }
 
+// --- AAC (RFC 3640 framing) -----------------------------------------------
+
+func TestAACRTPPayload(t *testing.T) {
+	au := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
+	p := aacRTPPayload(au)
+
+	// 2-byte AU-headers-length + one 2-byte AU-header + the AU.
+	if len(p) != 4+len(au) {
+		t.Fatalf("payload length = %d, want %d", len(p), 4+len(au))
+	}
+	// AU-headers-length is 16 bits (one 2-byte header): high byte 0, low byte 16.
+	if p[0] != 0x00 || p[1] != 16 {
+		t.Errorf("AU-headers-length = %#x %#x, want 0x00 0x10", p[0], p[1])
+	}
+	// AU-header: 13-bit size (left-shifted 3) with a 3-bit index of 0.
+	if got := binary.BigEndian.Uint16(p[2:4]); got != uint16(len(au))<<3 {
+		t.Errorf("AU-header = %#x, want %#x", got, uint16(len(au))<<3)
+	}
+	for i, b := range au {
+		if p[4+i] != b {
+			t.Errorf("AU byte[%d] = %#x, want %#x", i, p[4+i], b)
+		}
+	}
+}
+
+func TestIsADTS(t *testing.T) {
+	adts := []byte{0xFF, 0xF1, 0x00, 0x00, 0x00, 0x00, 0x00} // MPEG-4, no CRC
+	if !isADTS(adts) {
+		t.Error("isADTS should detect a valid ADTS syncword")
+	}
+	if isADTS([]byte{0xFF, 0x00, 0, 0, 0, 0, 0}) {
+		t.Error("isADTS should reject a bad second byte")
+	}
+	if isADTS([]byte{0xFF, 0xF1}) {
+		t.Error("isADTS should reject a too-short buffer")
+	}
+	// Raw AAC AU (no syncword) must not be mistaken for ADTS.
+	if isADTS([]byte{0x21, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00}) {
+		t.Error("isADTS should reject a raw access unit")
+	}
+}
+
+func TestADTSHeaderLen(t *testing.T) {
+	// Protection-absent bit set (…F1) → no CRC → 7-byte header.
+	if got := adtsHeaderLen([]byte{0xFF, 0xF1, 0, 0, 0, 0, 0}); got != 7 {
+		t.Errorf("adtsHeaderLen(no CRC) = %d, want 7", got)
+	}
+	// Protection-absent bit clear (…F0) → CRC present → 9-byte header.
+	if got := adtsHeaderLen([]byte{0xFF, 0xF0, 0, 0, 0, 0, 0, 0, 0}); got != 9 {
+		t.Errorf("adtsHeaderLen(CRC) = %d, want 9", got)
+	}
+}
+
 // --- SDP ------------------------------------------------------------------
 
 const sampleSDP = `v=0
@@ -233,6 +286,63 @@ func TestFindBackchannelMedia(t *testing.T) {
 	}
 }
 
+// aacSDP mirrors the real camera: a video track plus recvonly AAC, then three
+// send-capable backchannels (AAC, then G.711 µ-law and A-law).
+const aacSDP = `v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=Backchannel
+m=video 0 RTP/AVP 96
+a=rtpmap:96 H264/90000
+a=control:track1
+m=audio 0 RTP/AVP 97
+a=rtpmap:97 MPEG4-GENERIC/16000
+a=control:track2
+m=audio 0 RTP/AVP 97
+a=rtpmap:97 MPEG4-GENERIC/16000
+a=sendonly
+a=control:track3
+m=audio 0 RTP/AVP 0
+a=rtpmap:0 PCMU/8000
+a=sendonly
+a=control:track4
+m=audio 0 RTP/AVP 8
+a=rtpmap:8 PCMA/8000
+a=sendonly
+a=control:track5
+`
+
+func TestFindBackchannelMediaAAC(t *testing.T) {
+	medias := parseSDP([]byte(aacSDP))
+
+	// Auto-select still prefers G.711 (the first supported send-capable track).
+	m, err := findBackchannelMedia(medias, "")
+	if err != nil {
+		t.Fatalf("auto-select: %v", err)
+	}
+	if m.codecName != "PCMU" {
+		t.Errorf("auto-selected %q, want PCMU (G.711 preferred over AAC)", m.codecName)
+	}
+
+	// Forcing AAC picks the send-capable MPEG4-GENERIC track, not the recvonly one.
+	m, err = findBackchannelMedia(medias, "AAC")
+	if err != nil {
+		t.Fatalf("force AAC: %v", err)
+	}
+	if m.codecName != "MPEG4-GENERIC" || m.direction != "sendonly" || m.control != "track3" {
+		t.Errorf("AAC-selected %s/%s/%s, want MPEG4-GENERIC/sendonly/track3",
+			m.codecName, m.direction, m.control)
+	}
+	if m.clockRate != 16000 {
+		t.Errorf("AAC clockRate = %d, want 16000", m.clockRate)
+	}
+
+	// Forcing AAC where no AAC track exists → error.
+	g711Only := parseSDP([]byte(sampleSDP))
+	if _, err := findBackchannelMedia(g711Only, "AAC"); err == nil {
+		t.Error("findBackchannelMedia(AAC) should error when no AAC track exists")
+	}
+}
+
 func TestChooseCodec(t *testing.T) {
 	cases := []struct {
 		media     sdpMedia
@@ -241,9 +351,10 @@ func TestChooseCodec(t *testing.T) {
 	}{
 		{sdpMedia{codecName: "PCMA", payloads: []int{8}}, "PCMA", 8},
 		{sdpMedia{codecName: "PCMU", payloads: []int{0}}, "PCMU", 0},
-		{sdpMedia{codecName: "", payloads: []int{0}}, "PCMU", 0},   // infer from PT 0
-		{sdpMedia{codecName: "", payloads: []int{8}}, "PCMA", 8},   // infer from PT 8
-		{sdpMedia{codecName: "PCMA", payloads: []int{18}}, "PCMA", 18}, // dynamic PT
+		{sdpMedia{codecName: "", payloads: []int{0}}, "PCMU", 0},               // infer from PT 0
+		{sdpMedia{codecName: "", payloads: []int{8}}, "PCMA", 8},               // infer from PT 8
+		{sdpMedia{codecName: "PCMA", payloads: []int{18}}, "PCMA", 18},         // dynamic PT
+		{sdpMedia{codecName: "MPEG4-GENERIC", payloads: []int{97}}, "AAC", 97}, // AAC, dynamic PT
 	}
 	for _, c := range cases {
 		codec, pt := chooseCodec(&c.media)

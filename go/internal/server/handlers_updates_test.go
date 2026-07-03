@@ -82,8 +82,9 @@ func TestPublish_NoTokenConfigured_RejectsAllAuth(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "publish_token") {
 		t.Fatalf("expected error to mention publish_token, got %q", rec.Body.String())
 	}
-	// Even with valid admin Basic creds, no fallback is allowed.
-	rec = doPublish(t, a, "tv", "Basic YWRtaW46ZW5ldmVycmU=")
+	// Basic auth is rejected outright when no token is configured — there is
+	// no user/password fallback (the creds are never even validated).
+	rec = doPublish(t, a, "tv", "Basic YWRtaW46c29tZS1wYXNz") // admin:some-pass
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("admin creds must be rejected when no token: got %d %s", rec.Code, rec.Body.String())
 	}
@@ -100,8 +101,9 @@ func TestPublish_NoTokenConfigured_RejectsAllAuth(t *testing.T) {
 
 func TestPublish_TokenConfigured_RejectsUserPassword(t *testing.T) {
 	a, _ := withUpdatesApp(t, "secret-abc")
-	// Even with valid admin Basic creds, the token must be used.
-	rec := doPublish(t, a, "tv", "Basic YWRtaW46ZW5ldmVycmU=") // admin:eneverre
+	// Basic auth is never accepted for publish; only the token is (the creds
+	// are rejected without being validated).
+	rec := doPublish(t, a, "tv", "Basic YWRtaW46c29tZS1wYXNz") // admin:some-pass
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}

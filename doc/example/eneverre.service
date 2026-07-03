@@ -43,11 +43,15 @@ StateDirectory=eneverre
 WorkingDirectory=/var/lib/eneverre
 Environment=ENEVERRE_DB_PATH=/var/lib/eneverre/eneverre.db
 
-# Admin user, seeded ONLY on first run (when the users table is empty). Change
-# the password, start once, then remove these lines (or override them with a
-# drop-in) — they are ignored once the user exists.
-Environment=ENEVERRE_ADMIN_USER=admin
-Environment=ENEVERRE_ADMIN_PASS=change-me
+# Admin user. On first start (empty users table) the service creates an admin
+# with a RANDOM password and logs it once — read it with
+# `journalctl -u eneverre | grep 'generated password'`, then log in and change
+# it. No password is stored in this unit. For unattended provisioning you may
+# set a known one via a drop-in (`systemctl edit eneverre`):
+#   [Service]
+#   Environment=ENEVERRE_ADMIN_USER=admin
+#   Environment=ENEVERRE_ADMIN_PASS=your-secret
+# Either way it is used only while the users table is empty.
 
 # Log level (debug | info | warn | error). The access log is one line/request.
 Environment=ENEVERRE_LOG_LEVEL=info

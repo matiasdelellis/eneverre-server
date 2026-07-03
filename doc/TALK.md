@@ -17,6 +17,13 @@ to the camera over the RTSP backchannel. The client only sends audio; it does no
 receive camera audio on this socket (to *hear* the camera, use the normal live
 stream — HLS/WebRTC via MediaMTX).
 
+**Optional wideband (AAC).** When the camera advertises an AAC (`MPEG4-GENERIC`)
+backchannel and the client can encode AAC itself (Android's `MediaCodec` does
+this in hardware), the client may instead send **raw AAC-LC access units** and
+the server forwards them verbatim — no transcoding — to the camera's AAC track.
+This gives 16 kHz wideband audio instead of 8 kHz telephony. Select it with the
+handshake `codec` field (see below). The default remains G.711/PCM.
+
 ## Endpoint
 
 ```
@@ -32,10 +39,21 @@ Only cameras whose INI defines a `backchannel` URL support this. Discover it fro
 the camera list:
 
 ```
-GET /api/cameras   →   [ { "id": "galeria", "capabilities": { "talk": true, ... }, ... } ]
+GET /api/cameras   →   [ { "id": "galeria",
+                           "capabilities": { "talk": true, "talk_codecs": ["aac","g711"], ... },
+                           ... } ]
 ```
 
 Show the push-to-talk button only when `capabilities.talk == true`.
+
+`capabilities.talk_codecs` lists which codecs that camera actually accepts,
+discovered by probing its backchannel SDP at startup. Use it to pick the codec
+instead of guessing:
+
+- If the list contains `"aac"`, send AAC (`{"codec": "aac"}`) for 16 kHz wideband.
+- Otherwise (or if the list is **absent/empty** — the camera was unreachable when
+  the server probed it, or the probe hasn't finished), fall back to G.711 (omit
+  `codec`). Every backchannel camera supports G.711, so this is always safe.
 
 ## Authentication
 
@@ -81,6 +99,11 @@ Client                                  Server
 1. **Handshake** — immediately after the socket opens, send a **text** message
    with the capture sample rate: `{"sampleRate": 16000}`. Must be ≥ 8000; mono
    only. Prefer a low rate — see [Bandwidth](#bandwidth).
+   - To send AAC instead of PCM, add `"codec": "aac"`:
+     `{"sampleRate": 16000, "codec": "aac"}`. Then the binary messages you send
+     are **raw AAC-LC access units** (one AU per message), not PCM. The camera
+     must expose an AAC backchannel or the socket is closed with an RTSP error.
+     Omit `codec` (or send anything else) for the default G.711/PCM path.
 2. **Ready** — the server sends exactly one **text** message `{"status":"ready"}`
    once the RTSP backchannel is live (the dial takes ~1 s). Use it to switch the
    UI from "connecting" to "talking" so the user does not clip the first second
@@ -96,6 +119,8 @@ Client                                  Server
 
 ## Audio format
 
+Default (G.711) path:
+
 | Stage | Format |
 |---|---|
 | Client → server | **PCM S16LE, mono**, any sample rate **≥ 8000 Hz** (16000 recommended — see below) |
@@ -104,6 +129,22 @@ Client                                  Server
 
 Android's `AudioRecord` with `ENCODING_PCM_16BIT` already produces little-endian
 16-bit PCM, so its bytes can be sent verbatim — no conversion needed.
+
+AAC path (`"codec": "aac"`):
+
+| Stage | Format |
+|---|---|
+| Client → server | **raw AAC-LC access units**, mono, one AU per binary message (ADTS wrapping is tolerated — the server strips it) |
+| Server internal | RFC 3640 `MPEG4-GENERIC` / AAC-hbr framing only — **no transcoding** |
+| Server → camera | the same AAC-LC AUs, at the camera track's clock rate (e.g. 16 kHz) |
+
+The client's encoder must match the camera's advertised AAC config: **AAC-LC,
+mono, the track's sample rate** (typically 16000 Hz), 1024-sample frames. On
+Android, configure `MediaCodec` for `audio/mp4a-latm` with
+`AACObjectLC`, `KEY_SAMPLE_RATE = 16000`, `KEY_CHANNEL_COUNT = 1`, and send each
+output buffer (one access unit) as a binary WebSocket message. The `announced`
+`sampleRate` in the handshake is ignored on the AAC path (the AU rate is fixed by
+the encoder), but send it anyway for forward compatibility.
 
 ## Bandwidth
 
@@ -164,11 +205,27 @@ implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
 Request `RECORD_AUDIO` at runtime (API 23+) before starting.
 
+### Choosing the codec
+
+Read `capabilities.talk_codecs` from `GET /api/cameras` (see
+[Capability discovery](#capability-discovery)) and prefer AAC when the camera
+offers it — it gives 16 kHz wideband instead of 8 kHz telephony:
+
+```kotlin
+val useAac = camera.capabilities.talkCodecs?.contains("aac") == true
+```
+
+Pass that to the client (`aac = useAac`). When the list is absent or lacks
+`"aac"`, use the default PCM/G.711 path — every backchannel camera supports it.
+
 ### Push-to-talk client
 
 ```kotlin
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
 import android.media.MediaRecorder
 import okhttp3.*
 import okio.ByteString.Companion.toByteString
@@ -178,11 +235,14 @@ import kotlin.concurrent.thread
  * Streams the mic to wss://<host>/api/camera/<camId>/talk while active.
  * @param baseWsUrl e.g. "wss://nvr.delellis.com.ar"
  * @param token     the Bearer access token used for the REST API
+ * @param aac       true to encode AAC-LC on-device (only if the camera lists
+ *                  "aac" in capabilities.talk_codecs); false sends raw PCM/G.711
  */
 class TalkClient(
     private val baseWsUrl: String,
     private val camId: String,
     private val token: String,
+    private val aac: Boolean = false,
     private val onReady: () -> Unit = {},
     private val onEnd: (reason: String?) -> Unit = {},
 ) {
@@ -197,6 +257,7 @@ class TalkClient(
 
     private var ws: WebSocket? = null
     private var recorder: AudioRecord? = null
+    private var encoder: MediaCodec? = null   // AAC path only
     @Volatile private var running = false
 
     fun start() {
@@ -208,9 +269,14 @@ class TalkClient(
 
         ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                // 1. Handshake with the capture rate.
-                webSocket.send("""{"sampleRate": $SAMPLE_RATE}""")
-                startRecording(webSocket)
+                // 1. Handshake: announce the rate, and the codec when sending AAC.
+                if (aac) {
+                    webSocket.send("""{"sampleRate": $SAMPLE_RATE, "codec": "aac"}""")
+                    startRecordingAAC(webSocket)
+                } else {
+                    webSocket.send("""{"sampleRate": $SAMPLE_RATE}""")
+                    startRecordingPCM(webSocket)
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -233,8 +299,9 @@ class TalkClient(
         })
     }
 
+    /** Default path: stream raw mono S16LE PCM; the server resamples + encodes G.711. */
     @Suppress("MissingPermission")
-    private fun startRecording(webSocket: WebSocket) {
+    private fun startRecordingPCM(webSocket: WebSocket) {
         val minBuf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
@@ -257,11 +324,73 @@ class TalkClient(
         }
     }
 
+    /**
+     * AAC path: encode AAC-LC on-device with MediaCodec and send one raw access
+     * unit per WebSocket message; the server forwards them untranscoded. The
+     * format (AAC-LC, mono, SAMPLE_RATE) must match the camera's MPEG4-GENERIC
+     * track — for these cameras that is 16 kHz (config=1408).
+     */
+    @Suppress("MissingPermission")
+    private fun startRecordingAAC(webSocket: WebSocket) {
+        val minBuf = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+        )
+        recorder = AudioRecord(
+            MediaRecorder.AudioSource.MIC,
+            SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+            minBuf
+        ).also { it.startRecording() }
+
+        val format = MediaFormat.createAudioFormat(
+            MediaFormat.MIMETYPE_AUDIO_AAC, SAMPLE_RATE, 1
+        ).apply {
+            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_BIT_RATE, 32000)   // plenty for 16 kHz voice
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, minBuf)
+        }
+        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
+            configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            start()
+        }
+        encoder = codec
+        running = true
+
+        thread(name = "talk-aac") {
+            val info = MediaCodec.BufferInfo()
+            while (running) {
+                // Feed mic PCM into the encoder.
+                val inIdx = codec.dequeueInputBuffer(10_000)
+                if (inIdx >= 0) {
+                    val inBuf = codec.getInputBuffer(inIdx)!!.also { it.clear() }
+                    val n = recorder?.read(inBuf, inBuf.capacity()) ?: -1
+                    codec.queueInputBuffer(inIdx, 0, maxOf(n, 0), 0, 0)
+                }
+                // Drain encoded AAC access units; one per WebSocket message.
+                var outIdx = codec.dequeueOutputBuffer(info, 0)
+                while (outIdx >= 0) {
+                    // The first output is the AudioSpecificConfig (CSD) — not audio.
+                    val isConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+                    if (info.size > 0 && !isConfig) {
+                        val outBuf = codec.getOutputBuffer(outIdx)!!
+                        val au = ByteArray(info.size)
+                        outBuf.position(info.offset)
+                        outBuf.get(au)
+                        webSocket.send(au.toByteString())
+                    }
+                    codec.releaseOutputBuffer(outIdx, false)
+                    outIdx = codec.dequeueOutputBuffer(info, 0)
+                }
+            }
+        }
+    }
+
     /** Idempotent; safe to call from any callback or on button release. */
     fun stop() {
         running = false
         recorder?.apply { runCatching { stop() }; release() }
         recorder = null
+        encoder?.apply { runCatching { stop() }; release() }
+        encoder = null
         ws?.close(1000, "user released")
         ws = null
     }
@@ -275,6 +404,7 @@ val talk = TalkClient(
     baseWsUrl = "wss://nvr.delellis.com.ar",
     camId = camera.id,
     token = session.accessToken,
+    aac = camera.capabilities.talkCodecs?.contains("aac") == true,
     onReady = { runOnUiThread { button.text = "🔴 Talking — go ahead" } },
     onEnd = { runOnUiThread { button.text = "🎤 Hold to talk" } },
 )
@@ -300,8 +430,13 @@ Same behaviour as the Kotlin client above.
 ```java
 import android.media.AudioFormat;
 import android.media.AudioRecord;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
 import android.media.MediaRecorder;
 import androidx.annotation.Nullable;
+import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.concurrent.TimeUnit;
 import okhttp3.*;
 import okio.ByteString;
@@ -320,6 +455,7 @@ public class TalkClient {
     private final String baseWsUrl;   // e.g. "wss://nvr.delellis.com.ar"
     private final String camId;
     private final String token;       // Bearer access token used for the REST API
+    private final boolean aac;        // true → encode AAC-LC on-device; false → PCM/G.711
     private final Listener listener;
 
     private final OkHttpClient client = new OkHttpClient.Builder()
@@ -329,12 +465,14 @@ public class TalkClient {
 
     private WebSocket ws;
     private AudioRecord recorder;
+    private MediaCodec encoder;       // AAC path only
     private volatile boolean running;
 
-    public TalkClient(String baseWsUrl, String camId, String token, Listener listener) {
+    public TalkClient(String baseWsUrl, String camId, String token, boolean aac, Listener listener) {
         this.baseWsUrl = baseWsUrl;
         this.camId = camId;
         this.token = token;
+        this.aac = aac;
         this.listener = listener;
     }
 
@@ -348,9 +486,14 @@ public class TalkClient {
         ws = client.newWebSocket(request, new WebSocketListener() {
             @Override
             public void onOpen(WebSocket webSocket, Response response) {
-                // 1. Handshake with the capture rate.
-                webSocket.send("{\"sampleRate\": " + SAMPLE_RATE + "}");
-                startRecording(webSocket);
+                // 1. Handshake: announce the rate, and the codec when sending AAC.
+                if (aac) {
+                    webSocket.send("{\"sampleRate\": " + SAMPLE_RATE + ", \"codec\": \"aac\"}");
+                    startRecordingAAC(webSocket);
+                } else {
+                    webSocket.send("{\"sampleRate\": " + SAMPLE_RATE + "}");
+                    startRecordingPCM(webSocket);
+                }
             }
 
             @Override
@@ -380,8 +523,9 @@ public class TalkClient {
         });
     }
 
+    /** Default path: stream raw mono S16LE PCM; the server resamples + encodes G.711. */
     @SuppressWarnings("MissingPermission")
-    private void startRecording(final WebSocket webSocket) {
+    private void startRecordingPCM(final WebSocket webSocket) {
         int minBuf = AudioRecord.getMinBufferSize(
                 SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
         recorder = new AudioRecord(
@@ -404,6 +548,68 @@ public class TalkClient {
         }, "talk-mic").start();
     }
 
+    /**
+     * AAC path: encode AAC-LC on-device and send one raw access unit per message;
+     * the server forwards them untranscoded. The format (AAC-LC, mono, SAMPLE_RATE)
+     * must match the camera's MPEG4-GENERIC track — 16 kHz for these cameras.
+     */
+    @SuppressWarnings("MissingPermission")
+    private void startRecordingAAC(final WebSocket webSocket) {
+        int minBuf = AudioRecord.getMinBufferSize(
+                SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        recorder = new AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                minBuf);
+        recorder.startRecording();
+
+        MediaFormat format = MediaFormat.createAudioFormat(
+                MediaFormat.MIMETYPE_AUDIO_AAC, SAMPLE_RATE, 1);
+        format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+        format.setInteger(MediaFormat.KEY_BIT_RATE, 32000);   // plenty for 16 kHz voice
+        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, minBuf);
+        try {
+            encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
+        } catch (IOException e) {
+            stop();
+            listener.onEnd("AAC encoder unavailable");
+            return;
+        }
+        encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        encoder.start();
+        running = true;
+
+        final MediaCodec codec = encoder;
+        new Thread(() -> {
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            while (running) {
+                // Feed mic PCM into the encoder.
+                int inIdx = codec.dequeueInputBuffer(10_000);
+                if (inIdx >= 0) {
+                    ByteBuffer inBuf = codec.getInputBuffer(inIdx);
+                    inBuf.clear();
+                    int n = recorder != null ? recorder.read(inBuf, inBuf.capacity()) : -1;
+                    codec.queueInputBuffer(inIdx, 0, Math.max(n, 0), 0, 0);
+                }
+                // Drain encoded AAC access units; one per WebSocket message.
+                int outIdx = codec.dequeueOutputBuffer(info, 0);
+                while (outIdx >= 0) {
+                    // The first output is the AudioSpecificConfig (CSD) — not audio.
+                    boolean isConfig = (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
+                    if (info.size > 0 && !isConfig) {
+                        ByteBuffer outBuf = codec.getOutputBuffer(outIdx);
+                        byte[] au = new byte[info.size];
+                        outBuf.position(info.offset);
+                        outBuf.get(au);
+                        webSocket.send(ByteString.of(au));
+                    }
+                    codec.releaseOutputBuffer(outIdx, false);
+                    outIdx = codec.dequeueOutputBuffer(info, 0);
+                }
+            }
+        }, "talk-aac").start();
+    }
+
     /** Idempotent; safe to call from any callback or on button release. */
     public void stop() {
         running = false;
@@ -411,6 +617,11 @@ public class TalkClient {
             try { recorder.stop(); } catch (IllegalStateException ignored) {}
             recorder.release();
             recorder = null;
+        }
+        if (encoder != null) {
+            try { encoder.stop(); } catch (IllegalStateException ignored) {}
+            encoder.release();
+            encoder = null;
         }
         if (ws != null) {
             ws.close(1000, "user released");
@@ -423,10 +634,13 @@ public class TalkClient {
 Button hookup (hold-to-talk):
 
 ```java
+boolean useAac = camera.getCapabilities().getTalkCodecs() != null
+        && camera.getCapabilities().getTalkCodecs().contains("aac");
 TalkClient talk = new TalkClient(
         "wss://nvr.delellis.com.ar",
         camera.getId(),
         session.getAccessToken(),
+        useAac,
         new TalkClient.Listener() {
             @Override public void onReady() {
                 runOnUiThread(() -> button.setText("🔴 Talking — go ahead"));
@@ -457,6 +671,12 @@ button.setOnTouchListener((v, event) -> {
 - **Wait for `ready` before speaking.** The `onReady` callback marks the moment
   the camera is actually playing your audio; speaking earlier clips the start.
 - **Show the button only when `capabilities.talk` is true** (from `/api/cameras`).
+- **Prefer AAC only when `capabilities.talk_codecs` contains `"aac"`.** Otherwise
+  use PCM/G.711 — it always works. If you send AAC to a camera without an AAC
+  backchannel the server closes the socket with an `RTSP error`.
+- **AAC: one raw access unit per binary message**, AAC-LC / mono / same rate as
+  the camera track (16 kHz here). Don't prepend ADTS (the server tolerates it but
+  raw AUs from `MediaCodec` are what you want) and skip the codec-config buffer.
 - **One session per camera** — expect `409` if someone else is already talking.
 - **Half-duplex** — this socket is send-only. Keep the live view playing to hear
   the camera.

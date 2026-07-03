@@ -24,6 +24,12 @@ type Capabilities struct {
 	// Talk is true when the camera INI defines a `backchannel` URL, enabling the
 	// two-way-audio (ONVIF Profile T) push-to-talk endpoint.
 	Talk bool `json:"talk"`
+	// TalkCodecs lists the push-to-talk codecs the camera accepts, discovered by
+	// probing its backchannel SDP at startup: "aac" (MPEG4-GENERIC, wideband) and
+	// "g711" (PCMA/PCMU, telephony). Empty when Talk is false or the probe has not
+	// completed / the camera was unreachable — in which case clients should assume
+	// G.711. Omitted from JSON when empty.
+	TalkCodecs []string `json:"talk_codecs,omitempty"`
 }
 
 // Camera is the public-facing camera model. The Thingino credential fields are

@@ -62,6 +62,12 @@ type App struct {
 	// Guarded by talkMu since talk handlers run concurrently.
 	talkMu sync.Mutex
 	talk   map[string]*backchannel.Session
+
+	// talkCodecs holds the push-to-talk codecs each camera accepts, discovered by
+	// probing its backchannel SDP once at startup (see seedTalkCodecs). Guarded by
+	// talkCodecsMu since the background probe writes it while /api/cameras reads.
+	talkCodecsMu sync.RWMutex
+	talkCodecs   map[string][]string
 }
 
 // Token-lifetime defaults, used when nothing (flag/env/[auth]) sets them.
@@ -101,6 +107,7 @@ func New(cfg *config.Config, db *sql.DB, creds *mediamtx.Store, cameras []camera
 		privacy:            make(map[string]bool),
 		updates:            updateStores,
 		talk:               make(map[string]*backchannel.Session),
+		talkCodecs:         make(map[string][]string),
 	}
 	// Precompute the embedded UI (ETag + gzip) so repeat loads revalidate
 	// cheaply instead of re-downloading. Only used when no on-disk dir wins.
@@ -110,7 +117,36 @@ func New(cfg *config.Config, db *sql.DB, creds *mediamtx.Store, cameras []camera
 	// Seed live privacy state in the background — the slow heartbeat must not
 	// delay serving, and any camera that's unreachable just stays at false.
 	go a.seedPrivacy()
+	// Discover per-camera talk codecs in the background, for the same reason: the
+	// RTSP probe must not delay serving, and unreachable cameras just report no
+	// codecs (clients then assume G.711).
+	go a.seedTalkCodecs()
 	return a
+}
+
+// seedTalkCodecs probes each backchannel-capable camera once to discover which
+// push-to-talk codecs it accepts, so /api/cameras can tell clients whether AAC
+// is available instead of leaving them to guess. Cameras are probed
+// concurrently; failures (unreachable / auth) are logged and leave the list
+// empty, which clients treat as G.711-only.
+func (a *App) seedTalkCodecs() {
+	for i := range a.cameras {
+		c := a.cameras[i]
+		if !c.Capabilities.Talk || c.Backchannel == "" {
+			continue
+		}
+		go func() {
+			codecs, err := backchannel.ProbeCodecs(c.Backchannel)
+			if err != nil {
+				slog.Warn("talk codec probe failed", "camera", c.ID, "err", err)
+				return
+			}
+			a.talkCodecsMu.Lock()
+			a.talkCodecs[c.ID] = codecs
+			a.talkCodecsMu.Unlock()
+			slog.Info("talk codecs discovered", "camera", c.ID, "codecs", codecs)
+		}()
+	}
 }
 
 // seedPrivacy queries each privacy-capable camera's slow heartbeat once to
@@ -301,11 +337,14 @@ func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
 	// this is the public view.
 	creds := a.creds.Current()
 	a.privacyMu.RLock()
+	a.talkCodecsMu.RLock()
 	out := make([]camera.Camera, len(a.cameras))
 	for i, c := range a.cameras {
 		out[i] = c.WithMediaMTXURLs(a.cfg, creds)
 		out[i].Privacy = a.privacy[c.ID]
+		out[i].Capabilities.TalkCodecs = a.talkCodecs[c.ID]
 	}
+	a.talkCodecsMu.RUnlock()
 	a.privacyMu.RUnlock()
 	writeJSON(w, http.StatusOK, out)
 }

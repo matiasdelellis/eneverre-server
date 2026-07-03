@@ -59,7 +59,88 @@ sha256sum -c eneverre-0.2.0-linux-amd64.tar.gz.sha256  # downloaded separately
 ```
 
 For a deployable install, follow the systemd steps in
-[`doc/example/README.md`](example/README.md).
+[`doc/example/README.md`](example/README.md), or use the install script
+below.
+
+## Installing with `install.sh`
+
+[`scripts/install.sh`](../scripts/install.sh) automates the download →
+verify → install flow above for Linux and macOS (Windows is not
+supported). It fetches the correct tarball for the host's OS/arch from
+the GitHub Releases of `matiasdelellis/eneverre-server`, checks its
+SHA-256, and installs the binary — replacing an existing one **atomically**
+(staged next to the target, then `rename(2)`d over it), so an update is
+safe even while the service is running.
+
+It needs only `bash`, `curl` and `tar`; `sha256sum` (or `shasum` on
+macOS) is used for the default verification.
+
+### Common invocations
+
+```bash
+# Install the latest release to /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/matiasdelellis/eneverre-server/main/scripts/install.sh | sudo bash
+
+# Same, but from a checked-out copy
+sudo bash scripts/install.sh
+
+# Update to the latest release (just run it again)
+sudo bash install.sh
+
+# Install a specific version (a bare number is accepted: 1.0.0 -> v1.0.0)
+sudo bash install.sh --version v1.0.0
+
+# Install and wire up the systemd service in one step (Linux only)
+sudo bash install.sh --install-service
+
+# See what would happen without writing anything
+sudo bash install.sh --dry-run
+
+# Remove the binary, unit, and stop the service (keeps config + state)
+sudo bash install.sh --uninstall
+```
+
+### Flags
+
+| Flag | Effect |
+| ---- | ------ |
+| `--version <tag>`   | Install a specific release instead of the latest. A leading `v` is added if omitted. |
+| `--list`            | Print the last few release tags and exit. |
+| `--target-dir <dir>`| Install the binary somewhere other than `/usr/local/bin`. |
+| `--install-service` | Also install `/etc/systemd/system/eneverre.service`, then `enable` + `start` it. Linux only, needs root. Preserves an existing unit unless `--force`. |
+| `--force`           | Overwrite an existing systemd unit when `--install-service` is given. |
+| `--no-verify`       | Skip the SHA-256 check (not recommended). |
+| `--dry-run`         | Show every step without writing anything. Works with `--uninstall` too. |
+| `--uninstall`       | Stop + disable the service, remove the unit and the binary. |
+| `-y`, `--yes`       | Skip the uninstall confirmation prompt (for non-interactive runs). |
+| `-h`, `--help`      | Show usage. |
+
+### Notes
+
+* **Permissions.** The script writes to `/usr/local/bin` and (with
+  `--install-service`) `/etc/systemd/system` and `/etc/eneverre`, so it
+  normally needs `sudo`. It fails fast with an actionable message if it
+  can't write.
+* **Config seeding.** On first `--install-service`, the script creates
+  `/etc/eneverre/` with the example `eneverre.ini` and an empty
+  `cameras.d/` — both are required for the service to start. Add your
+  cameras under `/etc/eneverre/cameras.d/` and `systemctl restart eneverre`.
+* **Admin password.** On a first install the service creates an `admin`
+  user with a random password and logs it once; the script prints it
+  after starting the service (or read it later with
+  `journalctl -u eneverre | grep 'generated password'`). Log in and change
+  it. To pick the password yourself, set `ENEVERRE_ADMIN_PASS` before the
+  first start (e.g. via `systemctl edit eneverre`).
+* **Existing config is never overwritten.** Re-running `--install-service`
+  keeps your `eneverre.ini` and `cameras.d/` as they are, and `--uninstall`
+  leaves `/etc/eneverre/` (config) and `/var/lib/eneverre/` (state) in
+  place — remove them by hand for a fully clean uninstall.
+* **Updating a running service.** Re-running the script replaces the
+  binary atomically but does **not** restart the service unless you pass
+  `--install-service`; it prints a reminder to
+  `sudo systemctl restart eneverre`.
+* **Piping into `sudo bash`** trusts the script served over TLS by
+  GitHub. If you prefer, download it first, read it, then run it.
 
 ## Local reproduction
 

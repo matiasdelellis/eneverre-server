@@ -34,6 +34,11 @@ const (
 	FrameSamples = 160
 )
 
+// AACFrameSamples is the number of PCM samples one AAC-LC access unit
+// represents (the AAC-hbr frame length). It is the RTP timestamp increment per
+// forwarded AU in the AAC passthrough path.
+const AACFrameSamples = 1024
+
 // ----- G.711 encoding (CCITT reference implementations) -----
 
 var segAEnd = [8]int{0x1F, 0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF}
@@ -136,6 +141,37 @@ func buildRTPPacket(pt byte, seq uint16, ts uint32, ssrc uint32, marker bool, pa
 	binary.BigEndian.PutUint32(pkt[8:12], ssrc)
 	copy(pkt[12:], payload)
 	return pkt
+}
+
+// ----- AAC (RFC 3640 MPEG4-GENERIC / AAC-hbr) framing -----
+
+const adtsHeaderSize = 7
+
+// isADTS reports whether b starts with an ADTS syncword. Android's MediaCodec
+// emits raw access units, but some clients wrap each frame in ADTS; RTP
+// MPEG4-GENERIC carries raw AUs, so an ADTS header must be stripped first.
+func isADTS(b []byte) bool {
+	return len(b) >= adtsHeaderSize && b[0] == 0xFF && b[1]&0xF6 == 0xF0
+}
+
+// adtsHeaderLen returns the ADTS header length: 9 bytes when a CRC is present
+// (protection-absent bit = 0), 7 otherwise.
+func adtsHeaderLen(b []byte) int {
+	if b[1]&0x01 == 0 {
+		return 9
+	}
+	return adtsHeaderSize
+}
+
+// aacRTPPayload wraps one raw AAC access unit in a single-AU RFC 3640 AAC-hbr
+// payload: a 2-byte AU-headers-length (16 bits) followed by one 2-byte AU-header
+// (13-bit size + 3-bit index=0), then the AU. Matches sizelength=13;indexlength=3.
+func aacRTPPayload(au []byte) []byte {
+	payload := make([]byte, 4+len(au))
+	payload[1] = 16 // AU-headers-length, in bits
+	binary.BigEndian.PutUint16(payload[2:4], uint16(len(au))<<3)
+	copy(payload[4:], au)
+	return payload
 }
 
 // ----- RTSP client -----
@@ -589,6 +625,16 @@ func findBackchannelMedia(medias []sdpMedia, forceCodec string) (*sdpMedia, erro
 		return m.codecName == "PCMA" || m.codecName == "PCMU"
 	}
 
+	if forceCodec == "AAC" {
+		for _, m := range medias {
+			if m.mediaType == "audio" && sendable(m) &&
+				(m.codecName == "MPEG4-GENERIC" || m.codecName == "AAC") {
+				return &m, nil
+			}
+		}
+		return nil, fmt.Errorf("no send-capable AAC audio track in SDP")
+	}
+
 	if forceCodec != "" {
 		for _, m := range medias {
 			if m.mediaType == "audio" && sendable(m) && strings.EqualFold(m.codecName, forceCodec) {
@@ -626,6 +672,8 @@ func chooseCodec(m *sdpMedia) (codec string, pt byte) {
 		return "PCMA", pt
 	case "PCMU":
 		return "PCMU", pt
+	case "MPEG4-GENERIC", "AAC":
+		return "AAC", pt
 	}
 	if len(m.payloads) > 0 {
 		switch m.payloads[0] {
@@ -731,17 +779,70 @@ type Session struct {
 	*rtspClient
 	codec         string
 	pt            byte
+	clockRate     int
 	uri           string
-	audioIn       chan []int16
+	audioIn       chan []int16 // G.711 path: native-rate PCM to resample + encode
+	auIn          chan []byte  // AAC path: raw access units to forward
 	stop          chan struct{}
 	done          chan struct{}
 	keepaliveDone chan struct{}
 }
 
+// ProbeCodecs opens a short-lived RTSP session (OPTIONS + DESCRIBE with the
+// ONVIF backchannel Require header) and returns the client-facing talk codec
+// labels for every send-capable audio track the camera advertises: "aac" for an
+// MPEG4-GENERIC track, "g711" for PCMA/PCMU. Labels are deduplicated and ordered
+// as they appear in the SDP. No RTP is set up; the connection is closed before
+// returning. Used at startup to populate camera capabilities so clients need not
+// guess which codecs a camera accepts.
+func ProbeCodecs(rawURL string) ([]string, error) {
+	c, err := dialRTSP(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	defer c.conn.Close()
+
+	uri := c.baseURL.RequestURI()
+	if uri == "" {
+		uri = "/"
+	}
+	if err := c.options(uri); err != nil {
+		return nil, fmt.Errorf("OPTIONS: %w", err)
+	}
+	sdpRaw, err := c.describe(uri)
+	if err != nil {
+		return nil, fmt.Errorf("DESCRIBE: %w", err)
+	}
+
+	var codecs []string
+	seen := map[string]bool{}
+	for _, m := range parseSDP(sdpRaw) {
+		if m.mediaType != "audio" || (m.direction != "sendonly" && m.direction != "sendrecv") {
+			continue
+		}
+		var label string
+		switch m.codecName {
+		case "MPEG4-GENERIC", "AAC":
+			label = "aac"
+		case "PCMA", "PCMU":
+			label = "g711"
+		default:
+			continue
+		}
+		if !seen[label] {
+			seen[label] = true
+			codecs = append(codecs, label)
+		}
+	}
+	return codecs, nil
+}
+
 // Dial opens the RTSP backchannel to rawURL (rtsp://user:pass@host:port/path)
-// and starts the 20 ms RTP send loop. forceCodec may be "PCMA"/"PCMU" to pin the
-// codec, or "" to auto-select from the SDP. The returned Session sends G.711
-// silence until the caller starts feeding audio.
+// and starts the RTP send loop. forceCodec may be "PCMA"/"PCMU" to pin a G.711
+// track, "AAC" to pin an MPEG4-GENERIC track (raw AUs are fed via FeedAU), or ""
+// to auto-select G.711 from the SDP. In the G.711 path the returned Session
+// sends silence until the caller feeds audio; in the AAC path it stays quiet
+// until the first AU arrives.
 func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 	c, err := dialRTSP(rawURL)
 	if err != nil {
@@ -750,7 +851,6 @@ func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 
 	s := &Session{
 		rtspClient: c,
-		audioIn:    make(chan []int16, 64),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 	}
@@ -789,6 +889,7 @@ func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 	codec, pt := chooseCodec(bcMedia)
 	s.codec = codec
 	s.pt = pt
+	s.clockRate = bcMedia.clockRate
 
 	controlURL := resolveControlURL(c.baseURL, bcMedia.control)
 	transport := "RTP/AVP/TCP;unicast;interleaved=0-1"
@@ -811,12 +912,21 @@ func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 	s.keepaliveDone = make(chan struct{})
 	go keepalive(c, uri, s.keepaliveDone)
 
-	go s.sendLoop()
+	if codec == "AAC" {
+		s.auIn = make(chan []byte, 64)
+		go s.sendLoopAAC()
+	} else {
+		s.audioIn = make(chan []int16, 64)
+		go s.sendLoop()
+	}
 
-	slog.Debug("backchannel live", "codec", codec, "pt", pt)
+	slog.Debug("backchannel live", "codec", codec, "pt", pt, "clock", s.clockRate)
 
 	return s, nil
 }
+
+// Codec returns the negotiated backchannel codec: "PCMA", "PCMU", or "AAC".
+func (s *Session) Codec() string { return s.codec }
 
 func (s *Session) sendLoop() {
 	defer close(s.done)
@@ -888,6 +998,56 @@ func (s *Session) FeedPCM(pcm []byte, nativeRate int) {
 	case s.audioIn <- samples:
 	default:
 		slog.Debug("backchannel buffer full, dropping samples", "n", len(samples))
+	}
+}
+
+// sendLoopAAC forwards raw AAC access units to the camera. Unlike the G.711
+// loop it is not clocked: push-to-talk audio arrives in real time from the
+// client's encoder, so each AU is wrapped in RFC 3640 AAC-hbr framing and sent
+// as it comes, with the RTP timestamp advanced by one AAC frame (1024 samples).
+func (s *Session) sendLoopAAC() {
+	defer close(s.done)
+
+	ssrc := rand.Uint32()
+	seq := uint16(rand.Intn(65536))
+	ts := uint32(rand.Intn(65536))
+
+	for {
+		select {
+		case <-s.stop:
+			return
+		case au := <-s.auIn:
+			if isADTS(au) {
+				au = au[adtsHeaderLen(au):]
+			}
+			if len(au) == 0 {
+				continue
+			}
+			packet := buildRTPPacket(s.pt, seq, ts, ssrc, true, aacRTPPayload(au))
+			if err := s.writeInterleaved(0, packet); err != nil {
+				slog.Warn("backchannel AAC send failed", "err", err)
+				return
+			}
+			seq++
+			ts += AACFrameSamples
+		}
+	}
+}
+
+// FeedAU queues one raw AAC-LC access unit (optionally ADTS-wrapped) for
+// transmission on the AAC backchannel. It is a no-op on a G.711 session. The AU
+// must match the track's advertised config (AAC-LC, the SDP clock rate, mono);
+// oversized bursts are dropped rather than blocking the caller.
+func (s *Session) FeedAU(au []byte) {
+	if s.auIn == nil || len(au) == 0 {
+		return
+	}
+	b := make([]byte, len(au))
+	copy(b, au)
+	select {
+	case s.auIn <- b:
+	default:
+		slog.Debug("backchannel AAC buffer full, dropping AU", "n", len(au))
 	}
 }
 

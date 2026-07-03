@@ -89,8 +89,11 @@ gzip-compressed when the client accepts it (e.g. `hls.min.js` 414 KB → ~125
 KB). The ETag is content-based, so a redeploy with changed assets invalidates
 the cache automatically.
 
-Default admin seeding uses `ENEVERRE_ADMIN_USER` / `ENEVERRE_ADMIN_PASS`
-(same defaults: `admin` / `eneverre`). The listen address comes from
+Admin seeding: when the users table is empty, an `admin` user is created with
+a random password logged once at `WARN` (`ENEVERRE_ADMIN_USER` /
+`ENEVERRE_ADMIN_PASS` override the username / password when set). No credential
+is read from a config file — user management lives entirely in the DB. The
+listen address comes from
 `[server] host`/`port` (the Python `__main__` hardcoded `0.0.0.0:8080`; this
 port honors the config, defaulting to the same values). The server runs with
 explicit HTTP timeouts (`ReadHeaderTimeout` 5s, `ReadTimeout` 15s,

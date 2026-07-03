@@ -54,9 +54,11 @@ func talkToken(r *http.Request) string {
 
 // handleTalk streams push-to-talk audio from a client to a camera's ONVIF
 // Profile T backchannel. The client connects a WebSocket, sends a JSON handshake
-// {"sampleRate": N}, then a stream of binary S16LE PCM frames; the server
-// resamples to 8 kHz, encodes G.711 and relays RTP to the camera (see
-// internal/backchannel). At most one talk session per camera.
+// {"sampleRate": N, "codec": "aac"?}, then a stream of binary audio frames. With
+// the default (G.711) codec the client sends S16LE PCM and the server resamples
+// to 8 kHz and encodes G.711; with "aac" the client sends raw AAC-LC access
+// units it encoded itself and the server forwards them to the camera's
+// MPEG4-GENERIC track (see internal/backchannel). At most one session per camera.
 //
 // Auth: the access token comes via the Sec-WebSocket-Protocol carrier (or the
 // ?token= query param, or a Bearer header for non-browser clients), validated
@@ -107,7 +109,38 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	sess, err := backchannel.Dial(context.Background(), cam.Backchannel, "")
+	// Handshake first: the client's initial JSON message selects the backchannel
+	// codec, so it must be read before dialing the camera. Fields:
+	//   {"sampleRate": N, "codec": "aac"}
+	// codec defaults to G.711 (uncompressed PCM uplink, resampled to 8 kHz);
+	// "aac" (or "mpeg4-generic") pins the camera's MPEG4-GENERIC track and
+	// forwards raw AAC-LC access units the client encodes itself.
+	conn.SetReadDeadline(time.Now().Add(talkPongWait))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		release()
+		return
+	}
+	var init struct {
+		SampleRate int    `json:"sampleRate"`
+		Codec      string `json:"codec"`
+	}
+	if err := json.Unmarshal(msg, &init); err != nil {
+		release()
+		return
+	}
+
+	forceCodec := ""
+	aac := strings.EqualFold(init.Codec, "aac") || strings.EqualFold(init.Codec, "mpeg4-generic")
+	if aac {
+		forceCodec = "AAC"
+	} else if init.SampleRate < backchannel.TargetRate {
+		// G.711 path needs a source rate we can resample down to 8 kHz.
+		release()
+		return
+	}
+
+	sess, err := backchannel.Dial(context.Background(), cam.Backchannel, forceCodec)
 	if err != nil {
 		slog.Warn("talk backchannel dial failed", "camera", cam.ID, "err", err)
 		conn.WriteMessage(websocket.CloseMessage,
@@ -126,7 +159,7 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("talk session closed", "camera", cam.ID)
 	}()
 
-	slog.Info("talk session started", "camera", cam.ID, "user", u.Username)
+	slog.Info("talk session started", "camera", cam.ID, "user", u.Username, "codec", sess.Codec())
 
 	// The camera backchannel is live: signal readiness so the client switches
 	// from "connecting" to "talking". Sent before the ping goroutine starts, so
@@ -161,19 +194,9 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 	}()
 	defer close(pingDone)
 
-	// Handshake: the first message is the JSON {"sampleRate": N}.
-	_, msg, err := conn.ReadMessage()
-	if err != nil {
-		return
-	}
-	var init struct {
-		SampleRate int `json:"sampleRate"`
-	}
-	if err := json.Unmarshal(msg, &init); err != nil || init.SampleRate < backchannel.TargetRate {
-		return
-	}
-
-	// Audio: a stream of binary S16LE PCM messages at the negotiated rate.
+	// Audio: a stream of binary messages — S16LE PCM for G.711, or raw AAC-LC
+	// access units for AAC. Any non-binary message (a stray text frame) is
+	// ignored; pongs and audio both refresh the read deadline.
 	for {
 		mt, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -183,6 +206,10 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 		if mt != websocket.BinaryMessage {
 			continue
 		}
-		sess.FeedPCM(msg, init.SampleRate)
+		if aac {
+			sess.FeedAU(msg)
+		} else {
+			sess.FeedPCM(msg, init.SampleRate)
+		}
 	}
 }

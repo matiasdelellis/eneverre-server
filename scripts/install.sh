@@ -65,9 +65,12 @@ Requires: bash, curl, tar. sha256sum (or shasum on macOS) is required for
 the default verification - use --no-verify to skip.
 
 Note: --install-service only works on Linux. The unit file is copied to
-/etc/systemd/system/eneverre.service, but the existing file is preserved
-unless --force is also given. The user's eneverre.ini and cameras.d/ are
-NEVER touched - manage those with the recipes in doc/example/README.md.
+/etc/systemd/system/eneverre.service (preserved unless --force is given),
+and /etc/eneverre/ is seeded on first install (eneverre.ini + an empty
+cameras.d/) so the service can start. Existing config is NEVER
+overwritten - manage it with the recipes in doc/example/README.md.
+On a first install the service creates an admin with a random password
+and logs it once; the script prints it after starting the service.
 
 Note: --uninstall removes the binary, the unit file, and stops the service.
 It does NOT remove /etc/eneverre/ (config) or /var/lib/eneverre/ (state) -
@@ -300,6 +303,34 @@ if $INSTALL_SERVICE; then
     run install -m 0644 "$UNIT_SRC" "$UNIT_DEST"
   fi
 
+  # Seed /etc/eneverre/ so the service can actually start: config.Load()
+  # requires eneverre.ini AND the cameras.d directory to exist, or the
+  # unit crash-loops on first start. Existing files are NEVER overwritten
+  # - an update must not clobber the operator's config. Mode 0644 keeps
+  # eneverre.ini readable by the unit's DynamicUser.
+  EXAMPLE_DIR="$(dirname "$BIN_PATH")/doc/example"
+  CONFIG_DIR="/etc/eneverre"
+
+  # On a first install (no DB yet) the service seeds an admin with a random
+  # password on its first start; we surface it below. On an update the DB
+  # already exists and no admin is created.
+  DB_FILE="/var/lib/eneverre/eneverre.db"
+  FIRST_INSTALL=false
+  [[ -f "$DB_FILE" ]] || FIRST_INSTALL=true
+
+  log "ensuring ${CONFIG_DIR}/cameras.d/"
+  run install -d "${CONFIG_DIR}/cameras.d"
+
+  if [[ -e "${CONFIG_DIR}/eneverre.ini" ]]; then
+    log "keeping existing ${CONFIG_DIR}/eneverre.ini"
+  elif [[ -f "${EXAMPLE_DIR}/eneverre.ini" ]]; then
+    log "seeding ${CONFIG_DIR}/eneverre.ini from the example"
+    run install -m 0644 "${EXAMPLE_DIR}/eneverre.ini" "${CONFIG_DIR}/eneverre.ini"
+  else
+    die "example config not found in tarball: ${EXAMPLE_DIR}/eneverre.ini"
+  fi
+  log "add cameras in ${CONFIG_DIR}/cameras.d/ (templates in ${EXAMPLE_DIR}/cameras.d/), then: systemctl restart eneverre"
+
   log "systemctl daemon-reload";      run systemctl daemon-reload
   log "systemctl enable eneverre";    run systemctl enable eneverre
 
@@ -313,5 +344,23 @@ if $INSTALL_SERVICE; then
     log "service status: (skipped in dry-run)"
   else
     log "service status: $(systemctl is-active eneverre || true)"
+  fi
+
+  # On a first install, show the auto-generated admin password. The service
+  # logs it once at startup; give it a moment to appear, then read it back.
+  if ! $DRY_RUN && $FIRST_INSTALL; then
+    cred=""
+    for _ in 1 2 3; do
+      cred="$(journalctl -u eneverre -o cat --no-pager 2>/dev/null | grep -m1 'generated password' || true)"
+      [[ -n "$cred" ]] && break
+      sleep 1
+    done
+    log "admin user created on first start with a GENERATED password:"
+    if [[ -n "$cred" ]]; then
+      log "  ${cred}"
+    else
+      log "  see it with: journalctl -u eneverre | grep 'generated password'"
+    fi
+    log "log in at the service URL and change it immediately"
   fi
 fi

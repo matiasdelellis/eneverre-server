@@ -4,7 +4,9 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -179,15 +181,42 @@ func seedAdmin(db *sql.DB) error {
 	if username == "" {
 		username = "admin"
 	}
+	// The password is never read from a config file: it comes from
+	// ENEVERRE_ADMIN_PASS (for automation) or, when unset, a freshly
+	// generated random secret. The generated one is logged once here — the
+	// only place it is ever shown in the clear — so the operator can log in
+	// and change it. It is not persisted anywhere but the hashed column.
 	password := os.Getenv("ENEVERRE_ADMIN_PASS")
-	if password == "" {
-		password = "eneverre"
+	generated := password == ""
+	if generated {
+		var err error
+		if password, err = randomPassword(18); err != nil {
+			return err
+		}
 	}
-	slog.Warn("no users found, creating default admin; set ENEVERRE_ADMIN_PASS before exposing this service",
-		"user", username)
-	_, err := db.Exec(
+	if _, err := db.Exec(
 		"INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
 		username, auth.GeneratePasswordHash(password), "admin",
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	if generated {
+		slog.Warn("no users found: created admin with a generated password - log in and change it now",
+			"user", username, "password", password)
+	} else {
+		slog.Info("no users found: created admin from ENEVERRE_ADMIN_PASS", "user", username)
+	}
+	return nil
+}
+
+// randomPassword returns a URL-safe base64 string carrying nBytes of
+// cryptographic randomness (nBytes=18 -> 24 characters). Used to seed the
+// first admin when no password is supplied, so a fresh install never ships
+// with a known default credential.
+func randomPassword(nBytes int) (string, error) {
+	b := make([]byte, nBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

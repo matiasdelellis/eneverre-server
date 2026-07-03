@@ -66,9 +66,10 @@ All code lives under `go/` (module `eneverre`).
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
   (`users`, `device_login`, `tokens`, `events`, `mediamtx_credentials`),
   idempotent column migrations,
-  and seeds an admin from `ENEVERRE_ADMIN_USER`/`ENEVERRE_ADMIN_PASS`
-  (default `admin`/`eneverre`) when the users table is empty. **Change the
-  default password before any non-local use.**
+  and seeds an admin when the users table is empty: username from
+  `ENEVERRE_ADMIN_USER` (default `admin`), password from
+  `ENEVERRE_ADMIN_PASS` or, when unset, a random one logged once at `WARN`.
+  No credential is read from a config file.
 - `go/internal/auth` — `CheckPasswordHash`/`GeneratePasswordHash` (Werkzeug
   format) plus Basic/Bearer verification and `CurrentUser`. Bearer reads the
   `tokens` table and rejects expired tokens.
@@ -115,9 +116,11 @@ All code lives under `go/` (module `eneverre`).
 - Build: `go -C go build -o ../eneverre .` → one static binary.
 - Run: `./eneverre` (listens on `[server] host`/`port`, default `0.0.0.0:8080`).
 - Test/vet: `go -C go test ./...`, `go -C go vet ./...`.
-- Manual smoke (from the project root, after `./eneverre` is running):
+- Manual smoke (from the project root, after
+  `ENEVERRE_ADMIN_PASS=devpass ./eneverre` is running — pinning a throwaway
+  password so the authed call below is reproducible):
   - `curl localhost:8080/api/health`
-  - `curl -u admin:eneverre localhost:8080/api/cameras`
+  - `curl -u admin:devpass localhost:8080/api/cameras`
   - open `http://localhost:8080/` for the web UI.
 
 ## Logging

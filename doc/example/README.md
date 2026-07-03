@@ -18,12 +18,14 @@ port = 8080
 ; log_level = info        ; debug | info (default) | warn | error
 ```
 
-> **Admin user.** Eneverre does **not** read a username/password from this file.
-> The first admin is seeded into `data/eneverre.db` from the environment
-> variables `ENEVERRE_ADMIN_USER` / `ENEVERRE_ADMIN_PASS` (defaults
-> `admin` / `eneverre`) the first time the users table is empty. **Change the
-> default password before any non-local use.** Manage further users through the
-> `/api/users` endpoints or the web UI.
+> **Admin user.** Eneverre does **not** read any username/password from this
+> file — all user management lives in `data/eneverre.db`. The first time the
+> users table is empty, an `admin` user is created with a **random password
+> that is logged once** (`journalctl -u eneverre | grep 'generated password'`,
+> or straight to the terminal when run in the foreground). **Log in and change
+> it before any non-local use.** To choose the password yourself, set
+> `ENEVERRE_ADMIN_PASS` (and optionally `ENEVERRE_ADMIN_USER`) before the first
+> start. Manage further users through the `/api/users` endpoints or the web UI.
 
 Optional sections (all commented out by default):
 
@@ -151,9 +153,12 @@ systemctl status eneverre
 journalctl -u eneverre -f
 ```
 
-The unit seeds the admin user from `ENEVERRE_ADMIN_USER` / `ENEVERRE_ADMIN_PASS`
-on first start only — set `ENEVERRE_ADMIN_PASS` before enabling it, then change
-the password from the UI (or `PUT /api/users/me/password`). Notes:
+On its first start the service creates the admin user with a random password
+and logs it once — read it with `journalctl -u eneverre | grep 'generated
+password'`, then change it from the UI (or `PUT /api/users/me/password`). To
+set a known password instead, add `ENEVERRE_ADMIN_PASS` (and optionally
+`ENEVERRE_ADMIN_USER`) via a drop-in (`systemctl edit eneverre`) before the
+first start. Notes:
 
  * **Listen port.** The default is `8080`. To bind a privileged port (< 1024)
    add `AmbientCapabilities=CAP_NET_BIND_SERVICE` and

@@ -53,16 +53,46 @@ go -C go build -o ./eneverre .
 ./eneverre
 ```
 
-Now open <http://localhost:8080/> and log in with the default
-**`admin` / `eneverre`**. Change that password the first time you log in
-— and definitely before opening the port to anything that isn't
-`localhost`.
+On first run, Eneverre creates an **`admin`** user with a random password
+and prints it once to the log (here, straight to the terminal):
+
+```
+WARN ... no users found: created admin with a generated password user=admin password=Xk9...
+```
+
+Open <http://localhost:8080/>, log in as `admin` with that password, and
+change it — definitely before opening the port to anything that isn't
+`localhost`. (Set `ENEVERRE_ADMIN_PASS` before the first start to choose
+the password yourself instead.)
 
 Pre-built binaries for Linux / macOS / Windows (amd64, arm64, arm) are on
 the [Releases page](https://github.com/matiasdelellis/eneverre-server/releases).
 Each tarball ships with the example config and a `systemd` unit — see
 [`doc/RELEASES.md`](doc/RELEASES.md) for the layout and how to verify a
 download.
+
+### Install script
+
+On Linux and macOS, [`scripts/install.sh`](scripts/install.sh) downloads
+the right release for your platform, verifies its SHA-256, and installs
+the binary to `/usr/local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/matiasdelellis/eneverre-server/main/scripts/install.sh | sudo bash
+```
+
+Re-run it any time to update to the latest release (it replaces the
+binary atomically, so it is safe even while the service is running).
+On Linux you can also set up the `systemd` service in one go:
+
+```bash
+sudo bash install.sh --install-service     # install + enable + start
+sudo bash install.sh --uninstall           # stop, remove unit + binary
+```
+
+Every flag (`--version`, `--list`, `--target-dir`, `--dry-run`, …) is
+documented in [`doc/RELEASES.md`](doc/RELEASES.md#installing-with-installsh),
+or run `install.sh --help`.
 
 ## Add your cameras
 
@@ -110,6 +140,11 @@ Every key (and the optional `[auth]`, `[mediamtx]`, `[events]`,
 [`doc/example/README.md`](doc/example/README.md).
 
 ## Run as a service
+
+If you installed from a release, `install.sh --install-service` already
+installed, enabled and started the `systemd` unit for you (see
+[Install script](#install-script) above). The rest of this section is the
+manual recipe, handy when you built from source:
 
 There is a ready-to-use `systemd` unit and a one-liner install recipe in
 [`doc/example/README.md`](doc/example/README.md#running-as-a-systemd-service).

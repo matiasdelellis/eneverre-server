@@ -297,10 +297,13 @@ paths:
         token out of the URL and access logs; a `?token=` query param and a
         Bearer header are accepted as fallbacks. Auth is validated before the
         upgrade. After the upgrade the client sends a JSON handshake
-        `{"sampleRate": N}` then binary mono S16LE PCM frames; once the camera
-        backchannel is live the server sends one text `{"status":"ready"}`, then
-        the socket is receive-only apart from keepalive pings (25s; the session
-        is dropped if no pong or audio arrives within 60s).
+        `{"sampleRate": N}` then binary mono S16LE PCM frames (resampled to 8 kHz
+        and encoded G.711). Adding `"codec": "aac"` to the handshake instead
+        streams raw AAC-LC access units that the server forwards untranscoded to
+        the camera's AAC (`MPEG4-GENERIC`) backchannel, when the camera exposes
+        one. Once the camera backchannel is live the server sends one text
+        `{"status":"ready"}`, then the socket is receive-only apart from keepalive
+        pings (25s; the session is dropped if no pong or audio arrives within 60s).
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - name: token
@@ -1144,6 +1147,21 @@ components:
           type: boolean
         ptz:
           type: boolean
+        talk:
+          type: boolean
+          description: >-
+            True when the camera has a two-way-audio backchannel configured
+            (the `/api/camera/{id}/talk` WebSocket is available).
+        talk_codecs:
+          type: array
+          items:
+            type: string
+            enum: [aac, g711]
+          description: >-
+            Push-to-talk codecs the camera accepts, discovered by probing its
+            backchannel SDP at startup. Clients send AAC when `aac` is listed,
+            otherwise G.711. Absent/empty when talk is false or the camera was
+            unreachable at probe time (assume G.711).
 
     Recording:
       type: object
