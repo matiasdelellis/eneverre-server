@@ -350,9 +350,8 @@ func (a *App) handleAppUpdatesPublish(track string) http.HandlerFunc {
 		// finalize=true: promote the active release to the current
 		// manifest. The active state is cleared, the APKs are now
 		// referenced by manifest.json and downloadable. APKs that
-		// belonged to older releases (and are not in any kept previous
-		// release) are removed from disk.
-		committed, err := store.CommitActive(a.cfg.UpdatesKeepPreviousReleases())
+		// belonged to older releases are removed from disk.
+		committed, err := store.CommitActive()
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "Failed to commit: "+err.Error())
 			return

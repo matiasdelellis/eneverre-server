@@ -17,8 +17,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,14 +30,6 @@ const manifestFilename = "manifest.json"
 // up via multiple POSTs. It is invisible to GET /api/app/<track>/update
 // until the final POST with `finalize=true` promotes it to manifest.json.
 const activeFilename = "pending.json"
-
-// releasesDir holds snapshots of previous committed releases, so that
-// an in-flight download of the previous version can still finish even
-// after a new release was published. Each file is a full Manifest JSON
-// (the same shape as manifest.json). The directory is capped at
-// keepPreviousReleases entries — older ones are deleted along with
-// their APKs.
-const releasesDir = "releases"
 
 // ErrNotFound is returned by Get when no manifest exists for the track. The
 // HTTP layer maps it to a 204 No Content.
@@ -463,19 +453,13 @@ func (s *Store) DiscardActive() error {
 // Rotation: at every commit, all APKs in the track directory that are
 // not part of the new release are deleted from disk. This is the
 // "rotation" semantic — disk usage is bounded by the current release's
-// APKs (typically a few hundred MB), not the entire publish history.
-//
-// For record-keeping / recovery, the previous manifests (just the JSON
-// metadata, not the APKs) are kept in releases/<unixnano>.json. The
-// releases/ directory is capped at keepPreviousReleases entries. With
-// keepPreviousReleases=0, no records are kept. The previous manifests
-// are useful for diagnosing "what did the operator publish last week?"
-// but they are NOT addressable via the download endpoint — a client
-// that tries to download an APK from a previous release will get a
-// 404. If you need true in-flight support across publishes, use the
+// APKs (typically a few hundred MB), not the entire publish history. No
+// history of previous releases is kept: the on-disk manifest is the
+// only record, and once replaced the previous release's APKs are
+// deleted. If you need true in-flight support across publishes, use the
 // multi-POST finalize=false flow so a single release is built up
 // before any old APK is deleted.
-func (s *Store) CommitActive(keepPreviousReleases int) (*Manifest, error) {
+func (s *Store) CommitActive() (*Manifest, error) {
 	if !s.Enabled() {
 		return nil, errors.New("updates: not configured")
 	}
@@ -485,11 +469,7 @@ func (s *Store) CommitActive(keepPreviousReleases int) (*Manifest, error) {
 		return nil, errors.New("updates: no active release to commit")
 	}
 
-	// 1. Read the current (about-to-be-replaced) manifest so we can
-	//    snapshot it for record-keeping.
-	oldM, _ := s.readManifestFromDisk()
-
-	// 2. Write the new manifest. This replaces the current one.
+	// 1. Write the new manifest. This replaces the current one.
 	m := Manifest{
 		VersionName:  s.active.VersionName,
 		VersionCode:  s.active.VersionCode,
@@ -502,31 +482,13 @@ func (s *Store) CommitActive(keepPreviousReleases int) (*Manifest, error) {
 		return nil, err
 	}
 
-	// 3. Clear the active state.
+	// 2. Clear the active state.
 	s.active = nil
 	_ = os.Remove(filepath.Join(s.dir, activeFilename))
 
-	// 4. Snapshot the OLD manifest into releases/ (if keepPreviousReleases
-	//    > 0 and there was one). This becomes the newest previous
-	//    entry. The previous manifest's APKs are NOT kept on disk
-	//    beyond this commit — see step 6.
-	if keepPreviousReleases > 0 && oldM != nil && len(oldM.Builds) > 0 {
-		if err := s.snapshotReleaseLocked(oldM); err != nil {
-			return &m, fmt.Errorf("snapshot previous release: %w", err)
-		}
-	}
-
-	// 5. Prune releases/ to the most recent N entries.
-	if err := s.pruneReleasesLocked(keepPreviousReleases); err != nil {
-		return &m, fmt.Errorf("prune releases: %w", err)
-	}
-
-	// 6. Delete every .apk on disk that is not in the new release.
-	//    The previous release's APKs are NOT part of the kept set
-	//    (even though their manifests are kept for record in step 4):
-	//    the download endpoint has no way to reach them, and keeping
-	//    them around would defeat the rotation. The kept set is just
-	//    the new manifest's builds.
+	// 3. Delete every .apk on disk that is not in the new release. The
+	//    kept set is just the new manifest's builds; the previous
+	//    release's APKs are removed.
 	kept := map[string]bool{}
 	for _, b := range m.Builds {
 		kept[b.Filename] = true
@@ -538,80 +500,9 @@ func (s *Store) CommitActive(keepPreviousReleases int) (*Manifest, error) {
 	return &m, nil
 }
 
-// readManifestFromDisk returns the current manifest, or (nil, nil) if
-// the file does not exist. Caller must NOT hold s.mu.
-func (s *Store) readManifestFromDisk() (*Manifest, error) {
-	b, err := os.ReadFile(filepath.Join(s.dir, manifestFilename))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var m Manifest
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, err
-	}
-	return &m, nil
-}
-
-// snapshotReleaseLocked writes m to releases/<unixnano>.json. Caller
-// must hold s.mu. The releases/ directory is created if it does not
-// exist. The filename uses unix-nanoseconds so two releases with the
-// same versionCode still get distinct files.
-func (s *Store) snapshotReleaseLocked(m *Manifest) error {
-	if err := os.MkdirAll(filepath.Join(s.dir, releasesDir), 0o755); err != nil {
-		return err
-	}
-	name := strconv.FormatInt(time.Now().UTC().UnixNano(), 10) + ".json"
-	return writeManifest(filepath.Join(s.dir, releasesDir, name), m)
-}
-
-// pruneReleasesLocked keeps only the most recent keepN files in
-// releases/ (by mtime) and deletes the rest. Caller must hold s.mu.
-// keepN <= 0 deletes all entries.
-func (s *Store) pruneReleasesLocked(keepN int) error {
-	entries, err := os.ReadDir(filepath.Join(s.dir, releasesDir))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	// Sort by mtime descending (newest first).
-	type entry struct {
-		path    string
-		modTime time.Time
-	}
-	all := make([]entry, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		fi, err := e.Info()
-		if err != nil {
-			continue
-		}
-		all = append(all, entry{
-			path:    filepath.Join(s.dir, releasesDir, e.Name()),
-			modTime: fi.ModTime(),
-		})
-	}
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].modTime.After(all[j].modTime)
-	})
-	for i, e := range all {
-		if i < keepN {
-			continue
-		}
-		_ = os.Remove(e.path)
-	}
-	return nil
-}
-
 // deleteOrphanedAPKsLocked removes every .apk file in the track
 // directory that is not in the keep set. Non-APK files (manifest.json,
-// pending.json, releases/*.json) are left alone. Caller must hold
+// pending.json) are left alone. Caller must hold
 // s.mu. Best-effort: a failed remove is logged via the returned error
 // (we keep going for the rest).
 func (s *Store) deleteOrphanedAPKsLocked(keep map[string]bool) error {

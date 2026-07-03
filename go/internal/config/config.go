@@ -233,29 +233,6 @@ func (c *Config) UpdatesMaxAPKSize() int64 {
 	return 100 * 1024 * 1024
 }
 
-// UpdatesKeepPreviousReleases returns the number of previous release
-// manifests to keep on disk when a new release is committed. Keeping N>0
-// means a client that started downloading the previous release just
-// before a new one was published can still finish — the previous APK
-// stays on disk. Old releases older than the most recent N are deleted
-// along with their APKs. Precedence: [updates] keep_previous_releases
-// > ENEVERRE_UPDATES_KEEP_PREVIOUS_RELEASES > 1 default. Set to 0 for
-// aggressive cleanup (in-flight downloads of the previous release will
-// fail after a publish).
-func (c *Config) UpdatesKeepPreviousReleases() int {
-	if v := strings.TrimSpace(c.UpdatesSection().Get("keep_previous_releases", "")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			return n
-		}
-	}
-	if env := strings.TrimSpace(os.Getenv("ENEVERRE_UPDATES_KEEP_PREVIOUS_RELEASES")); env != "" {
-		if n, err := strconv.Atoi(env); err == nil && n >= 0 {
-			return n
-		}
-	}
-	return 1
-}
-
 // ServerReadTimeout resolves the http.Server.ReadTimeout used for the
 // listen socket. The body read is what trips the default (15s) for big
 // publishes; the publish endpoints legitimately need a generous window

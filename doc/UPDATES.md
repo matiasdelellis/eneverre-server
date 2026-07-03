@@ -95,9 +95,8 @@ simplest fix and the recommended default.**
 The storage directory contains one subdirectory per track. Disk usage is
 **bounded by the current release's APKs** (a few hundred MB) — old APKs
 are rotated out on every commit so the directory does not grow without
-bound. The previous manifests (just the JSON metadata, not the APKs)
-are kept in `releases/` for record-keeping up to
-`[updates] keep_previous_releases` entries.
+bound. No release history is kept: the on-disk `manifest.json` is the
+only record.
 
 ```
 ${storage_dir}/
@@ -105,15 +104,11 @@ ${storage_dir}/
     ├── manifest.json                       # the current release
     ├── eneverre-tv-arm64-1.0.1.apk         # current
     ├── eneverre-tv-universal-1.0.1.apk     # current
-    ├── pending.json                        # only present while a multi-POST
-    │                                        # publish is in progress
-    └── releases/                           # most recent N previous manifests
-        ├── 1782678126445643868.json
-        └── 1782678126499257238.json
+    └── pending.json                        # only present while a multi-POST
+                                             # publish is in progress
 ```
 
-`manifest.json` and the entries in `releases/*.json` share the same JSON
-shape (the `Manifest` type):
+`manifest.json` has the following JSON shape (the `Manifest` type):
 
 ```json
 {
@@ -134,14 +129,11 @@ shape (the `Manifest` type):
 Every time a release is committed, the server:
 
 1. Replaces `manifest.json` with the new release.
-2. Snapshots the OLD manifest to `releases/<unixnano>.json` (if
-   `keep_previous_releases > 0`).
-3. Prunes `releases/` to the most recent N entries (oldest are deleted).
-4. Deletes every `.apk` file in the track directory that is not in
+2. Deletes every `.apk` file in the track directory that is not in
    the new release's build list.
 
-Result: the directory holds **only the current release's APKs** plus
-the N previous manifests. The previous releases' APKs are **not**
+Result: the directory holds **only the current release's APKs**. No
+history is kept. The previous release's APKs are deleted and are **not**
 addressable via the download endpoint (they return 404), so an
 in-flight download of the previous release will fail. If you need true
 in-flight support, use the multi-POST `finalize=false` flow so a single
@@ -445,11 +437,10 @@ The response body always carries a `state` field:
 
 Anonymous. Returns the APK bytes (Content-Type
 `application/vnd.android.package-archive`) for any filename that appears
-in the current `builds` list. A request for a filename not in the list —
-including a previous release's APK that is still on disk — returns
+in the current `builds` list. A request for any other filename returns
 **404**. The only addressable files are the builds of the current
-release; old APKs are kept on disk so an in-flight download can finish
-even after a republish, but they are not reachable by URL.
+release; a previous release's APKs are deleted at commit time, so an
+in-flight download of the previous release fails after a republish.
 
 ## Caching
 

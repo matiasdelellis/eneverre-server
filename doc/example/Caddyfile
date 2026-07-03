@@ -69,16 +69,3 @@ nvr.example.com {
         }
     }
 }
-
-# -------------------------------------------------------------------
-# Optional: a second public hostname that puts Caddy-level HTTP Basic
-# Auth in front of the same backend. Useful if you want to share a
-# camera feed with someone without giving them an Eneverre account.
-# Generate the hash with: caddy hash-password
-# -------------------------------------------------------------------
-# nvr-share.example.com {
-#     basicauth {
-#         guest   JDJhJDE0JDhCYzZTaW1YekcuUUlzN0Z1...
-#     }
-#     reverse_proxy 127.0.0.1:8080
-# }

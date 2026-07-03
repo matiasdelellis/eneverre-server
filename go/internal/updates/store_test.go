@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -379,7 +378,7 @@ func TestActive_Commit(t *testing.T) {
 	if _, err := s.AppendBuild(meta, "universal", "eneverre-tv-universal-2.0.0.apk", bytes.NewReader([]byte("universal"))); err != nil {
 		t.Fatal(err)
 	}
-	committed, err := s.CommitActive(1)
+	committed, err := s.CommitActive()
 	if err != nil {
 		t.Fatalf("CommitActive: %v", err)
 	}
@@ -505,7 +504,7 @@ func TestActive_Discard(t *testing.T) {
 
 func TestActive_CommitWithoutActive(t *testing.T) {
 	s := newTestStore(t)
-	_, err := s.CommitActive(1)
+	_, err := s.CommitActive()
 	if err == nil {
 		t.Fatal("expected error when committing without an active release")
 	}
@@ -547,7 +546,7 @@ func TestActive_PersistsAcrossReopen(t *testing.T) {
 // publishCommit is a small helper that starts an active release with
 // `parts`, commits it, and returns the committed manifest. Tests use it
 // to chain multiple publishes and inspect what gets rotated.
-func publishCommit(t *testing.T, s *Store, versionCode int, parts []BuildInput, keepN int) *Manifest {
+func publishCommit(t *testing.T, s *Store, versionCode int, parts []BuildInput) *Manifest {
 	t.Helper()
 	if _, err := s.StartActive(Manifest{VersionName: "v", VersionCode: versionCode}); err != nil {
 		t.Fatal(err)
@@ -563,27 +562,26 @@ func publishCommit(t *testing.T, s *Store, versionCode int, parts []BuildInput, 
 			t.Fatal(err)
 		}
 	}
-	m, err := s.CommitActive(keepN)
+	m, err := s.CommitActive()
 	if err != nil {
 		t.Fatal(err)
 	}
 	return m
 }
 
-func TestRotation_DefaultKeepsOnePrevious(t *testing.T) {
+func TestRotation_DeletesPreviousReleaseAPKs(t *testing.T) {
 	s := newTestStore(t)
 	// v1
 	publishCommit(t, s, 1, []BuildInput{
 		{ABI: "arm64-v8a", Filename: "v1-arm64.apk", Reader: bytes.NewReader([]byte("v1-arm64"))},
 		{ABI: "universal", Filename: "v1-univ.apk", Reader: bytes.NewReader([]byte("v1-univ"))},
-	}, 1)
+	})
 	// v2 — different filenames
 	publishCommit(t, s, 2, []BuildInput{
 		{ABI: "arm64-v8a", Filename: "v2-arm64.apk", Reader: bytes.NewReader([]byte("v2-arm64"))},
 		{ABI: "universal", Filename: "v2-univ.apk", Reader: bytes.NewReader([]byte("v2-univ"))},
-	}, 1)
-	// After two publishes with keep=1: v1 APKs should be gone, v2 APKs remain,
-	// releases/ has one entry (the v1 manifest).
+	})
+	// After two publishes: v1 APKs are gone, v2 APKs remain.
 	for _, fn := range []string{"v1-arm64.apk", "v1-univ.apk"} {
 		if _, err := os.Stat(filepath.Join(s.dir, fn)); !os.IsNotExist(err) {
 			t.Errorf("v1 APK %s should be deleted: %v", fn, err)
@@ -594,126 +592,37 @@ func TestRotation_DefaultKeepsOnePrevious(t *testing.T) {
 			t.Errorf("v2 APK %s should remain: %v", fn, err)
 		}
 	}
-	// releases/ has one file.
-	entries, _ := os.ReadDir(filepath.Join(s.dir, "releases"))
-	if len(entries) != 1 {
-		t.Errorf("releases/ should have 1 entry, got %d", len(entries))
-	}
-}
-
-func TestRotation_KeepZeroDeletesImmediately(t *testing.T) {
-	s := newTestStore(t)
-	publishCommit(t, s, 1, []BuildInput{
-		{ABI: "arm64-v8a", Filename: "v1.apk", Reader: bytes.NewReader([]byte("v1"))},
-	}, 0)
-	publishCommit(t, s, 2, []BuildInput{
-		{ABI: "arm64-v8a", Filename: "v2.apk", Reader: bytes.NewReader([]byte("v2"))},
-	}, 0)
-	if _, err := os.Stat(filepath.Join(s.dir, "v1.apk")); !os.IsNotExist(err) {
-		t.Errorf("v1.apk should be deleted with keep=0: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(s.dir, "v2.apk")); err != nil {
-		t.Errorf("v2.apk should remain: %v", err)
-	}
-	// No releases/ directory at all (keep=0 never creates one).
+	// No history is kept: there is no releases/ directory.
 	if _, err := os.Stat(filepath.Join(s.dir, "releases")); !os.IsNotExist(err) {
-		t.Errorf("releases/ should not exist with keep=0: %v", err)
-	}
-}
-
-func TestRotation_KeepNRetainsNPreviousManifests(t *testing.T) {
-	// With the rotation semantic, "keep_previous_releases" only
-	// controls how many previous MANIFESTS are kept in releases/, not
-	// how many previous APKs are kept. Old APKs are always deleted
-	// at commit time. This test verifies the manifest side.
-	s := newTestStore(t)
-	for i := 1; i <= 3; i++ {
-		publishCommit(t, s, i, []BuildInput{
-			{ABI: "arm64-v8a", Filename: fmt.Sprintf("v%d.apk", i), Reader: bytes.NewReader([]byte{byte(i)})},
-		}, 2)
-	}
-	// After 3 publishes with keep=2: only v3's APK is on disk.
-	if _, err := os.Stat(filepath.Join(s.dir, "v1.apk")); !os.IsNotExist(err) {
-		t.Errorf("v1.apk should be deleted: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(s.dir, "v2.apk")); !os.IsNotExist(err) {
-		t.Errorf("v2.apk should be deleted (rotation deletes all old APKs): %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(s.dir, "v3.apk")); err != nil {
-		t.Errorf("v3.apk should remain: %v", err)
-	}
-	// releases/ has 2 entries (v1 and v2 manifests, the most recent
-	// 2 previous).
-	entries, _ := os.ReadDir(filepath.Join(s.dir, "releases"))
-	if len(entries) != 2 {
-		t.Errorf("releases/ should have 2 entries, got %d", len(entries))
+		t.Errorf("releases/ should not exist: %v", err)
 	}
 }
 
 func TestRotation_PreservesReusedFilenames(t *testing.T) {
 	// Edge case: the CI sends the same APK filename for two consecutive
 	// releases. The rotation should NOT delete the file (the new release
-	// still references it). With keep=0, the v1 file is the same as the
-	// v2 file (same content) — the new release's keeps set includes it,
-	// so the rotation leaves it alone.
+	// still references it): the v1 file has the same name as the v2
+	// file, so the new release's keep set includes it and the rotation
+	// leaves it alone.
 	s := newTestStore(t)
 	publishCommit(t, s, 1, []BuildInput{
 		{ABI: "arm64-v8a", Filename: "app.apk", Reader: bytes.NewReader([]byte("content"))},
-	}, 0)
+	})
 	publishCommit(t, s, 2, []BuildInput{
 		{ABI: "arm64-v8a", Filename: "app.apk", Reader: bytes.NewReader([]byte("content"))},
-	}, 0)
+	})
 	if _, err := os.Stat(filepath.Join(s.dir, "app.apk")); err != nil {
 		t.Errorf("app.apk should remain (still in v2's keep set): %v", err)
 	}
 }
 
-func TestRotation_PreviousManifestStillServesInFlightDownloads(t *testing.T) {
-	// After publishing v2, the v1 APK is deleted, but the v1 manifest
-	// is in releases/. A client that already had the v1 manifest can
-	// still find the v1 APK in releases/v1-arm64.apk... wait, no:
-	// releases/ only has the *manifests*, not the APKs. The APKs are
-	// deleted in the rotation. So an in-flight download of v1 fails.
-	// This is documented: keep_previous_releases only retains the
-	// previous manifests, not their APKs. The previous release's APKs
-	// stay around as long as they are referenced by the current
-	// manifest (which they aren't, after a new commit).
-	//
-	// The semantic guarantee: keep_previous_releases=N keeps the
-	// *manifests* of the N most recent releases, so a client that
-	// cached the manifest can still try to download. The APKs of the
-	// previous release are deleted at commit time.
-	//
-	// For real in-flight support, the operator should use multi-POST
-	// commits (each commit is a fresh active release, and the previous
-	// APKs of the same versionCode are overwritten, not deleted, by
-	// the .tmp + rename). Or: future work — store the previous release's
-	// APKs alongside the previous manifest.
-	s := newTestStore(t)
-	publishCommit(t, s, 1, []BuildInput{
-		{ABI: "arm64-v8a", Filename: "v1.apk", Reader: bytes.NewReader([]byte("v1"))},
-	}, 1)
-	publishCommit(t, s, 2, []BuildInput{
-		{ABI: "arm64-v8a", Filename: "v2.apk", Reader: bytes.NewReader([]byte("v2"))},
-	}, 1)
-	// v1's manifest is in releases/, v1's APK is gone.
-	entries, _ := os.ReadDir(filepath.Join(s.dir, "releases"))
-	if len(entries) != 1 {
-		t.Errorf("releases/ should have 1 entry, got %d", len(entries))
-	}
-	if _, err := os.Stat(filepath.Join(s.dir, "v1.apk")); !os.IsNotExist(err) {
-		t.Errorf("v1.apk should be deleted: %v", err)
-	}
-}
-
 func TestRotation_PreservesNonAPKFiles(t *testing.T) {
-	// The rotation must not touch manifest.json, pending.json, or the
-	// releases/*.json snapshots — only .apk files that are not in the
-	// keep set.
+	// The rotation must not touch manifest.json or pending.json — only
+	// .apk files that are not in the keep set.
 	s := newTestStore(t)
 	publishCommit(t, s, 1, []BuildInput{
 		{ABI: "arm64-v8a", Filename: "v1.apk", Reader: bytes.NewReader([]byte("v1"))},
-	}, 0)
+	})
 	// Create a stale file with a non-APK name; rotation should leave it
 	// alone.
 	if err := os.WriteFile(filepath.Join(s.dir, "stale.txt"), []byte("ignore me"), 0o644); err != nil {
@@ -721,7 +630,7 @@ func TestRotation_PreservesNonAPKFiles(t *testing.T) {
 	}
 	publishCommit(t, s, 2, []BuildInput{
 		{ABI: "arm64-v8a", Filename: "v2.apk", Reader: bytes.NewReader([]byte("v2"))},
-	}, 0)
+	})
 	for _, fn := range []string{"manifest.json", "stale.txt"} {
 		if _, err := os.Stat(filepath.Join(s.dir, fn)); err != nil {
 			t.Errorf("%s should remain: %v", fn, err)
