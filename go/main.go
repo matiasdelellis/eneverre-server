@@ -21,9 +21,9 @@ import (
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
 	"eneverre/internal/media"
-	"eneverre/internal/mediamtx"
 	"eneverre/internal/server"
 	"eneverre/internal/store"
+	"eneverre/internal/streamauth"
 	"eneverre/internal/updates"
 )
 
@@ -126,11 +126,13 @@ func main() {
 		fatal("init database failed", "err", err)
 	}
 
-	// MediaMTX credentials live in the DB (generated on a fresh table). The live
-	// pair is cached in memory — the per-request path never hits the DB.
-	creds, err := mediamtx.NewStore(db)
+	// Stream-auth credentials live in the DB (generated on a fresh table).
+	// The live pair is cached in memory — the per-request path never hits the
+	// DB. The same pair guards the embedded RTSP relay and is embedded in the
+	// relay URL returned by /api/cameras.
+	creds, err := streamauth.NewStore(db)
 	if err != nil {
-		fatal("mediamtx credentials failed", "err", err)
+		fatal("stream-auth credentials failed", "err", err)
 	}
 
 	cams := camera.Load(cfg)
@@ -168,10 +170,9 @@ func main() {
 		slog.Info("auto-update disabled (no [updates] storage_dir and no ENEVERRE_UPDATES_DIR)")
 	}
 
-	// Embedded media engine (replaces the external MediaMTX process). When the
-	// [media] section is present it records, relays (RTSP) and broadcasts (MSE)
-	// every camera that has a source URL. The RTSP relay is protected with the
-	// current rotating credential pair.
+	// Embedded media engine. When the [media] section is present it records,
+	// relays (RTSP) and broadcasts (MSE) every camera that has a source URL.
+	// The RTSP relay is protected with the current rotating credential pair.
 	var engine *media.Engine
 	if cfg.Media != nil {
 		mopts := media.OptionsFromSection(cfg.Media)
@@ -192,17 +193,9 @@ func main() {
 
 	// Auto-rotate the stream/relay credentials. The previous pair stays valid
 	// for one interval (grace window) so active streams are not dropped at the
-	// moment of rotation. Rotation is driven by [media] when the embedded engine
-	// is active, otherwise by [mediamtx]; either way it guards the same rotating
-	// pair (relay auth + the URLs /api/cameras hands out).
-	var rotateSec config.Section
+	// moment of rotation. Driven by [media]; default 24h (0 disables).
 	if cfg.Media != nil {
-		rotateSec = cfg.Media
-	} else if cfg.MediaMTX != nil {
-		rotateSec = cfg.MediaMTX
-	}
-	if rotateSec != nil {
-		if hours := rotateSec.GetInt("rotate_hours", 24); hours > 0 {
+		if hours := cfg.Media.GetInt("rotate_hours", 24); hours > 0 {
 			creds.StartRotation(time.Duration(hours) * time.Hour)
 			slog.Info("credential rotation enabled", "every_hours", hours)
 		} else {

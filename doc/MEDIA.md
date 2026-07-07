@@ -1,10 +1,39 @@
 # Embedded media engine
 
-Eneverre can run its own in-process media engine instead of delegating to an
-external [MediaMTX][mediamtx]. Enable it with a `[media]` section in
-`eneverre.ini`. When present it **takes precedence** over `[mediamtx]`.
+Eneverre runs an in-process media engine for recording, RTSP relay and
+browser live. It is the **only** streaming mode — the historical
+external-[MediaMTX] integration was removed (see
+[Why the embedded engine](#why-the-embedded-engine) below). Enable it
+with a `[media]` section in `eneverre.ini`; without that section, all
+recording endpoints answer 404 and the camera list returns the raw INI
+`live`/`hls`/`webrtc` URLs as-is.
 
-[mediamtx]: https://github.com/bluenviron/mediamtx
+[MediaMTX]: https://github.com/bluenviron/mediamtx
+
+## Why the embedded engine
+
+Eneverre was originally a thin configuration broker in front of an
+external [MediaMTX] process. That meant a second long-running service
+per host (with its own supervision, log file, reverse-proxy rules,
+config-as-code), an HTTP auth probe (`POST /api/auth`) the proxy had to
+serve, and a control API the API had to forward recording-list / clip
+requests to. The rotating-credential store, the per-camera recorder,
+the gap fill and the HLS VOD muxer all lived in MediaMTX.
+
+Reimplementing the recorder (gortsplib + mediacommon + pion) and the
+RTSP relay in-process in the same Go binary produced a system that, for
+H264 (+AAC/G711) cameras, does the same job without the sidecar: one
+binary, one systemd unit, one auth surface, one set of recording
+endpoints, one log stream. The on-disk segment format is still
+MediaMTX-compatible (`mtxi` box, same fMP4 layout), so the recorder's
+output can still be inspected with the MediaMTX tooling if needed.
+
+The removal of the external integration dropped `[mediamtx]` and the
+`POST /api/auth` endpoint, the MediaMTX control-API proxy, the
+`mediamtx_credentials` SQLite table (renamed `streamauth_credentials`),
+and the `WithMediaMTXURLs` camera helper. The rotating-credential
+mechanism stayed (now `streamauth.Store`) because the embedded RTSP
+relay still needs it.
 
 ## What it does
 
@@ -12,7 +41,7 @@ For every camera that has a `source` (or `live`) RTSP URL, the engine:
 
 1. **Records** the stream to fragmented-MP4 segments on disk (H264 video +
    optional AAC/G711 audio), cataloging each segment in a shared SQLite index —
-   the same layout MediaMTX writes (including the `mtxi` box for gapless
+   the same layout MediaMTX wrote (including the `mtxi` box for gapless
    concatenation on playback).
 2. **Relays** the live stream over RTSP (`rtsp://…:8554/<id>`) as a raw RTP
    passthrough, so many clients (e.g. the Android apps) read from Eneverre
@@ -93,13 +122,14 @@ fills `rtsp` automatically.
 
 ## Credentials & rotation
 
-The engine reuses the rotating credential store (`mediamtx_credentials` table).
-A random 8/8 char pair guards the RTSP relay; it rotates every `rotate_hours`
-(default 24, `0` disables), and the previous pair stays valid for one interval
-(grace window) so readers are not dropped mid-rotation. The relay validates
-each RTSP connection against the current **and** grace pair. The HTTP live and
-playback endpoints are protected by Eneverre's own user auth (Bearer/Basic),
-not this pair.
+The engine uses a rotating credential store (`streamauth_credentials` table,
+carried over from the historical MediaMTX integration — see [Why the embedded
+engine](#why-the-embedded-engine)). A random 8/8 char pair guards the RTSP
+relay; it rotates every `rotate_hours` (default 24, `0` disables), and the
+previous pair stays valid for one interval (grace window) so readers are not
+dropped mid-rotation. The relay validates each RTSP connection against the
+current **and** grace pair. The HTTP live and playback endpoints are
+protected by Eneverre's own user auth (Bearer/Basic), not this pair.
 
 ## Live HTTP endpoints
 
@@ -126,12 +156,12 @@ Backed by the in-process segment index; require user auth + the camera's
 | `GET /api/camera/{id}/recordings/hls/init.mp4` | CMAF init (referenced by the playlist) |
 | `GET /api/camera/{id}/recordings/hls/segment.m4s` | CMAF media segment (referenced by the playlist) |
 
-`list`/`get` also work in MediaMTX mode (proxied); `timeline`/`gaps` and the
-HLS VOD endpoints are embedded-engine only. Timestamps are RFC3339 (UTC);
-`duration` is in seconds. The web timeline plays the HLS VOD playlist via
-hls.js (auth via the bearer token on every request); the playlist's init and
-segment URIs are relative, so they resolve under the same `/recordings/hls/`
-prefix. `get` is the single-file download.
+`timeline`/`gaps` and the HLS VOD endpoints are embedded-engine only.
+Timestamps are RFC3339 (UTC); `duration` is in seconds. The web timeline
+plays the HLS VOD playlist via hls.js (auth via the bearer token on every
+request); the playlist's init and segment URIs are relative, so they
+resolve under the same `/recordings/hls/` prefix. `get` is the single-file
+download.
 
 ### Gap fill in downloads (`/get`)
 
@@ -162,8 +192,8 @@ always spans the full requested window and it is obvious there was no recording
 
 ## Client integration notes
 
-What a client (web UI, mobile/TV app) consumes, and what changes vs. the
-external MediaMTX mode. All `/api/*` calls take Bearer (or Basic) auth.
+What a client (web UI, mobile/TV app) consumes. All `/api/*` calls take
+Bearer (or Basic) auth.
 
 **Live view**
 - **Web / MSE**: use `camera.live_mse` (`/api/camera/{id}/live/stream`). It is a
@@ -173,16 +203,19 @@ external MediaMTX mode. All `/api/*` calls take Bearer (or Basic) auth.
 - **Apps / RTSP**: use `camera.rtsp` (the relay `rtsp://…:8554/{id}`), present
   only when `[media] rtsp_host` is set. Standard RTSP; the embedded creds
   rotate, so re-read `/api/cameras` for a fresh URL.
-- In embedded mode `camera.hls` and `camera.webrtc` are **empty**. Clients must
-  branch on `live_mse` (embedded) vs `hls`/`webrtc` (MediaMTX).
+- In embedded mode `camera.hls` and `camera.webrtc` are **empty**. Without
+  `[media]` the camera is returned as-is from the INI (so `hls`/`webrtc`
+  are populated if the camera INI defines them and the user fronts
+  Eneverre with their own streamer); the wall falls back to
+  `camera.hls` + hls.js in that case.
 
 **Recordings / timeline**
-- `playback/timeline` → draw the recorded extent; `playback/gaps` → mark gaps.
-- `playback/list` → segment blocks for the range.
-- **Streaming playback (scrubbable timeline)**: `playback/hls/playlist.m3u8`
+- `recordings/timeline` → draw the recorded extent; `recordings/gaps` → mark gaps.
+- `recordings/list` → segment blocks for the range.
+- **Streaming playback (scrubbable timeline)**: `recordings/hls/playlist.m3u8`
   via hls.js (add the Bearer header in `xhrSetup`; native HLS can't). Continuous
   timeline with `EXT-X-PROGRAM-DATE-TIME` for wall-clock cursor mapping.
-- **Download / export**: `playback/get` → one fMP4 spanning the full window,
+- **Download / export**: `recordings/get` → one fMP4 spanning the full window,
   gaps shown as black "NO RECORDING". **Emitted as avc3** — ensure the target
   player decodes avc3 (all mainstream players do). `fill_gaps=false` reverts to
   legacy avc1/truncate.
@@ -194,16 +227,14 @@ token. Use hls.js `xhrSetup` (or Basic-in-URL, e.g. VLC:
 ## Reverse proxy
 
 Live (MSE) and playback are plain HTTP under `/api/*`, so a single
-`reverse_proxy` to Eneverre covers them — no HLS/WebRTC/MediaMTX rules needed.
+`reverse_proxy` to Eneverre covers them — no HLS/WebRTC rules needed.
 The RTSP relay (`:8554`) does **not** go through the proxy; expose it directly
 (firewalled) for RTSP clients. See [`doc/example/Caddyfile`](example/Caddyfile).
 
-## Choosing between modes
+## Without the engine
 
-- **Embedded (`[media]`)** — one binary, one unit; H264(+AAC/G711); browser
-  live over MSE; Android over RTSP. Recommended default.
-- **External (`[mediamtx]`)** — delegate to MediaMTX for broader codecs,
-  WebRTC, and HLS. See [`doc/MEDIAMTX.md`](MEDIAMTX.md).
-
-With neither section, Eneverre serves the raw `live`/`hls`/`webrtc` URLs from
-each camera INI as-is (front it with go2rtc, lightNVR or a plain proxy).
+The engine is opt-in. Without `[media]`, Eneverre serves each camera's
+`live`/`hls`/`webrtc` URLs from its INI as-is (so you can still front it
+with go2rtc, lightNVR or a plain reverse proxy) and every recording
+endpoint answers 404. This is independent of the engine and is the only
+way to get a non-H264 codec, WebRTC, or HLS out of Eneverre today.

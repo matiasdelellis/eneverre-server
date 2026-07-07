@@ -19,20 +19,19 @@ import (
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
 	"eneverre/internal/media"
-	"eneverre/internal/mediamtx"
+	"eneverre/internal/streamauth"
 	"eneverre/internal/thingino"
 	"eneverre/internal/updates"
 )
 
 // App carries the shared state for every request handler.
 type App struct {
-	cfg       *config.Config
-	db        *sql.DB
-	creds     *mediamtx.Store
-	cameras   []camera.Camera
+	cfg     *config.Config
+	db      *sql.DB
+	creds   *streamauth.Store
+	cameras []camera.Camera
 	// engine is the embedded media engine (recording, RTSP relay, live MSE,
-	// playback). Non-nil when the [media] section is configured; when nil the
-	// playback handlers fall back to the external MediaMTX proxy.
+	// playback). Non-nil when the [media] section is configured.
 	engine    *media.Engine
 	staticDir string
 	assets    map[string]staticAsset // precomputed embedded UI (etag + gzip), nil if none
@@ -90,7 +89,7 @@ const (
 // the caller with flag/env/config precedence); pass <= 0 to fall back to the
 // built-in defaults. updateStores are the per-track auto-update stores; pass
 // nil when the feature is not configured.
-func New(cfg *config.Config, db *sql.DB, creds *mediamtx.Store, cameras []camera.Camera, staticFS fs.FS, staticCacheControl string, accessTTL, refreshTTL int64, updateStores map[string]*updates.Store) *App {
+func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, cameras []camera.Camera, staticFS fs.FS, staticCacheControl string, accessTTL, refreshTTL int64, updateStores map[string]*updates.Store) *App {
 	if staticCacheControl == "" {
 		staticCacheControl = "no-cache"
 	}
@@ -130,8 +129,9 @@ func New(cfg *config.Config, db *sql.DB, creds *mediamtx.Store, cameras []camera
 }
 
 // SetMediaEngine attaches the embedded media engine. Called from main after the
-// engine is started, so the playback/live handlers serve from it instead of the
-// external MediaMTX proxy. A nil engine leaves the MediaMTX fallback in place.
+// engine is started, so the playback/live handlers serve from it. A nil
+// engine means the [media] section is not configured; the playback endpoints
+// answer 404 in that case.
 func (a *App) SetMediaEngine(e *media.Engine) { a.engine = e }
 
 // seedTalkCodecs probes each backchannel-capable camera once to discover which
@@ -213,19 +213,18 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/camera/{cam_id}/privacy", a.handlePrivacy)
 	mux.HandleFunc("GET /api/camera/{cam_id}/thumbnail", a.handleThumbnail)
 	mux.HandleFunc("GET /api/camera/{cam_id}/talk", a.handleTalk)
-	// recordings (embedded engine, or MediaMTX proxy for list/get). All under
-	// the /recordings/ prefix, consistent with the /api/recordings/paths
-	// collection.
+	// recordings (embedded engine). All under the /recordings/ prefix,
+	// consistent with the /api/recordings/paths collection.
 	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/list", a.handlePlaybackList)
 	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/get", a.handlePlaybackGet)
 	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/timeline", a.handlePlaybackTimeline)
 	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/gaps", a.handlePlaybackGaps)
 	// collection: camera ids that have recordings (for recordings-only clients)
 	mux.HandleFunc("GET /api/recordings/paths", a.handleRecordingPaths)
-	// HLS VOD (embedded engine only). Playlist init/segment URIs are relative,
-	// so they resolve under this same /recordings/hls/ prefix. Gaps between
-	// segments are emitted as EXT-X-DISCONTINUITY in the playlist; the player
-	// (hls.js, VLC, ExoPlayer, AVPlayer) handles them per the HLS spec.
+	// HLS VOD. Playlist init/segment URIs are relative, so they resolve under
+	// this same /recordings/hls/ prefix. Gaps between segments are emitted as
+	// EXT-X-DISCONTINUITY in the playlist; the player (hls.js, VLC, ExoPlayer,
+	// AVPlayer) handles them per the HLS spec.
 	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/hls/playlist.m3u8", a.handlePlaybackHLSPlaylist)
 	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/hls/init.mp4", a.handlePlaybackHLSInit)
 	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/hls/segment.m4s", a.handlePlaybackHLSSegment)
@@ -244,9 +243,6 @@ func (a *App) Handler() http.Handler {
 	// otherwise the client uses the camera's hls/webrtc URL from /api/cameras.
 	mux.HandleFunc("GET /api/camera/{cam_id}/live/info", a.handleLiveInfo)
 	mux.HandleFunc("GET /api/camera/{cam_id}/live/stream", a.handleLiveStream)
-
-	// MediaMTX auth probe
-	mux.HandleFunc("POST /api/auth", a.handleMediaMTXAuth)
 
 	// device login flow
 	mux.HandleFunc("GET /api/auth/device", a.handleCreateDevice)
@@ -390,20 +386,16 @@ func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	// Rebuild MediaMTX stream URLs from the current credentials so rotation is
-	// reflected immediately. Camera marshals without the Thingino fields, so
-	// this is the public view.
+	// Rebuild the embedded engine's stream URLs from the current rotating
+	// credentials so rotation is reflected immediately. Camera marshals without
+	// the Thingino fields, so this is the public view. When the [media]
+	// section is absent the camera is returned unchanged (raw INI URLs).
 	creds := a.creds.Current()
 	a.privacyMu.RLock()
 	a.talkCodecsMu.RLock()
 	out := make([]camera.Camera, len(a.cameras))
 	for i, c := range a.cameras {
-		// Embedded engine takes precedence over the external MediaMTX proxy.
-		if a.cfg.Media != nil {
-			out[i] = c.WithEngineURLs(a.cfg, creds, r.Host)
-		} else {
-			out[i] = c.WithMediaMTXURLs(a.cfg, creds)
-		}
+		out[i] = c.WithEngineURLs(a.cfg, creds, r.Host)
 		out[i].Privacy = a.privacy[c.ID]
 		out[i].Capabilities.TalkCodecs = a.talkCodecs[c.ID]
 	}

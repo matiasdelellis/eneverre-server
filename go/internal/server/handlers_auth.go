@@ -2,7 +2,6 @@ package server
 
 import (
 	"database/sql"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -155,53 +154,6 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		_, _ = a.db.Exec("DELETE FROM tokens WHERE token = ?", token)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Logged out"})
-}
-
-// --- MediaMTX auth probe --------------------------------------------------
-
-// mediamtxAuthRequest covers the fields MediaMTX sends to an external HTTP auth
-// endpoint. Only user/password drive the decision; the rest are captured for
-// debug logging (so you can see exactly what MediaMTX is authorizing and why a
-// request was denied).
-type mediamtxAuthRequest struct {
-	User     string `json:"user"`
-	Password string `json:"password"`
-	IP       string `json:"ip"`
-	Action   string `json:"action"`
-	Path     string `json:"path"`
-	Protocol string `json:"protocol"`
-	ID       string `json:"id"`
-	Query    string `json:"query"`
-}
-
-func (a *App) handleMediaMTXAuth(w http.ResponseWriter, r *http.Request) {
-	if a.cfg.MediaMTX == nil {
-		httpError(w, http.StatusNotFound, "Not Found")
-		return
-	}
-	var req mediamtxAuthRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	authorized := a.creds.Validate(req.User, req.Password)
-
-	// Context fields, never the password. Denials log at WARN (always visible);
-	// grants at DEBUG (enable ENEVERRE_LOG_LEVEL=debug to trace every probe).
-	attrs := []any{
-		"user", req.User,
-		"action", req.Action,
-		"path", req.Path,
-		"protocol", req.Protocol,
-		"ip", req.IP,
-		"authorized", authorized,
-	}
-	if authorized {
-		slog.Debug("mediamtx auth", attrs...)
-		writeJSON(w, http.StatusOK, map[string]string{"message": "Authorized"})
-		return
-	}
-	slog.Warn("mediamtx auth denied", attrs...)
-	httpError(w, http.StatusUnauthorized, "Unauthorized")
 }
 
 // --- device login flow ----------------------------------------------------

@@ -1,4 +1,4 @@
-package mediamtx
+package streamauth
 
 import (
 	"database/sql"
@@ -9,7 +9,7 @@ import (
 )
 
 // testDB opens a temporary SQLite database with the full schema (including the
-// mediamtx_credentials table) so the Store can read/write its row.
+// streamauth_credentials table) so the Store can read/write its row.
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -26,7 +26,7 @@ func testDB(t *testing.T) *sql.DB {
 func dbCreds(t *testing.T, db *sql.DB) Creds {
 	t.Helper()
 	var c Creds
-	if err := db.QueryRow("SELECT username, password FROM mediamtx_credentials WHERE id = 1").
+	if err := db.QueryRow("SELECT username, password FROM streamauth_credentials WHERE id = 1").
 		Scan(&c.Username, &c.Password); err != nil {
 		t.Fatalf("read persisted creds: %v", err)
 	}

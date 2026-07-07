@@ -26,7 +26,7 @@
 #
 # NOTE on file modes: DynamicUser=yes runs the service as a transient UID/GID,
 # so config files must stay readable by it (0644, as above). If eneverre.ini
-# holds secrets ([events] webhook_secret, MediaMTX details) on a multi-user
+# holds secrets ([events] webhook_secret, [media] record paths) on a multi-user
 # host, switch to a dedicated account instead: drop `DynamicUser=yes`, create
 # `eneverre` (e.g. `useradd --system --no-create-home --shell /usr/sbin/nologin
 # eneverre`), set `User=eneverre` / `Group=eneverre`, and

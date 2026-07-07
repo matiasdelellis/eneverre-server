@@ -8,8 +8,8 @@ case-insensitive.
 ## eneverre.ini
 
 The main file holds the listen address and the optional embedded-media /
-MediaMTX / auth / events settings. See [`eneverre.ini`](eneverre.ini) in this
-folder for a fully commented template.
+auth / events settings. See [`eneverre.ini`](eneverre.ini) in this folder
+for a fully commented template.
 
 ```ini
 [server]
@@ -27,11 +27,10 @@ port = 8080
 > `ENEVERRE_ADMIN_PASS` (and optionally `ENEVERRE_ADMIN_USER`) before the first
 > start. Manage further users through the `/api/users` endpoints or the web UI.
 
-Optional sections (all commented out by default). `[media]` and `[mediamtx]`
-are mutually exclusive — `[media]` runs the engine in-process, `[mediamtx]`
-proxies to an external MediaMTX. With neither, Eneverre serves each camera's
-`live`/`hls`/`webrtc` URLs from its INI as-is and you must secure them
-yourself (Caddy, go2rtc, lightNVR, …):
+Optional sections (all commented out by default). `[media]` is the embedded
+media engine (record + RTSP relay + browser MSE live). With it absent,
+Eneverre serves each camera's `live`/`hls`/`webrtc` URLs from its INI
+as-is and you must secure them yourself (Caddy, go2rtc, lightNVR, …):
 
 ```ini
 [auth]
@@ -46,21 +45,12 @@ refresh_token_ttl_days = 90
 ; broadcasts it to browsers via MediaSource. One binary, no external streamer.
 ; Every key is optional with sensible defaults; see [eneverre.ini](eneverre.ini)
 ; for the full list (record_dir, record_path, segment_duration, retain,
-; rtsp_address, rtsp_host, transport, gap_message, etc.). When this section
-; is present, [mediamtx] is ignored.
+; rtsp_address, rtsp_host, transport, gap_message, etc.).
 ;record_dir    = /var/lib/eneverre/recordings
 ;rtsp_address  = :8554
 ;retain        = 240h         ; 0 = keep forever
 ;transport     = auto         ; auto | tcp | udp
 ;rotate_hours  = 24           ; RTSP-relay credential rotation; 0 disables
-
-[mediamtx]
-server = mediamtx.server.com
-rtsp_port = 8554
-hls_path = /hls/
-webrtc_path = /whep/
-playback_port = 9996
-rotate_hours = 24            ; credential rotation interval; 0 disables
 
 [events]
 webhook_secret = changeme    ; required to accept POST /api/camera/{id}/events
@@ -69,19 +59,10 @@ webhook_secret = changeme    ; required to accept POST /api/camera/{id}/events
 When `[media]` is present, every camera records/relays from its `source` (or
 `live`) RTSP URL and the public `rtsp` URL is the embedded relay (rotating
 credentials included), `live_mse` is the same-origin browser feed, and
-`hls`/`webrtc` are empty (the engine doesn't serve them). See
-[`doc/MEDIA.md`](../MEDIA.md) for the full endpoint list, client integration
-notes, and the codec/coverage-gap semantics.
-
-When `[mediamtx]` is present and `[media]` is not, the public
-`rtsp`/`hls`/`webrtc` URLs are generated dynamically with rotating random
-credentials, so the `live`/`hls`/`webrtc` keys in each camera file are
-ignored. Without it, those keys are served as-is and securing them is up to
-your reverse proxy (Caddy, go2rtc, lightNVR, …) — see the example
-[`Caddyfile`](Caddyfile). For the wire-level details — the `POST /api/auth`
-protocol that MediaMTX calls to validate each request, the rotation
-lifecycle, and the reverse-proxy caveats — see
-[`doc/MEDIAMTX.md`](../MEDIAMTX.md).
+`hls`/`webrtc` are empty (the engine doesn't serve them). Without it,
+recordings/playback endpoints answer 404. See [`doc/MEDIA.md`](../MEDIA.md)
+for the full endpoint list, client integration notes, and the
+codec/coverage-gap semantics.
 
 ## cameras.d/<id>.ini
 
@@ -102,9 +83,8 @@ playback = true
 width = 1920
 height = 1080
 ; Optional: direct RTSP URL to the camera for two-way audio (ONVIF Profile T).
-; Unlike `live`, this must point at the camera itself — not MediaMTX — and is
-; never rewritten by the MediaMTX integration. Its presence enables the
-; push-to-talk endpoint.
+; Unlike `live`, this must point at the camera itself. Its presence enables
+; the push-to-talk endpoint.
 backchannel = rtsp://username:password@192.168.1.91:554/ch0
 
 ; The [thingino] section is optional. Its presence (specifically a
@@ -123,16 +103,14 @@ privacy_y = 1600
 
 ### `[camera]` keys
 
- * **id:** Camera id; must match the path MediaMTX publishes it under (when
-   `[mediamtx]` is configured) and the path the embedded engine records under
-   (when `[media]` is configured). One id, one camera.
+ * **id:** Camera id; the path the embedded engine records/relays under.
+   One id, one camera.
  * **name / comment / location:** Friendly labels shown by the clients.
- * **live:** Public RTSP URL for playing the camera. With the MediaMTX
-   integration enabled this key is **ignored** — the URL is generated
-   dynamically with a rotating random username and password. With the
-   embedded engine it is also used as the **fallback source** for recording
-   and the RTSP relay; prefer an explicit `source` so the credentials aren't
-   shared with whatever serves `rtsp`/`hls` in non-engine mode.
+ * **live:** Public RTSP URL for playing the camera. With the embedded
+   media engine this key is also used as the **fallback source** for
+   recording and the RTSP relay; prefer an explicit `source` so the
+   credentials aren't shared with whatever serves `rtsp`/`hls` in
+   non-engine mode.
  * **source:** Direct RTSP URL (with credentials) to the camera itself, used
    by the **embedded media engine** (`[media]`) for both recording and the
    RTSP relay. Falls back to `live` when omitted. Must point at the camera
@@ -143,19 +121,20 @@ privacy_y = 1600
    recommended for lossy/distant links), or `udp`. Useful to force TCP on a
    single camera without changing the global default.
  * **hls / webrtc:** Optional public HLS / WebRTC URLs, ignored when
-   `[mediamtx]` (the URLs are generated) or `[media]` (the engine doesn't
-   serve them) is configured.
+   `[media]` is configured (the engine doesn't serve them). With neither
+   section, the URLs are served as-is and securing them is up to your
+   reverse proxy.
  * **playback:** Tells clients this camera has recordings available. With
-   `[media]` the engine serves them from its segment index; with `[mediamtx]`
-   they are proxied from MediaMTX. Ignored when neither is configured.
+   `[media]` the engine serves them from its segment index; without it,
+   playback endpoints answer 404.
  * **width / height:** Pixel dimensions, used to give the playback boxes the
    right aspect ratio (default 16×9).
  * **backchannel:** Optional direct RTSP URL (with credentials) to the camera's
    ONVIF Profile T two-way-audio backchannel. **Must point at the camera
-   itself**, not MediaMTX (which does not relay the backchannel), so it is kept
-   raw and never rewritten by the MediaMTX integration. Its presence enables the
-   `talk` capability and the `GET /api/camera/{id}/talk` push-to-talk WebSocket.
-   Never exposed in API responses.
+   itself** so it is kept raw and never rewritten by URL helpers. Its
+   presence enables the `talk` capability and the
+   `GET /api/camera/{id}/talk` push-to-talk WebSocket. Never exposed in
+   API responses.
 
 ### `[thingino]` keys (optional)
 
@@ -173,8 +152,8 @@ privacy_y = 1600
 [`eneverre.service`](eneverre.service) is a ready-to-use unit. It runs the
 binary as an isolated transient user (`DynamicUser=yes`), reads config from
 `/etc/eneverre/`, and keeps its state — a single SQLite DB, which also holds the
-rotating MediaMTX credentials — in `/var/lib/eneverre/` (created automatically
-via `StateDirectory=`).
+rotating stream-auth credentials — in `/var/lib/eneverre/` (created
+automatically via `StateDirectory=`).
 
 ```bash
 # Binary + config + cameras

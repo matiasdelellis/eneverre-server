@@ -1,22 +1,31 @@
 # Eneverre
 
-A small, vendor-agnostic API for self-hosted NVRs. It does not stream and it
-does not record — it sits **in front** of whatever you already use
-([MediaMTX], [go2rtc], [lightNVR]…) and exposes a clean, uniform interface
-to the [Android app][android], the [Android TV app][tv], and any other
-client that wants to talk HTTP.
+A small, vendor-agnostic NVR for self-hosted cameras. A single static Go
+binary that records, relays and serves camera streams **in-process**,
+and exposes a clean, uniform REST API to the [Android app][android], the
+[Android TV app][tv], and any other client that wants to talk HTTP.
 
-[MediaMTX]: https://github.com/bluenviron/mediamtx
-[go2rtc]: https://github.com/AlexxIT/go2rtc
-[lightNVR]: https://github.com/opensensor/lightNVR
 [android]: https://github.com/matiasdelellis/eneverre-android
 [tv]: https://github.com/matiasdelellis/eneverre-tv
+
+> **Why one binary?** Eneverre was originally a thin configuration broker
+> in front of an external [MediaMTX] / go2rtc / lightNVR. That extra hop
+> turned out to be a lot of moving parts (a separate process, a reverse
+> proxy, an auth probe, a control API, a per-camera recorder, a retention
+> job…) for what is, at the end of the day, "record the camera, serve the
+> clip". The current version runs all of that in-process via the
+> [embedded media engine](doc/MEDIA.md). The historical MediaMTX mode was
+> removed when the engine proved equivalent for H264 (+AAC/G711) cameras;
+> see [`doc/MEDIA.md`](doc/MEDIA.md#why-the-embedded-engine) for the
+> short version.
+
+[MediaMTX]: https://github.com/bluenviron/mediamtx
 
 ## Why?
 
 Every NVR project I tried is glued to a single brand or stack. Eneverre is
-the opposite: pick the streamer you like, point Eneverre at it, and the
-clients just work everywhere.
+the opposite: the same binary, the same config, the same API — on Android,
+Android TV, the web UI, and any third-party tool that speaks the API.
 
 In one box you get:
 
@@ -25,9 +34,11 @@ In one box you get:
 - **Login, sessions, and a token model** that work on phones *and* on
   headless devices — the TV app pairs with a short code, no on-screen
   keyboard required.
-- **Optional MediaMTX integration** that hands out public RTSP / HLS /
-  WebRTC URLs with **rotating random credentials**, so you can put the
-  cameras on the internet without giving out a static secret.
+- **Recording + live + playback in one binary.** The embedded media engine
+  (gortsplib + mediamux + a per-camera recorder + a retention cleaner)
+  drops the need for an external streamer. Web live is over MediaSource
+  (~1-2s), Android live is over the embedded RTSP relay, and VOD is served
+  from an in-process segment index.
 - **PTZ control**, **privacy mode (lens blackout)** and **live thumbnails**
   for [Thingino](https://thingino.com/) cameras.
 - **Motion event ingestion** via a simple webhook, surfaced as a timeline in
@@ -135,7 +146,7 @@ privacy_x        = 0
 privacy_y        = 1600
 ```
 
-Every key (and the optional `[auth]`, `[mediamtx]`, `[events]`,
+Every key (and the optional `[auth]`, `[media]`, `[events]`,
 `[updates]` sections) is documented in
 [`doc/example/README.md`](doc/example/README.md).
 
@@ -160,10 +171,10 @@ sudo systemctl enable --now eneverre
 ```
 
 The unit runs the service as a transient isolated user, keeps the SQLite
-DB (and the rotating MediaMTX credentials) under `/var/lib/eneverre/`,
+DB (and the rotating stream-auth credentials) under `/var/lib/eneverre/`,
 and is hardened out of the box.
 
-## Embedded media engine (recommended)
+## Embedded media engine
 
 Eneverre ships a built-in media engine — add a `[media]` section and it
 records, relays (RTSP) and broadcasts (live to browsers) every camera
@@ -183,39 +194,11 @@ latency); Android plays it over the RTSP relay; playback (VOD) is served
 straight from the on-disk segment index. H264 (+AAC/G711) only. Full
 reference: [`doc/MEDIA.md`](doc/MEDIA.md).
 
-`[media]` takes precedence over `[mediamtx]`. Prefer MediaMTX for broader
-codecs, WebRTC or HLS? Use that instead:
-
-## MediaMTX integration
-
-Eneverre on its own only brokers *configuration* — to actually stream and
-record, point it at [MediaMTX]:
-
-```ini
-[mediamtx]
-server        = nvr.example.com
-rtsp_port     = 8554
-hls_path      = /hls/
-webrtc_path   = /whep/
-playback_port = 9996
-rotate_hours  = 24
-```
-
-Restart, and the public `rtsp` / `hls` / `webrtc` URLs in
-`GET /api/cameras` start coming back with a **random rotating
-username/password** baked in. MediaMTX is told to authorize each request
-against `POST /api/auth`, and the credentials rotate every
-`rotate_hours` hours (with a one-interval grace window so active streams
-are not dropped at the rollover).
-
-The auth protocol, the request / response shapes, the rotation
-lifecycle, and the reverse-proxy caveats are spelled out in
-[`doc/MEDIAMTX.md`](doc/MEDIAMTX.md).
-
-No MediaMTX? No problem — point each camera's `live` URL at whatever you
-already use (go2rtc, lightNVR, or a plain reverse proxy in front of the
-camera) and skip the `[mediamtx]` section entirely. The web UI and the
-Android apps don't care which.
+The historical alternative was an external [MediaMTX] process with
+Eneverre as a thin auth/config broker; it was removed when the embedded
+engine proved equivalent for H264 cameras. See
+[`doc/MEDIA.md`](doc/MEDIA.md#why-the-embedded-engine) for the
+historical note.
 
 ## Companion apps 📱
 
@@ -243,9 +226,6 @@ This is the Android client. 😍
   reference and the `systemd` install recipe.
 - [`doc/MEDIA.md`](doc/MEDIA.md) — the embedded media engine: recording,
   RTSP relay, browser (MSE) live, playback, codecs and configuration.
-- [`doc/MEDIAMTX.md`](doc/MEDIAMTX.md) — the MediaMTX integration in
-  detail: the `POST /api/auth` protocol, credential rotation, and
-  reverse-proxy caveats.
 - [`doc/openapi.yaml`](doc/openapi.yaml) — machine-readable API
   description for client authors.
 - [`doc/UPDATES.md`](doc/UPDATES.md) — auto-update protocol for the

@@ -72,12 +72,11 @@ type Config struct {
 	CamerasDir string
 	DBFile     string
 
-	Server   Section
-	MediaMTX Section // nil if there is no [mediamtx] section
-	Media    Section // nil if there is no [media] section (embedded NVR engine)
-	Events   Section // nil if there is no [events] section
-	Auth     Section // nil if there is no [auth] section
-	Updates  Section // nil if there is no [updates] section
+	Server  Section
+	Media   Section // nil if there is no [media] section (embedded NVR engine)
+	Events  Section // nil if there is no [events] section
+	Auth    Section // nil if there is no [auth] section
+	Updates Section // nil if there is no [updates] section
 }
 
 // LoadOptions are the path overrides a caller can pass to Load. Precedence:
@@ -149,9 +148,6 @@ func Load(opts LoadOptions) (*Config, error) {
 
 	c := &Config{ConfigFile: cfgFile, CamerasDir: camDir, DBFile: dbFile}
 	c.Server = sectionMap(f, "server")
-	if f.HasSection("mediamtx") {
-		c.MediaMTX = sectionMap(f, "mediamtx")
-	}
 	if f.HasSection("media") {
 		c.Media = sectionMap(f, "media")
 	}

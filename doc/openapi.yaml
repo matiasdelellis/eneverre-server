@@ -481,7 +481,6 @@ paths:
         carried in-band). Players must support avc3 — mainstream players
         (VLC, browsers, QuickTime, ffmpeg-based) do. Pass `fill_gaps=false` to
         get the legacy gapless behavior (avc1, truncated at the first gap).
-        In external MediaMTX mode this is a straight proxy (no gap fill).
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - name: start
@@ -719,37 +718,6 @@ paths:
           $ref: '#/components/responses/NotFound'
         '503':
           description: No live source
-
-  /api/auth:
-    post:
-      summary: MediaMTX authentication probe
-      description: |
-        Endpoint MediaMTX calls to validate RTSP/HLS credentials.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                user:
-                  type: string
-                password:
-                  type: string
-      responses:
-        '200':
-          description: Authorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Message'
-
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Message'
 
   /api/camera/{camera_id}/events/{event_id}:
     delete:
@@ -1477,14 +1445,21 @@ components:
         rtsp:
           type: string
           description: >-
-            RTSP URL. Dynamically generated with rotating credentials when the
-            MediaMTX integration is enabled; otherwise the raw `live` INI value.
+            RTSP URL. When the embedded media engine ([media]) is enabled, the
+            embedded relay URL with rotating credentials is returned; otherwise
+            the raw `live` INI value.
         webrtc:
           type: string
-          description: WebRTC (WHEP) URL, generated when MediaMTX is enabled.
+          description: >-
+            WebRTC (WHEP) URL. Empty in embedded-engine mode (the engine does
+            not serve WebRTC). With neither [media] nor another streamer in
+            front, the raw `webrtc` INI value.
         hls:
           type: string
-          description: HLS URL, generated when MediaMTX is enabled.
+          description: >-
+            HLS URL. Empty in embedded-engine mode (the engine does not serve
+            HLS). With neither [media] nor another streamer in front, the raw
+            `hls` INI value.
         width:
           type: integer
         height:

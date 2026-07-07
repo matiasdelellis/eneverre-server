@@ -1,8 +1,11 @@
 // Package media is the embedded NVR engine: it records each camera's RTSP
 // stream to fMP4 segments, catalogs them in a shared SQLite index, re-serves
 // the live streams over RTSP (multi-path passthrough), broadcasts them to
-// browsers as MSE fMP4, and serves recorded playback over HTTP. It replaces the
-// external MediaMTX process.
+// browsers as MSE fMP4, and serves recorded playback over HTTP. The on-disk
+// segment layout is MediaMTX-compatible (the `mtxi` box and fMP4 structure
+// are byte-identical to what MediaMTX wrote when it was the supported
+// external streamer), so existing tooling that inspects MediaMTX recordings
+// can read the recorder's output too.
 //
 // One Engine supervises N cameras: per camera it runs a recorder.Recorder in a
 // retry loop, wired to the shared liverelay.Relay and a per-camera

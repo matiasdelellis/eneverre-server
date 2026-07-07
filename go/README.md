@@ -43,41 +43,38 @@ Structured logs via `slog` (text handler on stderr). Level is `debug` /
 - **Access log** — one INFO line per request: `method`, `path`, `status`,
   `dur_ms`, `ip` (honors `X-Forwarded-For`/`X-Real-IP` behind Caddy). At
   `debug` it adds `query` and response `bytes`.
-- **MediaMTX authorizations** (`POST /api/auth`) — every probe is logged with
-  `user`, `action`, `path`, `protocol`, `ip`, `authorized` (never the
-  password). Denials log at **WARN** (always visible); grants at **DEBUG**.
-  So by default you see failures with full context, and
-  `ENEVERRE_LOG_LEVEL=debug` traces every successful authorization too —
-  useful when debugging why MediaMTX accepts/rejects a stream.
+- **Engine diagnostics** — the media engine logs its own state changes
+  (camera connect/disconnect/reconnect, segment rotation, retention
+  pass, relay auth attempts). Watch the media/recorder/media prefix
+  with `ENEVERRE_LOG_LEVEL=debug` to trace.
 
 ```
-level=DEBUG msg="mediamtx auth" user=mtxuser action=read path=calle protocol=rtsp ip=190.1.2.3 authorized=true
-level=WARN  msg="mediamtx auth denied" user=mtxuser action=read path=interior protocol=webrtc ip=190.1.2.3 authorized=false
-level=INFO  msg=request method=POST path=/api/auth status=200 dur_ms=0 ip=127.0.0.1
+level=INFO msg="media/recorder[calle]: source connected" format=H264
+level=INFO msg="request" method=GET path=/api/cameras status=200 dur_ms=1 ip=127.0.0.1
+level=WARN msg="media/recorder[jardin]: camera codec not supported (recording/live disabled for it)" err="... stream offers: H265"
 ```
 
-### Credential rotation (MediaMTX mode AND embedded engine)
+### Credential rotation (embedded RTSP relay)
 
-The same rotating credential pair guards the embedded RTSP relay and the
-external-MediaMTX auth probe, so live streams are valid across rotations:
+The embedded RTSP relay is protected with a rotating username/password
+pair (random 8/8 alphanumeric), generated on first start and rotated on a
+schedule. Set the interval in `[media]`:
 
 ```ini
 [media]
-; ...or [mediamtx] when you proxy through an external MediaMTX
 rtsp_address = :8554
 rotate_hours = 24           ; 0 or negative disables rotation
 ```
 
-Set the interval with `rotate_hours` (default `24`; `0` or negative
-disables). On rotation the previous pair stays valid for one interval (a
-grace window) so a client that already holds an old RTSP/HLS URL is not
-dropped the instant credentials rotate — it picks up the new URL on its
-next `/api/cameras` call. The current pair is persisted in the single-row
-`mediamtx_credentials` table of the SQLite DB so a restart keeps the last
-credentials; the live pair is cached in memory, so the per-request path
-never queries the DB. The embedded RTSP relay validates against both the
-current and the grace pair (via `mediamtx.Store.Pairs`), so a stream started
-just before rotation is not dropped the moment the pair rolls.
+On rotation the previous pair stays valid for one interval (a grace
+window) so a reader that already holds an old RTSP URL is not dropped the
+instant the pair rolls — it picks up the new URL on its next
+`/api/cameras` call. The relay validates against both the current and the
+grace pair (via `streamauth.Store.Pairs`), so a stream started just
+before rotation is not dropped. The current pair is persisted in the
+single-row `streamauth_credentials` table of the SQLite DB so a restart
+keeps the last credentials; the live pair is cached in memory, so the
+per-request path never queries the DB.
 
 The web UI is embedded into the binary (`go:embed`) from `go/static/`, so the
 single file runs standalone. Edit the UI there and rebuild. For live edits
@@ -120,7 +117,7 @@ internal/config               INI loading + path resolution (app/config.py)
 internal/store                SQLite open + schema/migrations + admin seed (app/db.py, app/db_init.py)
 internal/auth                 Werkzeug-compatible hashing + Basic/Bearer auth (app/auth.py)
 internal/camera               Camera model + INI loader (app/models/camera.py, services/camera_service.py)
-internal/mediamtx             credential store + stream URL builders (services/mediamtx_service.py)
+internal/streamauth           rotating credential store + RTSP URL builder (services/mediamtx_service.py)
 internal/thingino             PTZ move + JPEG snapshot HTTP calls (services/thingino_service.py)
 internal/events               event model + record/list/get/delete (models/event.py, services/events_service.py)
 internal/updates              Android auto-update sidecar store
@@ -137,7 +134,7 @@ internal/media/               embedded media engine (active when [media] is conf
   retention/                  periodic cleaner (batched delete + dir prune)
 internal/server               HTTP routes + handlers (app/routers/*)
   server.go                   App + mux + handler registry + deprecatedAlias
-  handlers_auth.go            login/logout/refresh, device login, MediaMTX auth probe
+  handlers_auth.go            login/logout/refresh, device login
   handlers_events.go          webhook + list/delete events
   handlers_live.go            live/info + live/stream (embedded engine, MSE fMP4)
   handlers_playback.go        recordings list/get/timeline/gaps + HLS VOD
@@ -149,26 +146,26 @@ internal/server               HTTP routes + handlers (app/routers/*)
 
 All REST endpoints from `app/routers/` are ported and exercised:
 health, login/logout/refresh, cameras, ptz (move/home/recalibrate), privacy
-(lens blackout), thumbnail, playback (list + streaming get with redirect-follow
-and `X-Next-Available`), MediaMTX auth probe, the device-login flow, events
-(webhook + list + delete), and the full users CRUD (self + admin routes, with
-`me` taking precedence over `{username}`). PTZ home/recalibrate and privacy are
-Go-side additions beyond the original Python surface.
+(lens blackout), thumbnail, the device-login flow, events (webhook + list +
+delete), and the full users CRUD (self + admin routes, with `me` taking
+precedence over `{username}`). PTZ home/recalibrate and privacy are
+Go-side additions beyond the original Python surface. The original
+external-MediaMTX proxy (`POST /api/auth` + `playback/{list,get}` →
+MediaMTX control API) was removed when the embedded engine replaced it.
 
-The embedded media engine (`[media]`) adds a separate surface of its own,
-mounted under `/api/camera/{id}/`:
+The embedded media engine (`[media]`) is now the only streaming mode and
+adds a separate surface of its own, mounted under `/api/camera/{id}/`:
 
 - `live/{info,stream}` — MSE fMP4 live feed (browser).
 - `recordings/{list,get,timeline,gaps,hls/*}` — VOD from the in-process
-  segment index. `list`/`get` are also the canonical name of the
-  `playback/{list,get}` endpoints that the MediaMTX proxy used to expose.
+  segment index. The legacy `playback/{list,get}` paths are kept as
+  deprecated aliases (RFC 8594 `Deprecation: true` + `Warning` header) so
+  existing clients keep working while they migrate. New clients should hit
+  the canonical `/recordings/*` routes.
 - `GET /api/recordings/paths` — camera ids that have recordings.
 
-The legacy `playback/{list,get}` and `cameras/{id}/events` (plural) paths
-are kept as deprecated aliases (RFC 8594 `Deprecation: true` + `Warning`
-header) so existing clients keep working while they migrate. New clients
-should hit the canonical routes. Full endpoint list, payload shapes, client
-integration notes and the codec/coverage-gap semantics are in
+Full endpoint list, payload shapes, client integration notes and the
+codec/coverage-gap semantics are in
 [`doc/MEDIA.md`](../doc/MEDIA.md).
 
 Behavioral details preserved: Thingino credentials stripped from camera
@@ -214,8 +211,8 @@ accordingly (e.g. higher) during the rollout.
 The previous Python implementation has been removed; this Go service is the
 whole API. A few peripheral pieces were intentionally left out:
 
-- **ONVIF watcher** and the **CLI tools** (user/MediaMTX-config management) —
-  out of scope by request. The motion-event ingestion still works: any
+- **ONVIF watcher** and the **CLI tools** (user management) — out of
+  scope by request. The motion-event ingestion still works: any
   ONVIF/motion source can POST to the events webhook (`POST
   /api/camera/{id}/events`), which needs no shared code.
 - **Auto-generated OpenAPI/Swagger** — FastAPI served these from the running

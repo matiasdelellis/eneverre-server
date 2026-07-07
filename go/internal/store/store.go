@@ -54,10 +54,10 @@ var schema = []string{
 		created_at INTEGER NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_events_camera_start ON events(camera_id, start_ts)`,
-	// Single-row table holding the current MediaMTX credential pair. The CHECK
-	// pins it to one row; the mediamtx.Store keeps the live pair in memory and
-	// only reads this at startup / writes it on rotation.
-	`CREATE TABLE IF NOT EXISTS mediamtx_credentials (
+	// Single-row table holding the current stream-auth credential pair. The
+	// CHECK pins it to one row; the streamauth.Store keeps the live pair in
+	// memory and only reads this at startup / writes it on rotation.
+	`CREATE TABLE IF NOT EXISTS streamauth_credentials (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		username TEXT NOT NULL,
 		password TEXT NOT NULL,
@@ -95,7 +95,54 @@ func Init(db *sql.DB) error {
 			return err
 		}
 	}
+	if err := migrateStreamAuthTable(db); err != nil {
+		return err
+	}
 	return seedAdmin(db)
+}
+
+// migrateStreamAuthTable copies any pre-existing `mediamtx_credentials` row
+// (left over from installations that predate the MediaMTX → embedded-engine
+// migration) into the new `streamauth_credentials` table and drops the old
+// one. New installs see neither table and the migration is a no-op.
+func migrateStreamAuthTable(db *sql.DB) error {
+	old, err := tableExists(db, "mediamtx_credentials")
+	if err != nil || !old {
+		return err
+	}
+	has, err := tableExists(db, "streamauth_credentials")
+	if err != nil {
+		return err
+	}
+	if !has {
+		// New table hasn't been created yet (the schema loop ran before us only
+		// because Go maps are unordered; in practice the schema runs first, but
+		// guard against the rare case where it didn't). Move atomically: rename
+		// is a metadata-only operation in SQLite.
+		if _, err := db.Exec("ALTER TABLE mediamtx_credentials RENAME TO streamauth_credentials"); err != nil {
+			return err
+		}
+		slog.Info("migrated mediamtx_credentials -> streamauth_credentials (rename)")
+		return nil
+	}
+	// Both tables exist (someone ran a pre-migration version after the rename
+	// already landed in the schema). Carry the row over and drop the old one.
+	if _, err := db.Exec(
+		`INSERT INTO streamauth_credentials (id, username, password, rotated_at)
+		 SELECT id, username, password, rotated_at FROM mediamtx_credentials
+		 WHERE id = 1
+		 ON CONFLICT(id) DO UPDATE SET
+		     username = excluded.username,
+		     password = excluded.password,
+		     rotated_at = excluded.rotated_at`,
+	); err != nil {
+		return err
+	}
+	if _, err := db.Exec("DROP TABLE mediamtx_credentials"); err != nil {
+		return err
+	}
+	slog.Info("migrated mediamtx_credentials -> streamauth_credentials (copy+drop)")
+	return nil
 }
 
 // migrateColumns adds columns that older databases may lack. New installs get

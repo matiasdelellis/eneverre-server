@@ -13,7 +13,7 @@ import (
 	"gopkg.in/ini.v1"
 
 	"eneverre/internal/config"
-	"eneverre/internal/mediamtx"
+	"eneverre/internal/streamauth"
 )
 
 // Capabilities flags what a camera supports.
@@ -58,9 +58,9 @@ type Camera struct {
 	ThinginoURL    string `json:"-"`
 	ThinginoAPIKey string `json:"-"`
 	// Backchannel is the direct RTSP URL (with credentials) used for two-way
-	// audio. It must point at the camera itself, not the MediaMTX republish, so
-	// it is stored raw and never rebuilt by WithMediaMTXURLs. Tagged json:"-" so
-	// the credentials never leak in API responses.
+	// audio. It must point at the camera itself, so it is stored raw and never
+	// rebuilt by URL helpers. Tagged json:"-" so the credentials never leak in
+	// API responses.
 	Backchannel string `json:"-"`
 
 	// Source is the direct RTSP URL (with credentials) the embedded media engine
@@ -101,9 +101,10 @@ func toFloat(value string, def float64) float64 {
 }
 
 // Load reads every *.ini under the cameras dir (sorted), in startup order.
-// Stream URLs are stored as their raw INI values; when MediaMTX integration is
-// enabled the URLs are rebuilt per request from the current credentials via
-// WithMediaMTXURLs, so credential rotation takes effect without a restart.
+// Stream URLs are stored as their raw INI values; when the embedded media
+// engine is enabled the URLs are rebuilt per request from the current rotating
+// credentials via WithEngineURLs, so credential rotation takes effect without a
+// restart.
 func Load(cfg *config.Config) []Camera {
 	paths, _ := filepath.Glob(filepath.Join(cfg.CamerasDir, "*.ini"))
 	sort.Strings(paths)
@@ -200,30 +201,15 @@ func Get(cams []Camera, id string) *Camera {
 	return nil
 }
 
-// WithMediaMTXURLs returns a copy with the rtsp/webrtc/hls/live URLs rebuilt
-// from the given credentials. When MediaMTX integration is disabled it returns
-// the camera unchanged (the raw INI URLs). Called per request so rotated
-// credentials are reflected immediately.
-func (c Camera) WithMediaMTXURLs(cfg *config.Config, creds mediamtx.Creds) Camera {
-	if cfg.MediaMTX == nil {
-		return c
-	}
-	server := cfg.MediaMTX.Get("server", "localhost")
-	c.RTSP = creds.RtspURL(server, cfg.MediaMTX.Get("rtsp_port", "8554"), c.ID)
-	c.WebRTC = creds.WebrtcURL(server, cfg.MediaMTX.Get("webrtc_path", ""), c.ID)
-	c.HLS = creds.HlsURL(server, cfg.MediaMTX.Get("hls_path", "/hls/"), c.ID)
-	c.Live = c.RTSP
-	return c
-}
-
 // WithEngineURLs returns a copy with URLs rebuilt for the embedded media engine.
 // The web live path (LiveMSE) is same-origin; hls/webrtc are cleared (the engine
 // doesn't serve them). The RTSP relay URL points at the relay host: the
 // configured `[media] rtsp_host` when set (authoritative for public / reverse-
 // proxied deployments), otherwise the host the client used to reach the API
 // (reqHost) so RTSP works out of the box on a LAN. The raw camera source URL
-// (which carries credentials) is never exposed either way.
-func (c Camera) WithEngineURLs(cfg *config.Config, creds mediamtx.Creds, reqHost string) Camera {
+// (which carries credentials) is never exposed either way. When the [media]
+// section is absent the camera is returned unchanged (raw INI URLs).
+func (c Camera) WithEngineURLs(cfg *config.Config, creds streamauth.Creds, reqHost string) Camera {
 	if cfg.Media == nil {
 		return c
 	}
