@@ -12,9 +12,17 @@
 # Then check it:  systemctl status eneverre   /   journalctl -u eneverre -f
 #
 # Config is read from /etc/eneverre/eneverre.ini and /etc/eneverre/cameras.d/.
-# Persistent state is a single SQLite DB (it also holds the rotating MediaMTX
+# Persistent state is a single SQLite DB (it also holds the rotating stream
 # credentials) in /var/lib/eneverre, created and owned automatically via
 # StateDirectory.
+#
+# EMBEDDED MEDIA ENGINE ([media] in eneverre.ini): recordings + the segment
+# index default to /var/lib/eneverre/recordings, which is under StateDirectory
+# and therefore writable despite ProtectSystem=strict — no change needed. If
+# you point [media] record_dir at a path OUTSIDE /var/lib/eneverre, add it to
+# ReadWritePaths (e.g. `ReadWritePaths=/srv/recordings`) or writes will fail.
+# The engine also opens an RTSP relay (default :8554); make sure that port is
+# reachable by your RTSP clients (it does not go through the reverse proxy).
 #
 # NOTE on file modes: DynamicUser=yes runs the service as a transient UID/GID,
 # so config files must stay readable by it (0644, as above). If eneverre.ini

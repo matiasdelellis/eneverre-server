@@ -105,6 +105,20 @@ func (s *Store) Current() Creds {
 	return s.cur
 }
 
+// Pairs returns the currently-valid [username, password] pairs: the current
+// pair, plus the grace-window (previous) pair when one exists. Used to authorize
+// the embedded RTSP relay against rotating credentials without dropping readers
+// mid-rotation.
+func (s *Store) Pairs() [][2]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := [][2]string{{s.cur.Username, s.cur.Password}}
+	if s.prev.Username != "" {
+		out = append(out, [2]string{s.prev.Username, s.prev.Password})
+	}
+	return out
+}
+
 // Validate reports whether user/pass match the current or grace-window
 // credentials, in constant time.
 func (s *Store) Validate(user, pass string) bool {

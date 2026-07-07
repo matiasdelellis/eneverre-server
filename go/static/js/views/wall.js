@@ -3,6 +3,7 @@ import { getState, setWallFilter, setWallFilterBeforeCam, on } from "../state.js
 import { fetchCameras } from "../api.js";
 import { loadSidebar, updateSidebarActive } from "./sidebar.js";
 import { attachHls, getWallInstances } from "./hls.js";
+import { attachMse } from "./mse.js";
 import { updatePtzModal } from "./ptz.js";
 
 function isWallLike() {
@@ -114,7 +115,7 @@ function revokeTileBlob(tile) {
   }
 }
 
-export function setTileMode(tile, cam, mode, opts = {}) {
+export function setTileMode(tile, cam, mode, _opts = {}) {
   const v = tile.querySelector("video");
   tile.dataset.mode = mode;
   const wallInstances = getWallInstances();
@@ -133,36 +134,15 @@ export function setTileMode(tile, cam, mode, opts = {}) {
   }
   const video = tile.querySelector("video");
   if (mode === "live") {
-    if (cam.hls) {
+    if (cam.live_mse) {
+      const m = attachMse(cam, video);
+      if (m) wallInstances.set(cam.id, m);
+    } else if (cam.hls) {
       const nh = attachHls(cam.hls, video);
       if (nh) wallInstances.set(cam.id, nh);
     } else if (video) {
       video.replaceWith(makeMsg("No live stream"));
     }
-  } else if (mode === "playback" && video) {
-    const start = opts.startTime || new Date();
-    const dur = opts.duration || 300;
-    const placeholder = makeMsg("Loading playback…");
-    placeholder.classList.add("wall-loading");
-    video.replaceWith(placeholder);
-    const req = { cancelled: false };
-    tile._playbackReq = req;
-    import("./playback.js").then(({ loadPlaybackBlob }) => {
-      loadPlaybackBlob(cam.id, start, dur)
-        .then((blobUrl) => {
-          if (req.cancelled) { URL.revokeObjectURL(blobUrl); return; }
-          tile._blobUrl = blobUrl;
-          const fresh = document.createElement("video");
-          fresh.autoplay = true; fresh.playsInline = true; fresh.muted = true;
-          fresh.src = blobUrl;
-          placeholder.replaceWith(fresh);
-          fresh.play().catch(() => {});
-        })
-        .catch((e) => {
-          if (req.cancelled) return;
-          placeholder.textContent = `Playback failed: ${e.message}`;
-        });
-    });
   }
 }
 
@@ -196,8 +176,13 @@ export function wallSize() {
 }
 
 async function applyPlayback(filtered) {
-  const { buildPlaybackTimeline, setTilePlaybackLoading, preloadPlaybackClips, bindClipsAndStart, teardownPlaybackTimeline, getLoadGen, PB_CLIP_SECONDS } = await import("./playback.js");
-  const myLoadGen = getLoadGen();
+  // claimPlaybackLoad bumps pbLoadGen first so the gen check below is
+  // meaningful: a teardown-only bump (the previous design) invalidated
+  // the caller itself because teardown ran between the capture and the
+  // comparison, so applyPlayback always returned early after the first
+  // call and the wall was never populated.
+  const { claimPlaybackLoad, teardownPlaybackTimeline, buildPlaybackTimeline, setTilePlaybackLoading, startVodPlayback, getLoadGen } = await import("./playback.js");
+  const myLoadGen = claimPlaybackLoad();
   teardownPlaybackTimeline();
   const tl = await buildPlaybackTimeline(filtered);
   if (tl === null) return;
@@ -223,12 +208,8 @@ async function applyPlayback(filtered) {
     }
   }
   if (camsWithData.length) {
-    const clips = await preloadPlaybackClips(camsWithData, new Date(initMsec), PB_CLIP_SECONDS);
-    if (myLoadGen !== getLoadGen()) {
-      for (const { blobUrl } of clips) if (blobUrl) URL.revokeObjectURL(blobUrl);
-      return;
-    }
-    bindClipsAndStart(camsWithData, clips, initMsec);
+    if (myLoadGen !== getLoadGen()) return; // a newer loadWall superseded us
+    startVodPlayback(camsWithData, initMsec);
   }
 }
 

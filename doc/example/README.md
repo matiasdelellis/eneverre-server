@@ -7,9 +7,9 @@ case-insensitive.
 
 ## eneverre.ini
 
-The main file holds the listen address and the optional MediaMTX / auth /
-events settings. See [`eneverre.ini`](eneverre.ini) in this folder for a fully
-commented template.
+The main file holds the listen address and the optional embedded-media /
+MediaMTX / auth / events settings. See [`eneverre.ini`](eneverre.ini) in this
+folder for a fully commented template.
 
 ```ini
 [server]
@@ -27,7 +27,11 @@ port = 8080
 > `ENEVERRE_ADMIN_PASS` (and optionally `ENEVERRE_ADMIN_USER`) before the first
 > start. Manage further users through the `/api/users` endpoints or the web UI.
 
-Optional sections (all commented out by default):
+Optional sections (all commented out by default). `[media]` and `[mediamtx]`
+are mutually exclusive — `[media]` runs the engine in-process, `[mediamtx]`
+proxies to an external MediaMTX. With neither, Eneverre serves each camera's
+`live`/`hls`/`webrtc` URLs from its INI as-is and you must secure them
+yourself (Caddy, go2rtc, lightNVR, …):
 
 ```ini
 [auth]
@@ -36,6 +40,19 @@ Optional sections (all commented out by default):
 ; password-login renewal window, slid forward on every refresh.
 access_token_ttl_hours = 24
 refresh_token_ttl_days = 90
+
+[media]
+; Embedded media engine — records each camera, relays it over RTSP and
+; broadcasts it to browsers via MediaSource. One binary, no external streamer.
+; Every key is optional with sensible defaults; see [eneverre.ini](eneverre.ini)
+; for the full list (record_dir, record_path, segment_duration, retain,
+; rtsp_address, rtsp_host, transport, gap_message, etc.). When this section
+; is present, [mediamtx] is ignored.
+;record_dir    = /var/lib/eneverre/recordings
+;rtsp_address  = :8554
+;retain        = 240h         ; 0 = keep forever
+;transport     = auto         ; auto | tcp | udp
+;rotate_hours  = 24           ; RTSP-relay credential rotation; 0 disables
 
 [mediamtx]
 server = mediamtx.server.com
@@ -49,13 +66,21 @@ rotate_hours = 24            ; credential rotation interval; 0 disables
 webhook_secret = changeme    ; required to accept POST /api/camera/{id}/events
 ```
 
-When `[mediamtx]` is present the public `rtsp`/`hls`/`webrtc` URLs are generated
-dynamically with rotating random credentials, so the `live`/`hls`/`webrtc` keys
-in each camera file are ignored. Without it, those keys are served as-is and
-securing them is up to your reverse proxy (Caddy, go2rtc, lightNVR, …) — see
-the example [`Caddyfile`](Caddyfile). For the wire-level details — the
-`POST /api/auth` protocol that MediaMTX calls to validate each request,
-the rotation lifecycle, and the reverse-proxy caveats — see
+When `[media]` is present, every camera records/relays from its `source` (or
+`live`) RTSP URL and the public `rtsp` URL is the embedded relay (rotating
+credentials included), `live_mse` is the same-origin browser feed, and
+`hls`/`webrtc` are empty (the engine doesn't serve them). See
+[`doc/MEDIA.md`](../MEDIA.md) for the full endpoint list, client integration
+notes, and the codec/coverage-gap semantics.
+
+When `[mediamtx]` is present and `[media]` is not, the public
+`rtsp`/`hls`/`webrtc` URLs are generated dynamically with rotating random
+credentials, so the `live`/`hls`/`webrtc` keys in each camera file are
+ignored. Without it, those keys are served as-is and securing them is up to
+your reverse proxy (Caddy, go2rtc, lightNVR, …) — see the example
+[`Caddyfile`](Caddyfile). For the wire-level details — the `POST /api/auth`
+protocol that MediaMTX calls to validate each request, the rotation
+lifecycle, and the reverse-proxy caveats — see
 [`doc/MEDIAMTX.md`](../MEDIAMTX.md).
 
 ## cameras.d/<id>.ini
@@ -98,16 +123,31 @@ privacy_y = 1600
 
 ### `[camera]` keys
 
- * **id:** Camera id; must match the MediaMTX path when that integration is used.
+ * **id:** Camera id; must match the path MediaMTX publishes it under (when
+   `[mediamtx]` is configured) and the path the embedded engine records under
+   (when `[media]` is configured). One id, one camera.
  * **name / comment / location:** Friendly labels shown by the clients.
- * **live:** Public RTSP URL for playing the camera. Securing it is the
-   responsibility of MediaMTX / go2rtc / lightNVR. With the MediaMTX
+ * **live:** Public RTSP URL for playing the camera. With the MediaMTX
    integration enabled this key is **ignored** — the URL is generated
-   dynamically with a rotating random username and password.
- * **hls / webrtc:** Optional public HLS / WebRTC URLs, likewise ignored when
-   MediaMTX integration is enabled.
- * **playback:** Tells clients this camera has recordings available via
-   MediaMTX. Ignored without the integration.
+   dynamically with a rotating random username and password. With the
+   embedded engine it is also used as the **fallback source** for recording
+   and the RTSP relay; prefer an explicit `source` so the credentials aren't
+   shared with whatever serves `rtsp`/`hls` in non-engine mode.
+ * **source:** Direct RTSP URL (with credentials) to the camera itself, used
+   by the **embedded media engine** (`[media]`) for both recording and the
+   RTSP relay. Falls back to `live` when omitted. Must point at the camera
+   (not at a streamer in front of it) because the engine speaks RTSP directly
+   to the camera. Like `backchannel`, it is never exposed in API responses.
+ * **transport:** Embedded-engine only. Per-camera override of the global
+   `[media] transport` for the source RTSP: `auto` (default), `tcp` (reliable,
+   recommended for lossy/distant links), or `udp`. Useful to force TCP on a
+   single camera without changing the global default.
+ * **hls / webrtc:** Optional public HLS / WebRTC URLs, ignored when
+   `[mediamtx]` (the URLs are generated) or `[media]` (the engine doesn't
+   serve them) is configured.
+ * **playback:** Tells clients this camera has recordings available. With
+   `[media]` the engine serves them from its segment index; with `[mediamtx]`
+   they are proxied from MediaMTX. Ignored when neither is configured.
  * **width / height:** Pixel dimensions, used to give the playback boxes the
    right aspect ratio (default 16×9).
  * **backchannel:** Optional direct RTSP URL (with credentials) to the camera's

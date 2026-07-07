@@ -163,7 +163,30 @@ The unit runs the service as a transient isolated user, keeps the SQLite
 DB (and the rotating MediaMTX credentials) under `/var/lib/eneverre/`,
 and is hardened out of the box.
 
-## MediaMTX integration (recommended)
+## Embedded media engine (recommended)
+
+Eneverre ships a built-in media engine — add a `[media]` section and it
+records, relays (RTSP) and broadcasts (live to browsers) every camera
+in-process, with **no external streamer to install or supervise**:
+
+```ini
+[media]
+record_dir   = /var/lib/eneverre/recordings
+retain       = 240h        ; 0 = keep forever
+rtsp_address = :8554       ; RTSP relay for apps
+;rtsp_host   = nvr.example.com
+```
+
+Each camera records/relays from its `source` (or `live`) RTSP URL. The web
+UI plays live over MediaSource (`/api/camera/<id>/live/stream`, ~1-2s
+latency); Android plays it over the RTSP relay; playback (VOD) is served
+straight from the on-disk segment index. H264 (+AAC/G711) only. Full
+reference: [`doc/MEDIA.md`](doc/MEDIA.md).
+
+`[media]` takes precedence over `[mediamtx]`. Prefer MediaMTX for broader
+codecs, WebRTC or HLS? Use that instead:
+
+## MediaMTX integration
 
 Eneverre on its own only brokers *configuration* — to actually stream and
 record, point it at [MediaMTX]:
@@ -218,6 +241,8 @@ This is the Android client. 😍
 
 - [`doc/example/README.md`](doc/example/README.md) — full config
   reference and the `systemd` install recipe.
+- [`doc/MEDIA.md`](doc/MEDIA.md) — the embedded media engine: recording,
+  RTSP relay, browser (MSE) live, playback, codecs and configuration.
 - [`doc/MEDIAMTX.md`](doc/MEDIAMTX.md) — the MediaMTX integration in
   detail: the `POST /api/auth` protocol, credential rotation, and
   reverse-proxy caveats.

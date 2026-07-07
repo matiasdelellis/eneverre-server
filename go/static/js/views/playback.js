@@ -37,7 +37,7 @@ async function fetchRecordings(camId, rangeMs = 24 * 3600 * 1000) {
   });
   try {
     const r = await fetch(
-      `/api/camera/${encodeURIComponent(camId)}/playback/list?${params}`,
+      `/api/camera/${encodeURIComponent(camId)}/recordings/list?${params}`,
       { headers: { Authorization: `Bearer ${token()}` } },
     );
     if (!r.ok) return [];
@@ -62,7 +62,7 @@ async function fetchEvents(camId, rangeMs = 24 * 3600 * 1000) {
   });
   try {
     const r = await fetch(
-      `/api/cameras/${encodeURIComponent(camId)}/events?${params}`,
+      `/api/camera/${encodeURIComponent(camId)}/events?${params}`,
       { headers: { Authorization: `Bearer ${token()}` } },
     );
     if (!r.ok) return [];
@@ -82,12 +82,20 @@ async function fetchEvents(camId, rangeMs = 24 * 3600 * 1000) {
 }
 
 export async function loadPlaybackBlob(camId, start, duration, opts = {}) {
+  // Accept either a Date or an epoch-ms number; the caller (startVodPlayback
+  // → preloadPlaybackClips) passes the scrub position as a number, while
+  // the in-loop swappers pass a Date. Normalize here so neither caller
+  // crashes with "start.toISOString is not a function".
+  const startDate = start instanceof Date ? start : new Date(start);
   const params = new URLSearchParams({
-    start: start.toISOString(),
+    start: startDate.toISOString(),
     duration: String(duration),
   });
+  // fill_gaps defaults to true on the server; opt out with opts.fillGaps=false
+  // to get the legacy gapless (truncate-at-gap) avc1 output.
+  if (opts.fillGaps === false) params.set("fill_gaps", "false");
   const r = await fetch(
-    `/api/camera/${encodeURIComponent(camId)}/playback/get?${params}`,
+    `/api/camera/${encodeURIComponent(camId)}/recordings/get?${params}`,
     { headers: { Authorization: `Bearer ${token()}` }, signal: opts.signal },
   );
   if (!r.ok) {
@@ -188,25 +196,18 @@ export async function buildPlaybackTimeline(filtered) {
     tl.setMajor1Records(i, events[i]);
   }
 
-  tl.setTimeSelectedCallback(async (_tlIdx, msec, _record) => {
-    const mySelGen = ++pbSelectGen;
-    const startTime = new Date(msec);
-    killAllSessions();
+  tl.setTimeSelectedCallback((_tlIdx, msec, _record) => {
     for (const cam of pbCams) {
       const tile = $(`#wall .wall-tile[data-id="${CSS.escape(cam.id)}"]`);
       if (tile) setTilePlaybackLoading(tile);
     }
-    const clips = await preloadPlaybackClips(pbCams, startTime, PB_CLIP_SECONDS);
-    if (mySelGen !== pbSelectGen) {
-      for (const { blobUrl } of clips) if (blobUrl) URL.revokeObjectURL(blobUrl);
-      return;
-    }
-    bindClipsAndStart(pbCams, clips, msec);
+    startVodPlayback(pbCams, msec);
   });
 
   tl.setLiveCallback((_tlIdx, isLive) => {
     if (!isLive) return;
     killAllSessions();
+    killVods();
     // Lazy-load the wall module to break the wall <-> playback import
     // cycle. The wall module is always already loaded by the time the
     // live callback fires (this buildPlaybackTimeline() was called from
@@ -273,11 +274,21 @@ export async function ensureWall() {
   return _wallModule;
 }
 
+// claimPlaybackLoad bumps pbLoadGen and returns the new value. Called by the
+// caller of buildPlaybackTimeline as the first step of a new playback load,
+// so the bump can be used to detect a superseded in-flight load. teardown
+// resets state but does NOT bump pbLoadGen anymore — the bump is the caller's
+// signal that it owns the new generation, and self-bumping via teardown
+// would always invalidate the caller itself.
+export function claimPlaybackLoad() {
+  return ++pbLoadGen;
+}
+
 export function teardownPlaybackTimeline() {
   pbBuildGen++;
-  pbLoadGen++;
   pbSelectGen++;
   killAllSessions();
+  killVods();
   pbTimeline = null;
   pbCams = [];
   const canvas = $("#pb-canvas");
@@ -342,7 +353,267 @@ export function setupPlaybackBar() {
   });
 }
 
-// ---------- Gapless playback sessions ----------
+// ---------- HLS VOD playback (embedded engine) ----------
+//
+// Plays the recordings timeline via one hls.js VOD instance per camera
+// tile, fed by /api/camera/{id}/recordings/hls/playlist.m3u8. hls.js
+// handles seeking and buffering natively (best responsiveness). Coverage
+// gaps between segments are signaled with EXT-X-DISCONTINUITY in the
+// playlist; the player (hls.js, VLC, ExoPlayer, AVPlayer) resets
+// decoder state and seeks to the next keyframe at the gap per the HLS
+// spec.
+//
+// The timeline cursor is driven by wall-clock, NOT by the player's
+// currentTime. This matters at gaps: the player seeks over the gap
+// (its currentTime jumps), but the cursor keeps advancing at 1x so
+// the wall-clock of the playback remains monotonic. The cursor equals
+//
+//     playbackStartMsec + (Date.now() - playbackStartTime)
+//
+// where playbackStartMsec is the wall-clock of the scrub position and
+// playbackStartTime is when this playback session started.
+//
+// Per-tile "No recording" overlays are shown whenever the cursor's
+// wall-clock falls inside a coverage gap. The tile's video is paused
+// (the player has seek-past on the discontinuity, so the video is
+// already at the next keyframe) and the overlay hides it; when the
+// cursor exits the gap the tile's HLS instance is reinitialized at the
+// cursor's current position so playback resumes in sync.
+//
+// Note: each hls.js runs its own clock, so the videos drift apart
+// over time. We don't try to re-sync (any snap implies destroy + reload
+// + re-buffer, which is visible as a glitch); the cursor is the source
+// of truth and the videos are best-effort aligned. Scrubbing resets
+// everything.
+
+const PB_VOD_WINDOW_MS = 60 * 60 * 1000; // forward window loaded per scrub (1h)
+let vodInstances = new Map();            // camId -> Hls
+let vodCursorTimer = null;
+let vodPlaybackStartTime = 0;           // Date.now() at the start of the current scrub
+let vodPlaybackStartMsec = 0;           // wall-clock of the scrub position
+let vodPaused = false;                  // wall-clock cursor respects user pause
+let vodPausedAt = 0;                    // Date.now() when paused (for elapsed adjustment on resume)
+
+function tileOf(camId) {
+  return $(`#wall .wall-tile[data-id="${CSS.escape(camId)}"]`);
+}
+
+function vodPlaylistUrl(camId, startMsec) {
+  const start = new Date(startMsec).toISOString();
+  const end = new Date(Math.min(startMsec + PB_VOD_WINDOW_MS, Date.now())).toISOString();
+  const p = new URLSearchParams({ start, end });
+  return `/api/camera/${encodeURIComponent(camId)}/recordings/hls/playlist.m3u8?${p}`;
+}
+
+export function killVods() {
+  if (vodCursorTimer) { clearInterval(vodCursorTimer); vodCursorTimer = null; }
+  for (const h of vodInstances.values()) { try { h.destroy(); } catch {} }
+  vodInstances.clear();
+  vodPlaybackStartTime = 0;
+  vodPlaybackStartMsec = 0;
+  vodPaused = false;
+  vodPausedAt = 0;
+  for (const t of $$("#wall .wall-gap-overlay")) t.remove();
+}
+
+// setVodPaused toggles the wall-clock cursor and every vod video
+// together. Used by the playback bar's play/pause button so the cursor
+// freezes at the current wall-clock and the videos stop, then resume
+// together from the same point. The cursor's elapsed time at the moment
+// of pause is preserved across the pause by shifting vodPlaybackStartTime
+// forward on resume, so a long pause doesn't "skip" the wall-clock
+// forward when playback continues.
+export function setVodPaused(paused) {
+  if (vodPaused === paused) return;
+  vodPaused = paused;
+  if (paused) {
+    vodPausedAt = Date.now();
+    for (const h of vodInstances.values()) {
+      const m = h && h.media;
+      if (m) { try { m.pause(); } catch {} }
+    }
+  } else {
+    const dt = Date.now() - vodPausedAt;
+    if (dt > 0) vodPlaybackStartTime += dt;
+    for (const h of vodInstances.values()) {
+      const m = h && h.media;
+      if (m) { try { m.play().catch(() => {}); } catch {} }
+    }
+  }
+}
+
+// showVodNoRecording replaces the video with the terminal "no
+// recording" message (the playlist itself had no segments for the
+// requested range, so hls.js never gets a source).
+function showVodNoRecording(tile) {
+  for (const o of tile.querySelectorAll(".wall-gap-overlay")) o.remove();
+  const v = tile.querySelector("video");
+  const msg = document.createElement("div");
+  msg.className = "wall-no-recording wall-status";
+  msg.innerHTML = "<div class='wall-no-recording-icon'>📡</div><div>No recording</div>";
+  if (v) v.replaceWith(msg); else tile.appendChild(msg);
+  tile.dataset.mode = "playback-no-data";
+}
+
+// setTileGapState drives the per-tile gap state machine. Each tile is
+// independent so a camera with recording continues playing while a
+// camera without recording (cursor in a gap) is paused + overlaid.
+//
+//   playback → playback-gap  : cursor entered a gap → pause the video
+//                               (the player has seeked past the gap and
+//                               is showing the next segment; pause +
+//                               overlay hides that and signals "no
+//                               recording here").
+//   playback-gap → playback    : cursor exited a gap → reinit the HLS
+//                               instance at the cursor's current wall-
+//                               clock so the tile resumes in sync,
+//                               hide overlay.
+function setTileGapState(tile, cam, inGap, cursorMsec) {
+  const mode = tile.dataset.mode;
+  if (inGap) {
+    if (mode !== "playback-gap" && mode !== "playback-no-data") {
+      tile.dataset.mode = "playback-gap";
+      const v = tile.querySelector("video");
+      if (v) { try { v.pause(); } catch {} }
+      showTileGapOverlay(tile);
+    }
+  } else {
+    if (mode === "playback-gap") {
+      tile.dataset.mode = "playback";
+      hideTileGapOverlay(tile);
+      reinitTileVideo(tile, cam, cursorMsec);
+    }
+  }
+}
+
+function showTileGapOverlay(tile) {
+  let overlay = tile.querySelector(".wall-gap-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.className = "wall-no-recording wall-gap-overlay wall-status";
+    overlay.innerHTML = "<div class='wall-no-recording-icon'>📡</div><div>No recording</div>";
+    tile.appendChild(overlay);
+  }
+  overlay.hidden = false;
+}
+
+function hideTileGapOverlay(tile) {
+  const overlay = tile.querySelector(".wall-gap-overlay");
+  if (overlay) overlay.hidden = true;
+}
+
+// reinitTileVideo rebuilds the HLS instance for one tile so playback
+// resumes at cursorMsec (the cursor's current wall-clock). The existing
+// video element is reused; only the HLS controller is torn down and a
+// fresh one is attached loading the playlist from cursorMsec.
+function reinitTileVideo(tile, cam, cursorMsec) {
+  const existing = vodInstances.get(cam.id);
+  if (existing) { try { existing.destroy(); } catch {} }
+  vodInstances.delete(cam.id);
+
+  const video = tile.querySelector("video");
+  if (!video) return;
+
+  const hls = new Hls({
+    maxBufferLength: 30,
+    xhrSetup: (xhr) => { const t = token(); if (t) xhr.setRequestHeader("Authorization", `Bearer ${t}`); },
+  });
+  hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+  hls.on(Hls.Events.ERROR, (_e, data) => {
+    if (data && data.fatal) {
+      try { hls.destroy(); } catch {}
+      vodInstances.delete(cam.id);
+      showVodNoRecording(tile);
+    }
+  });
+  hls.loadSource(vodPlaylistUrl(cam.id, cursorMsec));
+  hls.attachMedia(video);
+  vodInstances.set(cam.id, hls);
+}
+
+// startVodPlayback (re)starts VOD playback for every camera tile at
+// startMsec. Anchor the cursor to wall-clock first so the per-tile gap
+// check (which keys off vodPlaybackStartTime) sees the correct value
+// before the first HLS instance is created.
+export function startVodPlayback(cams, startMsec) {
+  killAllSessions(); // stop any legacy blob player still running
+  killVods();
+  if (!window.Hls || !Hls.isSupported()) {
+    for (const cam of cams) {
+      const tile = tileOf(cam.id);
+      const ph = tile && tile._loadingPlaceholder;
+      if (ph) { ph.textContent = "HLS not supported in this browser"; tile._loadingPlaceholder = null; }
+    }
+    return;
+  }
+
+  vodPlaybackStartTime = Date.now();
+  vodPlaybackStartMsec = startMsec;
+
+  for (const cam of cams) {
+    const tile = tileOf(cam.id);
+    if (!tile) continue;
+
+    const video = document.createElement("video");
+    video.autoplay = true; video.playsInline = true; video.muted = true;
+    const ph = tile._loadingPlaceholder;
+    if (ph) { ph.replaceWith(video); tile._loadingPlaceholder = null; }
+    else {
+      const existing = tile.querySelector("video");
+      if (existing) existing.replaceWith(video); else tile.appendChild(video);
+    }
+    tile.dataset.mode = "playback";
+
+    const hls = new Hls({
+      maxBufferLength: 30,
+      xhrSetup: (xhr) => { const t = token(); if (t) xhr.setRequestHeader("Authorization", `Bearer ${t}`); },
+    });
+    hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+    hls.on(Hls.Events.ERROR, (_e, data) => {
+      if (data && data.fatal) {
+        try { hls.destroy(); } catch {}
+        vodInstances.delete(cam.id);
+        showVodNoRecording(tile);
+      }
+    });
+    hls.loadSource(vodPlaylistUrl(cam.id, startMsec));
+    hls.attachMedia(video);
+    vodInstances.set(cam.id, hls);
+  }
+  startVodCursor();
+}
+
+// startVodCursor drives the timeline cursor from wall-clock (1x, monotonic)
+// and drives the per-tile gap state machine: each tile whose wall-clock
+// position falls inside a coverage gap is paused + overlaid, and is
+// reinitialized at the cursor's current position when the cursor exits
+// the gap. No re-sync: the videos drift slowly because each hls.js runs
+// its own clock, and any snap would imply destroy+reload+re-buffer
+// (visible glitch). The cursor is the source of truth; the videos
+// are best-effort. Scrubbing resets everything.
+function startVodCursor() {
+  if (vodCursorTimer) clearInterval(vodCursorTimer);
+  vodCursorTimer = setInterval(() => {
+    if (!pbTimeline || pbTimeline.timerSelectedId) return;
+    if (!vodPlaybackStartTime || vodPaused) return;
+
+    const cursorMsec = vodPlaybackStartMsec + (Date.now() - vodPlaybackStartTime);
+    pbTimeline.setCurrent(cursorMsec);
+    pbTimeline.draw();
+
+    for (let i = 0; i < pbCams.length; i++) {
+      const cam = pbCams[i];
+      const tile = tileOf(cam.id);
+      if (!tile || tile.dataset.mode === "playback-no-data") continue;
+      const records = pbTimeline.getBackgroundRecords(i);
+      if (!records) continue;
+      const inGap = findRecordAt(records, cursorMsec) === null;
+      setTileGapState(tile, cam, inGap, cursorMsec);
+    }
+  }, 250);
+}
+
+// ---------- Gapless playback sessions (legacy blob player) ----------
 
 function startMasterClock(startMsec) {
   if (pbClock) stopMasterClock();
@@ -377,6 +648,36 @@ function tickMasterClock() {
     advanceAllCams();
     elapsed = Date.now() - pbClock.segmentStartedAt;
   }
+
+  // Per-tile gap state. The cursor's current wall-clock is the source of
+  // truth; a tile whose cursor position is in a coverage gap pauses its
+  // video and shows the overlay while the other tiles keep playing.
+  // Without this check the master clock would happily swap clips and
+  // play through the gap (the clip is filled with black "NO RECORDING"
+  // frames) — we want the per-tile pause instead so each camera that
+  // has recording in the window keeps advancing at 1x.
+  const currentStartMsec = pbClock.startMsec + pbClock.segmentIndex * pbClock.intervalMs;
+  for (const s of pbSessions) {
+    if (s.killed) continue;
+    const camIndex = pbCams.findIndex((c) => c.id === s.cam.id);
+    if (camIndex < 0) continue;
+    const records = pbTimeline && pbTimeline.getBackgroundRecords(camIndex);
+    if (!records) continue;
+    const inGap = findRecordAt(records, currentStartMsec) === null;
+    setTileGapState(s.tile, inGap);
+  }
+
+  // Drive the timeline cursor from the master clock: the cursor's
+  // wall-clock is startMsec + segmentIndex*clipDuration + elapsed,
+  // so it advances at 1x monotonic regardless of the videos.
+  if (pbTimeline) {
+    const playhead = currentStartMsec + elapsed;
+    if (!pbTimeline.timerSelectedId) {
+      pbTimeline.setCurrent(playhead);
+      pbTimeline.draw();
+    }
+  }
+
   if (pbClock.running) {
     pbClock.rafId = requestAnimationFrame(tickMasterClock);
   }
@@ -444,7 +745,11 @@ function swapCamToNext(s) {
     if (camIndex >= 0) {
       const records = pbTimeline.getBackgroundRecords(camIndex);
       if (!findRecordAt(records, nextStart)) {
-        showNoRecording(s);
+        // Next segment is in a gap: don't fetch a clip, don't replace
+        // the video. The continuous gap check in tickMasterClock pauses
+        // the current video and shows the overlay. The next clip will
+        // be fetched when the cursor exits the gap (next advanceAllCams
+        // sees the next start as having a recording).
         return;
       }
     }
@@ -463,7 +768,8 @@ function swapCamToNext(s) {
     .catch(() => {
       if (s.killed) return;
       if (!pbClock || pbClock.segmentIndex !== expectedSegmentIndex) return;
-      showNoRecording(s);
+      // On fetch error (network/4xx/5xx) just leave the tile paused
+      // with the overlay; the next advanceAllCams will retry.
     });
 }
 

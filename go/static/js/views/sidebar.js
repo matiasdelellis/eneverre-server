@@ -1,6 +1,6 @@
 import { $, $$, escapeHtml } from "../util/dom.js";
 import { setWallFilter, setWallFilterBeforeCam, getState, on } from "../state.js";
-import { fetchCameras } from "../api.js";
+import { fetchCameras, token } from "../api.js";
 import { captureFrame } from "./hls.js";
 import { isMobileViewport, closeSidebarDrawer } from "./app-shell.js";
 
@@ -166,21 +166,49 @@ async function loadViewerThumb(cam, tile, { force = false } = {}) {
     THUMB_CACHE.delete(cam.id);
   }
 
-  if (!cam.hls) {
+  // Source priority:
+  //  1. cam.hls (external MediaMTX) → grab a keyframe from the HLS stream.
+  //  2. /api/camera/{id}/thumbnail → server-side JPEG (Thingino cameras;
+  //     works in embedded mode where hls is empty).
+  //  3. "No preview" placeholder.
+  let dataUrl;
+  if (cam.hls) {
+    try { dataUrl = await captureFrame(cam.hls); }
+    catch (e) { console.warn(`HLS snapshot failed for ${cam.id}:`, e); }
+  }
+  if (!dataUrl) {
+    try { dataUrl = await fetchThumbnailDataUrl(cam.id); }
+    catch (e) { console.warn(`Thumbnail endpoint failed for ${cam.id}:`, e); }
+  }
+  if (!dataUrl) {
     loading.textContent = "No preview";
     return;
   }
+  img.src = dataUrl;
+  loading.hidden = true;
+  THUMB_CACHE.set(cam.id, dataUrl);
+  try { localStorage.setItem(`thumb_${cam.id}`, dataUrl); } catch {}
+}
 
-  try {
-    const captured = await captureFrame(cam.hls);
-    img.src = captured;
-    loading.hidden = true;
-    THUMB_CACHE.set(cam.id, captured);
-    try { localStorage.setItem(`thumb_${cam.id}`, captured); } catch {}
-  } catch (e) {
-    loading.textContent = "No preview";
-    console.warn(`Snapshot failed for ${cam.id}:`, e);
-  }
+// fetchThumbnailDataUrl pulls a fresh JPEG from the Thingino-backed thumbnail
+// endpoint and returns it as a data URL (so the result is storable in
+// localStorage the same way HLS captures are). Cache-busts the request and
+// disables HTTP cache so refreshes always get a current frame.
+async function fetchThumbnailDataUrl(camId) {
+  const t = token();
+  const headers = t ? { Authorization: `Bearer ${t}` } : {};
+  const r = await fetch(`/api/camera/${encodeURIComponent(camId)}/thumbnail?_=${Date.now()}`, {
+    headers,
+    cache: "no-store",
+  });
+  if (!r.ok) return null;
+  const blob = await r.blob();
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(blob);
+  });
 }
 
 function startSidebarThumbRefresh(cams) {

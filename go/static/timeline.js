@@ -53,7 +53,7 @@ function Timeline(options) {
   this.requestMoreMajor2DataCallback = null;
   this.timeSelectedCallback = null;
   this.liveCallback = null;
-  this.timerSelectedId = -1;
+  this.timerSelectedId = 0; // 0 = no pending callback; truthy check must pass when idle
   this.isLive = false;
   this.recordsMajor1 = new Array(this.options.timelines);
   this.recordsMajor2 = new Array(this.options.timelines);
@@ -131,6 +131,7 @@ Timeline.prototype.runTimeSelectedCallbackDelayed = function() {
   this.timerSelectedId = setTimeout(function() {
     let timelineIndex = self.getCurrentTimeline();
     var record = self.getRecord(self.selectedMsec, self.recordsBackground[timelineIndex]);
+    self.timerSelectedId = 0; // falsy again so cursors can resume moving
     self.timeSelectedCallback(timelineIndex, self.selectedMsec, record);
   }, 500);
 };

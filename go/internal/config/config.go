@@ -74,6 +74,7 @@ type Config struct {
 
 	Server   Section
 	MediaMTX Section // nil if there is no [mediamtx] section
+	Media    Section // nil if there is no [media] section (embedded NVR engine)
 	Events   Section // nil if there is no [events] section
 	Auth     Section // nil if there is no [auth] section
 	Updates  Section // nil if there is no [updates] section
@@ -150,6 +151,9 @@ func Load(opts LoadOptions) (*Config, error) {
 	c.Server = sectionMap(f, "server")
 	if f.HasSection("mediamtx") {
 		c.MediaMTX = sectionMap(f, "mediamtx")
+	}
+	if f.HasSection("media") {
+		c.Media = sectionMap(f, "media")
 	}
 	if f.HasSection("events") {
 		c.Events = sectionMap(f, "events")

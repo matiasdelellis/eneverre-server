@@ -18,6 +18,7 @@ import (
 	"eneverre/internal/backchannel"
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
+	"eneverre/internal/media"
 	"eneverre/internal/mediamtx"
 	"eneverre/internal/thingino"
 	"eneverre/internal/updates"
@@ -29,6 +30,10 @@ type App struct {
 	db        *sql.DB
 	creds     *mediamtx.Store
 	cameras   []camera.Camera
+	// engine is the embedded media engine (recording, RTSP relay, live MSE,
+	// playback). Non-nil when the [media] section is configured; when nil the
+	// playback handlers fall back to the external MediaMTX proxy.
+	engine    *media.Engine
 	staticDir string
 	assets    map[string]staticAsset // precomputed embedded UI (etag + gzip), nil if none
 	// staticCacheControl is the Cache-Control header value sent for embedded
@@ -124,6 +129,11 @@ func New(cfg *config.Config, db *sql.DB, creds *mediamtx.Store, cameras []camera
 	return a
 }
 
+// SetMediaEngine attaches the embedded media engine. Called from main after the
+// engine is started, so the playback/live handlers serve from it instead of the
+// external MediaMTX proxy. A nil engine leaves the MediaMTX fallback in place.
+func (a *App) SetMediaEngine(e *media.Engine) { a.engine = e }
+
 // seedTalkCodecs probes each backchannel-capable camera once to discover which
 // push-to-talk codecs it accepts, so /api/cameras can tell clients whether AAC
 // is available instead of leaving them to guess. Cameras are probed
@@ -203,8 +213,37 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/camera/{cam_id}/privacy", a.handlePrivacy)
 	mux.HandleFunc("GET /api/camera/{cam_id}/thumbnail", a.handleThumbnail)
 	mux.HandleFunc("GET /api/camera/{cam_id}/talk", a.handleTalk)
-	mux.HandleFunc("GET /api/camera/{cam_id}/playback/list", a.handlePlaybackList)
-	mux.HandleFunc("GET /api/camera/{cam_id}/playback/get", a.handlePlaybackGet)
+	// recordings (embedded engine, or MediaMTX proxy for list/get). All under
+	// the /recordings/ prefix, consistent with the /api/recordings/paths
+	// collection.
+	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/list", a.handlePlaybackList)
+	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/get", a.handlePlaybackGet)
+	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/timeline", a.handlePlaybackTimeline)
+	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/gaps", a.handlePlaybackGaps)
+	// collection: camera ids that have recordings (for recordings-only clients)
+	mux.HandleFunc("GET /api/recordings/paths", a.handleRecordingPaths)
+	// HLS VOD (embedded engine only). Playlist init/segment URIs are relative,
+	// so they resolve under this same /recordings/hls/ prefix. Gaps between
+	// segments are emitted as EXT-X-DISCONTINUITY in the playlist; the player
+	// (hls.js, VLC, ExoPlayer, AVPlayer) handles them per the HLS spec.
+	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/hls/playlist.m3u8", a.handlePlaybackHLSPlaylist)
+	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/hls/init.mp4", a.handlePlaybackHLSInit)
+	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/hls/segment.m4s", a.handlePlaybackHLSSegment)
+
+	// DEPRECATED — legacy /playback/{list,get} aliases, kept ONLY as a
+	// compatibility shim during the transition while clients (Android, TV, web)
+	// migrate to /recordings/*. These are the only two endpoints that existed
+	// under the old /playback/ prefix; they dispatch to the same handlers and
+	// tag every response with a `Deprecation` header. Remove once no client hits
+	// them. The new endpoints (timeline, gaps, HLS VOD) never had a /playback/
+	// form and are not aliased.
+	mux.HandleFunc("GET /api/camera/{cam_id}/playback/list", deprecatedAlias("/api/camera/{cam_id}/recordings/list", a.handlePlaybackList))
+	mux.HandleFunc("GET /api/camera/{cam_id}/playback/get", deprecatedAlias("/api/camera/{cam_id}/recordings/get", a.handlePlaybackGet))
+
+	// embedded live (MSE fMP4). Only served when the media engine is active;
+	// otherwise the client uses the camera's hls/webrtc URL from /api/cameras.
+	mux.HandleFunc("GET /api/camera/{cam_id}/live/info", a.handleLiveInfo)
+	mux.HandleFunc("GET /api/camera/{cam_id}/live/stream", a.handleLiveStream)
 
 	// MediaMTX auth probe
 	mux.HandleFunc("POST /api/auth", a.handleMediaMTXAuth)
@@ -214,10 +253,16 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/device/{device_code}", a.handleCheckDevice)
 	mux.HandleFunc("POST /api/auth/device/verify", a.handleVerifyDevice)
 
-	// events
+	// events (all under the singular /api/camera/{cam_id}/ prefix, consistent
+	// with the other per-camera endpoints)
 	mux.HandleFunc("POST /api/camera/{cam_id}/events", a.handleWebhookEvent)
-	mux.HandleFunc("GET /api/cameras/{cam_id}/events", a.handleListEvents)
-	mux.HandleFunc("DELETE /api/cameras/{cam_id}/events/{event_id}", a.handleDeleteEvent)
+	mux.HandleFunc("GET /api/camera/{cam_id}/events", a.handleListEvents)
+	mux.HandleFunc("DELETE /api/camera/{cam_id}/events/{event_id}", a.handleDeleteEvent)
+	// DEPRECATED — legacy plural read alias. Reading events used to live at
+	// /api/cameras/{cam_id}/events (plural); kept as a compatibility shim (tagged
+	// with a `Deprecation` header) while clients migrate to the singular
+	// /api/camera/ prefix above. Remove once no client uses it.
+	mux.HandleFunc("GET /api/cameras/{cam_id}/events", deprecatedAlias("/api/camera/{cam_id}/events", a.handleListEvents))
 
 	// auto-update (Android TV + phone). Each track is independent: a publish
 	// on one does not touch the other. Endpoints answer 503 when the [updates]
@@ -258,6 +303,19 @@ func (a *App) Handler() http.Handler {
 	// accessLog is outermost so every request (including CORS preflight) is
 	// logged; cors handles OPTIONS before the mux.
 	return accessLog(cors(mux))
+}
+
+// deprecatedAlias wraps a handler so a legacy route alias flags every response
+// as deprecated (RFC 8594-style), pointing at the successor path. Used for the
+// compatibility shims kept during the API migration (renamed recordings/events
+// endpoints); drop the wrapped routes once no client uses them.
+func deprecatedAlias(successor string, fn http.HandlerFunc) http.HandlerFunc {
+	warning := fmt.Sprintf(`299 - "Deprecated endpoint; use %s. This alias is a temporary compatibility shim."`, successor)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Deprecation", "true")
+		w.Header().Set("Warning", warning)
+		fn(w, r)
+	}
 }
 
 // --- response helpers ----------------------------------------------------
@@ -340,7 +398,12 @@ func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
 	a.talkCodecsMu.RLock()
 	out := make([]camera.Camera, len(a.cameras))
 	for i, c := range a.cameras {
-		out[i] = c.WithMediaMTXURLs(a.cfg, creds)
+		// Embedded engine takes precedence over the external MediaMTX proxy.
+		if a.cfg.Media != nil {
+			out[i] = c.WithEngineURLs(a.cfg, creds, r.Host)
+		} else {
+			out[i] = c.WithMediaMTXURLs(a.cfg, creds)
+		}
 		out[i].Privacy = a.privacy[c.ID]
 		out[i].Capabilities.TalkCodecs = a.talkCodecs[c.ID]
 	}

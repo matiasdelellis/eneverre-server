@@ -10,6 +10,9 @@ and `data/eneverre.db` — including the existing Werkzeug password hashes
 - Single static binary, no virtualenv / Python runtime on the target host.
 - Pure-Go SQLite (`modernc.org/sqlite`) — no CGO, cross-compiles cleanly.
 - Good fit for the proxy/gateway workload (PTZ, thumbnails, playback streaming).
+- The embedded media engine (`[media]`) adds in-process recording, RTSP
+  relay and browser live without dragging in ffmpeg or a sidecar streamer —
+  the same Go binary does it all.
 
 ## Build & run
 
@@ -53,28 +56,28 @@ level=WARN  msg="mediamtx auth denied" user=mtxuser action=read path=interior pr
 level=INFO  msg=request method=POST path=/api/auth status=200 dur_ms=0 ip=127.0.0.1
 ```
 
-### MediaMTX credential rotation
+### Credential rotation (MediaMTX mode AND embedded engine)
 
-When `[mediamtx]` is configured, the credentials embedded in the public stream
-URLs are rotated automatically. Set the interval with `[mediamtx] rotate_hours`
-(default `24`; `0` or negative disables rotation):
+The same rotating credential pair guards the embedded RTSP relay and the
+external-MediaMTX auth probe, so live streams are valid across rotations:
 
 ```ini
-[mediamtx]
-server = nvr.example.com
-hls_path = /hls
-rotate_hours = 24
+[media]
+; ...or [mediamtx] when you proxy through an external MediaMTX
+rtsp_address = :8554
+rotate_hours = 24           ; 0 or negative disables rotation
 ```
 
-The previous credential pair stays valid for one rotation interval (a grace
-window), so a client that already holds an old HLS/RTSP URL is not dropped the
-instant credentials rotate — it picks up the new URL on its next
-`/api/cameras` call. Stream URLs are built per request from the current
-credentials, so rotation needs no restart and no MediaMTX config change
-(MediaMTX delegates auth to `/api/auth`). The current pair is persisted in the
-single-row `mediamtx_credentials` table of the SQLite DB so a restart keeps the
-last credentials; the live pair is cached in memory, so the per-request path
-never queries the DB.
+Set the interval with `rotate_hours` (default `24`; `0` or negative
+disables). On rotation the previous pair stays valid for one interval (a
+grace window) so a client that already holds an old RTSP/HLS URL is not
+dropped the instant credentials rotate — it picks up the new URL on its
+next `/api/cameras` call. The current pair is persisted in the single-row
+`mediamtx_credentials` table of the SQLite DB so a restart keeps the last
+credentials; the live pair is cached in memory, so the per-request path
+never queries the DB. The embedded RTSP relay validates against both the
+current and the grace pair (via `mediamtx.Store.Pairs`), so a stream started
+just before rotation is not dropped the moment the pair rolls.
 
 The web UI is embedded into the binary (`go:embed`) from `go/static/`, so the
 single file runs standalone. Edit the UI there and rebuild. For live edits
@@ -99,10 +102,13 @@ port honors the config, defaulting to the same values). The server runs with
 explicit HTTP timeouts (`ReadHeaderTimeout` 5s, `ReadTimeout` 15s,
 `WriteTimeout` 30s, `IdleTimeout` 60s) so a slow/idle client cannot hold a
 connection open indefinitely; `WriteTimeout` is generous because the thumbnail
-and playback handlers proxy upstream responses.
+and playback handlers proxy upstream responses. SIGINT/SIGTERM trigger a
+graceful `srv.Shutdown` (10s) followed by the embedded engine's
+`Close()` — which finalizes and indexes every in-progress fMP4 segment so a
+clean stop doesn't drop the recording since the last segment rotation.
 
 ```bash
-go test ./...   # password-hash compatibility tests
+go test ./...   # password-hash compatibility + server tests
 go vet ./...
 ```
 
@@ -114,10 +120,29 @@ internal/config               INI loading + path resolution (app/config.py)
 internal/store                SQLite open + schema/migrations + admin seed (app/db.py, app/db_init.py)
 internal/auth                 Werkzeug-compatible hashing + Basic/Bearer auth (app/auth.py)
 internal/camera               Camera model + INI loader (app/models/camera.py, services/camera_service.py)
-internal/mediamtx             credential file + stream URL builders (services/mediamtx_service.py)
+internal/mediamtx             credential store + stream URL builders (services/mediamtx_service.py)
 internal/thingino             PTZ move + JPEG snapshot HTTP calls (services/thingino_service.py)
 internal/events               event model + record/list/get/delete (models/event.py, services/events_service.py)
+internal/updates              Android auto-update sidecar store
+internal/backchannel          ONVIF Profile T backchannel + G.711/RTP (push-to-talk)
+internal/media/               embedded media engine (active when [media] is configured)
+  engine.go                   orchestrator: recorder + RTSP relay + live MSE + retention per camera
+  recorder/                   per-camera gortsplib client, fMP4 segments, media watchdog
+  recstore/                   record_path template -> on-disk path; common root for retention
+  index/                      SQLite segment index (range, timeline, gaps, batched delete)
+  liverelay/                  raw RTP passthrough served over RTSP on [media] rtsp_address
+  live/                       chunked-HTTP fMP4 broadcaster (MSE feed for browsers)
+  mtxi/                       MediaMTX-compatible mtxi box writer (gapless concat on playback)
+  playback/                   VOD muxer: /get with gap fill + HLS VOD playlist
+  retention/                  periodic cleaner (batched delete + dir prune)
 internal/server               HTTP routes + handlers (app/routers/*)
+  server.go                   App + mux + handler registry + deprecatedAlias
+  handlers_auth.go            login/logout/refresh, device login, MediaMTX auth probe
+  handlers_events.go          webhook + list/delete events
+  handlers_live.go            live/info + live/stream (embedded engine, MSE fMP4)
+  handlers_playback.go        recordings list/get/timeline/gaps + HLS VOD
+  handlers_users.go           self + admin user CRUD, sessions
+  handlers_updates.go         Android auto-update publish + download
 ```
 
 ## Endpoint parity
@@ -129,6 +154,22 @@ and `X-Next-Available`), MediaMTX auth probe, the device-login flow, events
 (webhook + list + delete), and the full users CRUD (self + admin routes, with
 `me` taking precedence over `{username}`). PTZ home/recalibrate and privacy are
 Go-side additions beyond the original Python surface.
+
+The embedded media engine (`[media]`) adds a separate surface of its own,
+mounted under `/api/camera/{id}/`:
+
+- `live/{info,stream}` — MSE fMP4 live feed (browser).
+- `recordings/{list,get,timeline,gaps,hls/*}` — VOD from the in-process
+  segment index. `list`/`get` are also the canonical name of the
+  `playback/{list,get}` endpoints that the MediaMTX proxy used to expose.
+- `GET /api/recordings/paths` — camera ids that have recordings.
+
+The legacy `playback/{list,get}` and `cameras/{id}/events` (plural) paths
+are kept as deprecated aliases (RFC 8594 `Deprecation: true` + `Warning`
+header) so existing clients keep working while they migrate. New clients
+should hit the canonical routes. Full endpoint list, payload shapes, client
+integration notes and the codec/coverage-gap semantics are in
+[`doc/MEDIA.md`](../doc/MEDIA.md).
 
 Behavioral details preserved: Thingino credentials stripped from camera
 responses, INI keys are case-insensitive (`home_Y` → `home_y`), webhook

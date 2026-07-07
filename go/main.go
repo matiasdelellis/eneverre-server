@@ -5,18 +5,22 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
+	"eneverre/internal/media"
 	"eneverre/internal/mediamtx"
 	"eneverre/internal/server"
 	"eneverre/internal/store"
@@ -164,18 +168,45 @@ func main() {
 		slog.Info("auto-update disabled (no [updates] storage_dir and no ENEVERRE_UPDATES_DIR)")
 	}
 
+	// Embedded media engine (replaces the external MediaMTX process). When the
+	// [media] section is present it records, relays (RTSP) and broadcasts (MSE)
+	// every camera that has a source URL. The RTSP relay is protected with the
+	// current rotating credential pair.
+	var engine *media.Engine
+	if cfg.Media != nil {
+		mopts := media.OptionsFromSection(cfg.Media)
+		mopts.RelayCredsFn = creds.Pairs // rotation-aware relay auth (current + grace)
+		engine, err = media.New(mopts)
+		if err != nil {
+			fatal("media engine init failed", "err", err)
+		}
+		defer engine.Close()
+		engine.Start(cams)
+	}
+
 	app := server.New(cfg, db, creds, cams, uiFS, opts.staticCacheControl,
 		int64(accessHours)*3600, int64(refreshDays)*86400, updateStores)
+	if engine != nil {
+		app.SetMediaEngine(engine)
+	}
 
-	// Auto-rotate MediaMTX credentials when integration is enabled. The
-	// previous credentials stay valid for one interval (grace window) so
-	// active streams are not dropped at the moment of rotation.
-	if cfg.MediaMTX != nil {
-		if hours := cfg.MediaMTX.GetInt("rotate_hours", 24); hours > 0 {
+	// Auto-rotate the stream/relay credentials. The previous pair stays valid
+	// for one interval (grace window) so active streams are not dropped at the
+	// moment of rotation. Rotation is driven by [media] when the embedded engine
+	// is active, otherwise by [mediamtx]; either way it guards the same rotating
+	// pair (relay auth + the URLs /api/cameras hands out).
+	var rotateSec config.Section
+	if cfg.Media != nil {
+		rotateSec = cfg.Media
+	} else if cfg.MediaMTX != nil {
+		rotateSec = cfg.MediaMTX
+	}
+	if rotateSec != nil {
+		if hours := rotateSec.GetInt("rotate_hours", 24); hours > 0 {
 			creds.StartRotation(time.Duration(hours) * time.Hour)
-			slog.Info("mediamtx credential rotation enabled", "every_hours", hours)
+			slog.Info("credential rotation enabled", "every_hours", hours)
 		} else {
-			slog.Info("mediamtx credential rotation disabled (rotate_hours <= 0)")
+			slog.Info("credential rotation disabled (rotate_hours <= 0)")
 		}
 	}
 
@@ -213,9 +244,37 @@ func main() {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	if err := srv.ListenAndServe(); err != nil {
+
+	// Serve in the background so main can wait for either a fatal server error
+	// or a shutdown signal.
+	srvErr := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			srvErr <- err
+		}
+	}()
+
+	// Graceful shutdown on SIGINT/SIGTERM (e.g. systemctl stop): drain the HTTP
+	// server, then let the deferred engine.Close()/db.Close() run. engine.Close()
+	// finalizes and indexes each camera's in-progress fMP4 segment (via
+	// recorder.Close) so a clean stop doesn't drop the recording since the last
+	// segment rotation. A fatal serve error exits non-zero instead.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	select {
+	case err := <-srvErr:
 		fatal("server stopped", "err", err)
+	case s := <-sig:
+		slog.Info("shutting down", "signal", s.String())
 	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("http shutdown incomplete", "err", err)
+	}
+	// Returning here runs the deferred engine.Close() (finalizes in-progress
+	// segments) and db.Close().
 }
 
 // cliOptions holds the parsed CLI flags. A zero value means "not set";

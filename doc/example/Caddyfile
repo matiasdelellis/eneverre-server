@@ -1,6 +1,21 @@
 # Example Caddyfile for Eneverre.
 #
-# Topology assumed by this file:
+# ===========================================================================
+# EMBEDDED MEDIA ENGINE ([media] in eneverre.ini)
+# ---------------------------------------------------------------------------
+# When Eneverre runs its built-in media engine (no external MediaMTX), live
+# and playback are served over the REST API itself:
+#   - live (browser MSE): GET /api/camera/<id>/live/stream
+#   - recordings (VOD):    GET /api/camera/<id>/recordings/{list,get,hls/*}
+# Both are plain same-origin HTTP under /api/*, already covered by the base
+# `reverse_proxy 127.0.0.1:8080` below — so you can DELETE the `/hls/`,
+# `/mediamtx/` and `/whep/` blocks entirely. The only thing that does NOT go
+# through Caddy is the RTSP relay (default :8554, for Android/RTSP clients):
+# expose that port directly (firewalled) just like the MediaMTX RTSP port.
+# The rest of this file is the MediaMTX topology, kept for that deployment.
+# ===========================================================================
+#
+# Topology assumed by this file (MediaMTX mode):
 #   - Caddy          : public entry point, ports 80/443 (TLS via Let's Encrypt)
 #   - Eneverre (this): 127.0.0.1:8080  - serves the static UI at / and the
 #                       REST API at /api/*

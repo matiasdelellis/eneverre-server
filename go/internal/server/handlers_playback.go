@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,7 +77,7 @@ func (a *App) mediamtxGetJSON(path string, params url.Values) ([]byte, int, erro
 }
 
 func (a *App) handlePlaybackList(w http.ResponseWriter, r *http.Request) {
-	if a.cfg.MediaMTX == nil {
+	if a.engine == nil && a.cfg.MediaMTX == nil {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
@@ -92,6 +93,30 @@ func (a *App) handlePlaybackList(w http.ResponseWriter, r *http.Request) {
 	start, end := q.Get("start"), q.Get("end")
 	if start == "" || end == "" {
 		httpError(w, http.StatusUnprocessableEntity, "start and end are required")
+		return
+	}
+
+	// Embedded engine: answer from the in-process segment index.
+	if a.engine != nil {
+		from, err1 := parseISOTime(start)
+		to, err2 := parseISOTime(end)
+		if err1 != nil || err2 != nil {
+			httpError(w, http.StatusBadRequest, "invalid start/end timestamp")
+			return
+		}
+		segs, err := a.engine.Index().Range(cam.ID, &from, &to)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		out := make([]map[string]any, 0, len(segs))
+		for _, s := range segs {
+			out = append(out, map[string]any{
+				"start":    s.Start.UTC().Format(time.RFC3339Nano),
+				"duration": s.Duration,
+			})
+		}
+		writeJSON(w, http.StatusOK, out)
 		return
 	}
 
@@ -115,8 +140,176 @@ func (a *App) handlePlaybackList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleRecordingPaths lists the camera ids that have at least one recorded
+// segment in the index (the embedded-engine equivalent of the NVR standalone's
+// /api/paths). Useful for a client that only browses recordings. Returns a
+// plain JSON array of strings ([] when empty). Embedded-engine only.
+func (a *App) handleRecordingPaths(w http.ResponseWriter, r *http.Request) {
+	if a.engine == nil {
+		httpError(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	if a.requireUser(w, r) == nil {
+		return
+	}
+	paths, err := a.engine.Index().Paths()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if paths == nil {
+		paths = []string{}
+	}
+	writeJSON(w, http.StatusOK, paths)
+}
+
+// handlePlaybackTimeline reports the recorded extent of a camera: first start,
+// last end, and segment count. Embedded-engine only (404 otherwise) — the
+// external MediaMTX playback server does not expose this. Mirrors the NVR
+// standalone's /api/timeline. start/end are null when there are no recordings.
+func (a *App) handlePlaybackTimeline(w http.ResponseWriter, r *http.Request) {
+	if a.engine == nil {
+		httpError(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	if a.requireUser(w, r) == nil {
+		return
+	}
+	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
+	if cam == nil || !cam.Capabilities.Playback {
+		httpError(w, http.StatusNotFound, "Not found")
+		return
+	}
+	tl, err := a.engine.Index().Timeline(cam.ID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp := map[string]any{"count": tl.Count, "start": nil, "end": nil}
+	if tl.Count > 0 {
+		resp["start"] = tl.Start.UTC().Format(time.RFC3339Nano)
+		resp["end"] = tl.End.UTC().Format(time.RFC3339Nano)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handlePlaybackGaps reports coverage gaps (interruptions longer than 1s
+// between consecutive segments) for a camera, optionally bounded by start/end.
+// Embedded-engine only. Mirrors the NVR standalone's /api/gaps.
+func (a *App) handlePlaybackGaps(w http.ResponseWriter, r *http.Request) {
+	if a.engine == nil {
+		httpError(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	if a.requireUser(w, r) == nil {
+		return
+	}
+	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
+	if cam == nil || !cam.Capabilities.Playback {
+		httpError(w, http.StatusNotFound, "Not found")
+		return
+	}
+	q := r.URL.Query()
+	var from, to *time.Time
+	if s := q.Get("start"); s != "" {
+		t, err := parseISOTime(s)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "invalid start timestamp")
+			return
+		}
+		from = &t
+	}
+	if s := q.Get("end"); s != "" {
+		t, err := parseISOTime(s)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "invalid end timestamp")
+			return
+		}
+		to = &t
+	}
+	gaps, err := a.engine.Index().Gaps(cam.ID, from, to, time.Second)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(gaps))
+	for _, g := range gaps {
+		out = append(out, map[string]any{
+			"start":    g.Start.UTC().Format(time.RFC3339Nano),
+			"end":      g.End.UTC().Format(time.RFC3339Nano),
+			"duration": g.Duration,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// hlsGate enforces engine-active + user auth + playback capability for the HLS
+// VOD endpoints, returning the camera or nil (after writing the error).
+func (a *App) hlsGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
+	if a.engine == nil {
+		httpError(w, http.StatusNotFound, "Not Found")
+		return nil
+	}
+	if a.requireUser(w, r) == nil {
+		return nil
+	}
+	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
+	if cam == nil || !cam.Capabilities.Playback {
+		httpError(w, http.StatusNotFound, "Not found")
+		return nil
+	}
+	return cam
+}
+
+// delegateHLS rewrites the request to carry path=<camID> and hands it to fn.
+// The playlist's init/segment URIs are relative, so they resolve under this
+// same /recordings/hls/ prefix and reach handlePlaybackHLSInit/Segment.
+func (a *App) delegateHLS(w http.ResponseWriter, r *http.Request, camID string, extra map[string]string, fn http.HandlerFunc) {
+	q := r.URL.Query()
+	q.Set("path", camID)
+	for k, v := range extra {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	rq := r.Clone(r.Context())
+	rq.URL.RawQuery = q.Encode()
+	fn(w, rq)
+}
+
+// handlePlaybackHLSPlaylist serves an HLS VOD playlist (CMAF fMP4) for a camera
+// over [start,end]. Embedded-engine only. Gaps are collapsed into a continuous
+// timeline; EXT-X-PROGRAM-DATE-TIME carries wall-clock for cursor mapping.
+func (a *App) handlePlaybackHLSPlaylist(w http.ResponseWriter, r *http.Request) {
+	cam := a.hlsGate(w, r)
+	if cam == nil {
+		return
+	}
+	// eneverre uses start/end; the playback handler reads from/to.
+	q := r.URL.Query()
+	a.delegateHLS(w, r, cam.ID, map[string]string{"from": q.Get("start"), "to": q.Get("end")}, a.engine.Playback().HandleHLSPlaylist)
+}
+
+// handlePlaybackHLSInit serves the CMAF init segment referenced by the playlist.
+func (a *App) handlePlaybackHLSInit(w http.ResponseWriter, r *http.Request) {
+	cam := a.hlsGate(w, r)
+	if cam == nil {
+		return
+	}
+	a.delegateHLS(w, r, cam.ID, nil, a.engine.Playback().HandleHLSInit)
+}
+
+// handlePlaybackHLSSegment serves a CMAF media segment referenced by the playlist.
+func (a *App) handlePlaybackHLSSegment(w http.ResponseWriter, r *http.Request) {
+	cam := a.hlsGate(w, r)
+	if cam == nil {
+		return
+	}
+	a.delegateHLS(w, r, cam.ID, nil, a.engine.Playback().HandleHLSSegment)
+}
+
 func (a *App) handlePlaybackGet(w http.ResponseWriter, r *http.Request) {
-	if a.cfg.MediaMTX == nil {
+	if a.engine == nil && a.cfg.MediaMTX == nil {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
@@ -134,6 +327,13 @@ func (a *App) handlePlaybackGet(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "start and duration are required")
 		return
 	}
+
+	// Embedded engine: mux the clip in-process from the segment index.
+	if a.engine != nil {
+		a.playbackGetEngine(w, r, cam, start, duration)
+		return
+	}
+
 	startNorm, err := normalizeISO(start)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "Invalid start timestamp: '"+start+"'")
@@ -178,6 +378,73 @@ func (a *App) handlePlaybackGet(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// playbackGetEngine serves a clip from the embedded engine's segment index.
+// It pre-checks coverage so it can set X-Next-Available on a miss (matching the
+// MediaMTX path), then delegates the actual fMP4 muxing to the playback handler.
+func (a *App) playbackGetEngine(w http.ResponseWriter, r *http.Request, cam *camera.Camera, start, duration string) {
+	t, err := parseISOTime(start)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "Invalid start timestamp: '"+start+"'")
+		return
+	}
+	dur := parseClipSeconds(duration)
+	end := t.Add(dur)
+
+	segs, err := a.engine.Index().Range(cam.ID, &t, &end)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(segs) == 0 {
+		if next := a.nextAvailableIndex(cam.ID, t); next != "" {
+			w.Header().Set("X-Next-Available", next)
+		}
+		httpError(w, http.StatusNotFound, "no recording segments found")
+		return
+	}
+
+	// Delegate to the playback handler with the query shape it expects. It writes
+	// the fMP4 clip (Content-Type video/mp4) straight to w.
+	rq := r.Clone(r.Context())
+	vals := url.Values{
+		"path":     {cam.ID},
+		"start":    {t.UTC().Format(time.RFC3339Nano)},
+		"duration": {duration},
+		"format":   {"fmp4"},
+	}
+	// Forward the gap-fill toggle (default on) so clients can opt out.
+	if fg := r.URL.Query().Get("fill_gaps"); fg != "" {
+		vals.Set("fill_gaps", fg)
+	}
+	rq.URL.RawQuery = vals.Encode()
+	a.engine.Playback().HandleGet(w, rq)
+}
+
+// nextAvailableIndex returns the ISO start of the first segment at or after
+// start within a 1h window, or "" if none. Used to hint clients where to seek.
+func (a *App) nextAvailableIndex(camID string, start time.Time) string {
+	end := start.Add(time.Hour)
+	segs, err := a.engine.Index().Range(camID, &start, &end)
+	if err != nil {
+		return ""
+	}
+	for _, s := range segs {
+		if !s.Start.Before(start) { // s.Start >= start
+			return s.Start.UTC().Format(time.RFC3339Nano)
+		}
+	}
+	return ""
+}
+
+// parseClipSeconds parses the client's duration param (seconds, e.g. "5" or
+// "5.0"); anything unparseable falls back to 5s, matching PB_CLIP_SECONDS.
+func parseClipSeconds(s string) time.Duration {
+	if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && f > 0 {
+		return time.Duration(f * float64(time.Second))
+	}
+	return 5 * time.Second
 }
 
 // openUpstream opens MediaMTX /get as a stream, following its single redirect

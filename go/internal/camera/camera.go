@@ -4,6 +4,7 @@ package camera
 
 import (
 	"log/slog"
+	"net"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -46,8 +47,12 @@ type Camera struct {
 	RTSP   string `json:"rtsp"`
 	WebRTC string `json:"webrtc"`
 	HLS    string `json:"hls"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
+	// LiveMSE is the same-origin path a browser streams live fMP4 from (fed by
+	// the embedded engine's MSE broadcaster). Set only in embedded-engine mode;
+	// omitted otherwise. The web UI prefers it over hls when present.
+	LiveMSE string `json:"live_mse,omitempty"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
 
 	// Private — never serialized in API responses.
 	ThinginoURL    string `json:"-"`
@@ -57,6 +62,18 @@ type Camera struct {
 	// it is stored raw and never rebuilt by WithMediaMTXURLs. Tagged json:"-" so
 	// the credentials never leak in API responses.
 	Backchannel string `json:"-"`
+
+	// Source is the direct RTSP URL (with credentials) the embedded media engine
+	// records and relays from. It must point at the camera itself. Read from the
+	// INI `source` key, falling back to `live` (which, in embedded mode, is the
+	// direct camera URL). Tagged json:"-" so credentials never leak in responses.
+	Source string `json:"-"`
+
+	// Transport overrides the embedded engine's RTSP source transport for this
+	// camera: "tcp" | "udp" | "auto". Read from the INI `transport` key; empty
+	// means use the global [media] transport. Useful to force TCP on a lossy
+	// camera while leaving the rest on the default.
+	Transport string `json:"-"`
 
 	HomeX    float64 `json:"home_x"`
 	HomeY    float64 `json:"home_y"`
@@ -130,6 +147,11 @@ func loadOne(path string) (Camera, bool) {
 	webrtc := cam.Key("webrtc").String()
 	hls := cam.Key("hls").String()
 	backchannel := strings.TrimSpace(cam.Key("backchannel").String())
+	source := strings.TrimSpace(cam.Key("source").String())
+	if source == "" {
+		source = strings.TrimSpace(rtsp)
+	}
+	transport := strings.ToLower(strings.TrimSpace(cam.Key("transport").String()))
 
 	hasAPIKey := thingino["thingino_api_key"] != ""
 	ptz := strings.ToLower(strings.TrimSpace(thingino["ptz"])) == "true"
@@ -151,6 +173,8 @@ func loadOne(path string) (Camera, bool) {
 		WebRTC:         webrtc,
 		HLS:            hls,
 		Backchannel:    backchannel,
+		Source:         source,
+		Transport:      transport,
 		Width:          cam.Key("width").MustInt(16),
 		Height:         cam.Key("height").MustInt(9),
 		ThinginoURL:    thingino["thingino_url"],
@@ -190,4 +214,55 @@ func (c Camera) WithMediaMTXURLs(cfg *config.Config, creds mediamtx.Creds) Camer
 	c.HLS = creds.HlsURL(server, cfg.MediaMTX.Get("hls_path", "/hls/"), c.ID)
 	c.Live = c.RTSP
 	return c
+}
+
+// WithEngineURLs returns a copy with URLs rebuilt for the embedded media engine.
+// The web live path (LiveMSE) is same-origin; hls/webrtc are cleared (the engine
+// doesn't serve them). The RTSP relay URL points at the relay host: the
+// configured `[media] rtsp_host` when set (authoritative for public / reverse-
+// proxied deployments), otherwise the host the client used to reach the API
+// (reqHost) so RTSP works out of the box on a LAN. The raw camera source URL
+// (which carries credentials) is never exposed either way.
+func (c Camera) WithEngineURLs(cfg *config.Config, creds mediamtx.Creds, reqHost string) Camera {
+	if cfg.Media == nil {
+		return c
+	}
+	c.WebRTC = ""
+	c.HLS = ""
+	c.LiveMSE = "/api/camera/" + c.ID + "/live/stream"
+	host := cfg.Media.Get("rtsp_host", "")
+	if host == "" {
+		host = hostOnly(reqHost)
+	}
+	if host != "" {
+		port := portFromAddr(cfg.Media.Get("rtsp_address", ":8554"))
+		c.RTSP = creds.RtspURL(host, port, c.ID)
+		c.Live = c.RTSP
+	} else {
+		c.RTSP = ""
+		c.Live = ""
+	}
+	return c
+}
+
+// hostOnly strips the port from an HTTP Host header ("192.168.1.95:8081" ->
+// "192.168.1.95", "[::1]:8081" -> "::1"), returning the input unchanged when it
+// has no port.
+func hostOnly(hostPort string) string {
+	if hostPort == "" {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(hostPort); err == nil {
+		return h
+	}
+	return hostPort
+}
+
+// portFromAddr extracts the port from a listen address like ":8554" or
+// "0.0.0.0:8554"; returns "8554" as a fallback.
+func portFromAddr(addr string) string {
+	if i := strings.LastIndex(addr, ":"); i >= 0 && i+1 < len(addr) {
+		return addr[i+1:]
+	}
+	return "8554"
 }

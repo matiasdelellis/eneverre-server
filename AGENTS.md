@@ -1,20 +1,34 @@
 # AGENTS.md
 
 ## What this is
-Eneverre is a manufacturer-agnostic NVR API. It is **not** a streamer — actual
-RTSP/HLS/WebRTC is delegated to an external service (MediaMTX, go2rtc, or
-lightNVR). The API exists to:
-- serve a uniform camera list to clients (Android, Android TV, Web)
-- mediate a Bearer-token device-login flow (used by TV/headless clients)
-- proxy PTZ (move/home/recalibrate), privacy (lens blackout), and thumbnail
-  requests to [Thingino](https://thingino.com/) cameras
-- optionally hold MediaMTX credentials and proxy playback/recording calls
+Eneverre is a manufacturer-agnostic NVR API. It serves a uniform camera list
+to clients (Android, Android TV, Web), mediates a Bearer-token device-login
+flow (used by TV/headless clients), and proxies PTZ (move/home/recalibrate),
+privacy (lens blackout), and thumbnail requests to
+[Thingino](https://thingino.com/) cameras.
+
+For actual streaming, Eneverre has two modes selected by `eneverre.ini`:
+- **Embedded media engine** (`[media]` section) — records, relays (RTSP) and
+  broadcasts (live MSE) every camera **in-process** in the same Go binary. No
+  external streamer to install or supervise. Single binary, single systemd
+  unit. Codecs: H264 + AAC/G711. See [`doc/MEDIA.md`](doc/MEDIA.md).
+- **External streamer** (`[mediamtx]` section, or no section at all) —
+  Eneverre brokers configuration only and proxies playback/recording calls
+  to a separate [MediaMTX](https://github.com/bluenviron/mediamtx) (or
+  go2rtc / lightNVR, depending on what you front it with). This is the
+  original mode and still works as before — see
+  [`doc/MEDIAMTX.md`](doc/MEDIAMTX.md).
+
+`[media]` takes precedence over `[mediamtx]`. With neither, Eneverre serves
+the camera's own `live`/`hls`/`webrtc` URLs from the INI as-is and securing
+them is up to your reverse proxy.
 
 Stack: **Go** (single static binary). HTTP via the stdlib `net/http`
 `ServeMux` (method+pattern routing). SQLite via pure-Go `modernc.org/sqlite`
 (no CGO). Passwords use Werkzeug-compatible hashing (`scrypt`/`pbkdf2`) so an
 existing `data/eneverre.db` keeps working. INI parsing via `gopkg.in/ini.v1`.
-The web UI is vanilla JS, embedded with `go:embed`.
+The web UI is vanilla JS, embedded with `go:embed`. The embedded media engine
+adds `gortsplib` (RTSP client) + `mediacommon` (fMP4) + `pion/*` (RTP/SDP).
 
 The service was ported from an earlier Python/FastAPI implementation, which has
 been removed. API behavior was verified against the Python version with a
@@ -26,8 +40,17 @@ response bodies on every data-bearing route).
 - [`doc/example/README.md`](doc/example/README.md) — every INI key of
   `eneverre.ini` and `cameras.d/<id>.ini`, the `systemd` install steps,
   and the hardening notes.
-- [`doc/MEDIAMTX.md`](doc/MEDIAMTX.md) — the MediaMTX integration in
-  depth: the `POST /api/auth` protocol, the credential-rotation
+- [`doc/MEDIA.md`](doc/MEDIA.md) — the embedded media engine: recording,
+  RTSP relay, browser (MSE) live, playback, codecs and configuration. Read
+  this before touching anything under `internal/media/` or
+  `handlers_live.go` / `handlers_playback.go`.
+- [`doc/PLANS/H265.md`](doc/PLANS/H265.md) — what's left to add H265/HEVC
+  support to the embedded engine and where the browser-wall sits.
+- [`doc/PLANS/GAPFILL-DYNAMIC.md`](doc/PLANS/GAPFILL-DYNAMIC.md) — the
+  design for a date/time-stamped gap-fill caption (currently a static
+  message).
+- [`doc/MEDIAMTX.md`](doc/MEDIAMTX.md) — the external-MediaMTX integration
+  in depth: the `POST /api/auth` protocol, the credential-rotation
   lifecycle, and the reverse-proxy caveats. Read this before touching
   anything in `internal/mediamtx` or `handlers_auth.go:handleMediaMTXAuth`.
 - [`doc/UPDATES.md`](doc/UPDATES.md) — the auto-update protocol for the
@@ -46,10 +69,17 @@ response bodies on every data-bearing route).
 All code lives under `go/` (module `eneverre`).
 - `go/main.go` — bootstrap: `config.Load()`, `store.Open()`+`store.Init()`,
   `mediamtx.NewStore(db)` (reads/writes the credential row, so it runs after the
-  schema exists), `camera.Load()`, `server.New()`, then serves
-  via an `http.Server` with explicit timeouts (ReadHeader 5s / Read 15s /
-  Write 30s / Idle 60s) so a slow or idle client can't hold a goroutine open
-  indefinitely. Starts MediaMTX credential rotation when enabled.
+  schema exists), `camera.Load()`. If `[media]` is configured, `media.New()`
+  builds the embedded engine and `engine.Start(cameras)` spins up per-camera
+  recorders + RTSP relay; `server.SetMediaEngine()` then wires it into the
+  handler set. `server.New()` is built next, then the server runs on an
+  `http.Server` with explicit timeouts (ReadHeader 5s / Read 15s / Write 30s /
+  Idle 60s) so a slow or idle client can't hold a goroutine open
+  indefinitely. Credential rotation is started when `[media]` or `[mediamtx]`
+  is configured (whichever is active). SIGINT/SIGTERM trigger a graceful
+  `srv.Shutdown` (10s) followed by `engine.Close()`, which finalizes and
+  indexes each camera's in-progress fMP4 segment so a clean stop doesn't lose
+  the tail of a recording.
 - `go/embed.go` — `//go:embed all:static` of the web UI.
 - `go/static/` — the vanilla-JS frontend (no build step). `index.html`,
   `style.css`, `timeline.js`, vendored `hls.min.js`, and `app.js` — the entry
@@ -57,12 +87,15 @@ All code lives under `go/` (module `eneverre`).
   split into `js/api.js` (fetch wrapper + token), `js/state.js`, `js/util/*`
   (dom/format/storage helpers), `js/ui/*` (theme, password reveal, user menu,
   dialog) and `js/views/*` (login, app-shell, sidebar, wall, ptz, playback,
-  hls, users, device-auth). The browser resolves the imports directly. This is
-  the canonical copy; edit here.
+  hls, mse, users, device-auth). The browser resolves the imports directly.
+  This is the canonical copy; edit here.
 - `go/internal/config` — INI loading and path resolution. Searches
   `/etc/eneverre/...` then `./data/...`; env overrides
   `ENEVERRE_CONFIG_PATH` / `ENEVERRE_CAMERAS_DIR` / `ENEVERRE_DB_PATH`. Keys are
   read case-insensitively (configparser parity, e.g. `home_Y` → `home_y`).
+  `Config` exposes optional section handles (`cfg.Media`, `cfg.MediaMTX`,
+  `cfg.Events`, `cfg.Auth`, `cfg.Updates`) — `nil` when the section is
+  absent — so callers branch with a single nil check.
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
   (`users`, `device_login`, `tokens`, `events`, `mediamtx_credentials`),
   idempotent column migrations,
@@ -73,10 +106,16 @@ All code lives under `go/` (module `eneverre`).
 - `go/internal/auth` — `CheckPasswordHash`/`GeneratePasswordHash` (Werkzeug
   format) plus Basic/Bearer verification and `CurrentUser`. Bearer reads the
   `tokens` table and rejects expired tokens.
-- `go/internal/camera` — `Camera` model + INI loader. Thingino credential
-  fields are tagged `json:"-"`, so marshaling a `Camera` is the public view
-  (no credential leak). `WithMediaMTXURLs` rebuilds rtsp/webrtc/hls/live from
-  the current credentials **per request** (see rotation below).
+- `go/internal/camera` — `Camera` model + INI loader. Credential fields
+  (`thingino_url`/`thingino_api_key`/`backchannel`/`source`) are tagged
+  `json:"-"`, so marshaling a `Camera` is the public view (no credential
+  leak). `WithMediaMTXURLs` rebuilds rtsp/webrtc/hls/live from the current
+  MediaMTX credentials **per request**; `WithEngineURLs` does the same for the
+  embedded engine (sets `live_mse` to the same-origin MSE path, populates
+  `rtsp` with the relay URL, clears `hls`/`webrtc`). The camera INI `source`
+  key (falls back to `live`) is the direct camera RTSP URL the embedded
+  engine records/relays from; `transport` overrides the global `[media]
+  transport` per camera.
 - `go/internal/mediamtx` — credential `Store`: keeps the live pair in memory
   and persists it to the single-row `mediamtx_credentials` table (`NewStore`
   reads it at startup or generates a fresh pair when the table is empty, and
@@ -84,9 +123,12 @@ All code lives under `go/` (module `eneverre`).
   credentials with a one-interval grace window (`Validate` accepts the current
   or previous pair so active streams aren't dropped at rotation).
   `Current`/`Validate` are in-memory, so the per-request path never touches the
-  DB. The companion MediaMTX config (auth endpoint, listeners, recording
-  defaults) is in `doc/example/mediamtx.yml`; the wire-level details of the
-  `POST /api/auth` probe are in `doc/MEDIAMTX.md`.
+  DB. `Pairs()` returns both the current and grace pair (when present) for
+  the embedded RTSP relay to validate against, so a stream started before a
+  rotation is not dropped the moment the pair rolls. The companion MediaMTX
+  config (auth endpoint, listeners, recording defaults) is in
+  `doc/example/mediamtx.yml`; the wire-level details of the `POST /api/auth`
+  probe are in `doc/MEDIAMTX.md`.
 - `go/internal/thingino` — direct HTTP calls to Thingino cameras (`Move` for
   PTZ, `Thumb` for JPEG). Unreachable/non-2xx → caller maps to `502`.
 - `go/internal/backchannel` — two-way-audio (push-to-talk) to a camera's ONVIF
@@ -107,10 +149,60 @@ All code lives under `go/` (module `eneverre`).
   `finalize=true`); at commit, APKs that aren't in the new release are
   deleted (rotation is bounded to the current release's APKs). The wire
   protocol lives in `doc/UPDATES.md`.
-- `go/internal/server` — `App` (holds cfg, db, cred store, cameras, static FS,
-  per-track update stores) and all handlers, split across `server.go`,
-  `helpers.go`, `handlers_auth.go`, `handlers_events.go`,
-  `handlers_playback.go`, `handlers_users.go`, `handlers_updates.go`.
+- `go/internal/media` — **embedded media engine** (active when `[media]` is
+  configured). One binary, no external streamer. Subpackages:
+  - `engine` — top-level orchestrator: owns the recorder, RTSP relay, live
+    broadcaster and retention cleaner per camera; `OptionsFromSection` maps
+    `[media]` INI keys to a struct; `Close` finalizes every in-progress
+    fMP4 segment and shuts everything down on `SIGTERM`/`SIGINT`.
+  - `recorder` — per-camera RTSP client (`gortsplib`) that demuxes H264/AAC,
+    writes fragmented-MP4 segments on disk and indexes them in SQLite
+    (with the `mtxi` box for gapless concatenation on playback). Includes a
+    media watchdog (silent-but-alive detection + reconnect) and a
+    graceful-segment-finalize on source loss / shutdown. Codecs: H264 + AAC
+    / G711. H265/HEVC is not supported (see `doc/PLANS/H265.md`).
+  - `recstore` — turns a `record_path` template (`%path`, strftime
+    specifiers, `%f` for fractional seconds) into an on-disk path; given a
+    list of files it computes the common root for retention pruning.
+  - `index` — SQLite-backed segment index: insert / range / `Paths()` /
+    `Timeline(start,end,count)` / `Gaps(start,end,minDuration)` / batched
+    `Expired(cutoff,limit)` and `DeleteBatch(fpaths)` (one transaction, one
+    fsync, instead of N round-trips).
+  - `liverelay` — raw RTP passthrough of the recorder's RTP packets, served
+    over RTSP on `[media] rtsp_address` (default `:8554`). Auth validates
+    against the rotating credential pair (current + grace, via
+    `mediamtx.Store.Pairs`), so a stream started just before a rotation
+    doesn't get dropped. No re-encode — same codec, sub-second latency.
+  - `live` — chunked-HTTP fMP4 broadcaster: reads the recorder's RTP,
+    remuxes to CMAF fMP4 on the fly, and serves
+    `…/live/info` (codec string) and `…/live/stream` (init + parts) for
+    browsers via MediaSource Extensions. Latency ~1-2s.
+  - `mtxi` — MediaMTX-compatible `mtxi` fMP4 box writer (so the on-disk
+    segments are byte-identical to what MediaMTX writes, and the playback
+    muxer can gaplessly concatenate them).
+  - `playback` — VOD muxer: `HandleGet` (`/get`, with gap fill),
+    `HandleHLSPlaylist` / `HandleHLSInit` / `HandleHLSSegment` (CMAF VOD
+    playlist with `EXT-X-DISCONTINUITY` at coverage gaps), plus a gap-fill
+    helper that generates a black "NO RECORDING" frame via ffmpeg, caches
+    it to `<cache_dir>/gapfill/<WxH>-<msghash>.h264` and reuses it across
+    restarts. Codec-agnostic (it just re-muxes the segment data).
+  - `retention` — periodic cleaner: queries `Expired` in batches,
+    `os.Remove`s the files with bounded parallel workers, calls
+    `DeleteBatch` (one tx, one fsync), and prunes the now-empty parents of
+    the just-deleted files (cheaper than walking the whole record tree on
+    every pass).
+- `go/internal/server` — `App` (holds cfg, db, cred store, cameras, the
+  optional `*media.Engine` set via `SetMediaEngine`, static FS, per-track
+  update stores) and all handlers, split across `server.go`, `helpers.go`,
+  `handlers_auth.go`, `handlers_events.go`, `handlers_live.go` (embedded
+  engine's `live/info` and `live/stream`), `handlers_playback.go`
+  (recordings list/get/timeline/gaps/HLS-VOD; falls back to the MediaMTX
+  proxy for `list`/`get` when no engine is attached), `handlers_users.go`,
+  `handlers_updates.go`. Routes under `/api/camera/{id}/recordings/*` are
+  the canonical names; the legacy `/api/camera/{id}/playback/{list,get}`
+  and `/api/cameras/{id}/events` are kept as `Deprecation: true` shims
+  (see `deprecatedAlias` in `server.go`) and will be removed once no
+  client uses them.
 
 ## Run / verify
 - Build: `go -C go build -o ../eneverre .` → one static binary.
@@ -136,15 +228,33 @@ MediaMTX auth and see request query strings.
   (with `./data/cameras.d/*.ini` as a dev fallback, overridable via
   `ENEVERRE_CAMERAS_DIR`). Edits require a restart. A file missing a `[camera]`
   section or `id` is skipped.
-- MediaMTX stream URLs are generated per request from the current credentials,
-  so credential rotation needs no restart and no MediaMTX config change
-  (MediaMTX delegates auth to `POST /api/auth`). The probe body, the grace
-  window, and the reverse-proxy caveats are in `doc/MEDIAMTX.md`.
+- **Two streaming modes.** The same camera INI drives both. When `[media]` is
+  set, `GET /api/cameras` rewrites each camera's stream fields via
+  `WithEngineURLs`: `live_mse` becomes the same-origin MSE path
+  (`/api/camera/{id}/live/stream`), `rtsp` becomes the relay
+  `rtsp://<user>:<pass>@<host>:<port>/<id}`, and `hls`/`webrtc` are cleared
+  (the engine doesn't serve them). When `[media]` is absent, the
+  MediaMTX-URLs branch is used (see below). In either case the camera's
+  `source`/`thingino_*`/`backchannel` are tagged `json:"-"` and never
+  appear in responses. Set `[media] rtsp_host` to pin a public host in
+  reverse-proxied deployments; otherwise the relay host is taken from the
+  request (`r.Host`).
+- **MediaMTX stream URLs** (when `[media]` is **not** configured) are
+  generated per request from the current credentials, so credential
+  rotation needs no restart and no MediaMTX config change (MediaMTX
+  delegates auth to `POST /api/auth`). The probe body, the grace window,
+  and the reverse-proxy caveats are in `doc/MEDIAMTX.md`.
+- The same rotating credential pair guards the embedded RTSP relay when
+  `[media]` is set, so the relay, the URLs in `/api/cameras`, and the
+  external-MediaMTX auth probe (if also enabled) all stay in sync. The
+  previous pair stays valid for one interval as a grace window so live
+  streams don't get dropped at rollover.
 - MediaMTX credentials live in the `mediamtx_credentials` table (one row). On
   first run a random 8-char username/password is generated and rotated every
-  `[mediamtx] rotate_hours` (default 24; `0` disables). The previous pair
-  stays valid for one interval as a grace window so live streams don't get
-  dropped at rollover — see `doc/MEDIAMTX.md` for the full lifecycle.
+  `[mediamtx] rotate_hours` (default 24; `0` disables) — or `[media]
+  rotate_hours` when the embedded engine is active. The previous pair
+  stays valid for one interval as a grace window — see `doc/MEDIAMTX.md`
+  for the full lifecycle.
 - The webhook (`POST /api/camera/{id}/events`) accepts any body shape; on a
   parse failure it still records a motion event and stashes the raw body in
   `source` as `webhook:raw (...)`. Requires `[events] webhook_secret` (via
@@ -192,8 +302,15 @@ MediaMTX auth and see request query strings.
   the PTZ to `privacy_x`/`privacy_y` (when both ≥ 0); disabling returns it to
   `home_x`/`home_y`. `home_x/y` and `privacy_x/y` default to `-1` (unset → no
   auto-move). `GET /api/cameras` reflects the current privacy state per camera.
-- `playback` talks to MediaMTX on `http://localhost:<playback_port>` — both
-  must run on the same host. Unreachable upstreams surface as `502`.
+- In **MediaMTX mode**, the playback/list and playback/get endpoints proxy
+  `http://localhost:<playback_port>` — both must run on the same host.
+  Unreachable upstreams surface as `502`. The same goes for `playback/get`,
+  which follows MediaMTX's single redirect by hand so Basic auth is re-sent.
+- In **embedded mode** (`[media]`) those endpoints serve from the in-process
+  segment index, and additional embedded-only endpoints are served: timeline,
+  gaps, HLS VOD (`/recordings/hls/*`) and the live MSE feed
+  (`/live/{info,stream}`). Full endpoint list, payload shapes and client
+  integration notes are in [`doc/MEDIA.md`](doc/MEDIA.md).
 - **Two-way audio (push-to-talk).** `GET /api/camera/{id}/talk` upgrades to a
   WebSocket that relays client mic audio to the camera's ONVIF backchannel
   (see `internal/backchannel`). It is enabled only when the camera INI defines a
@@ -224,33 +341,64 @@ MediaMTX auth and see request query strings.
 - Respond with `writeJSON(w, status, v)` and `httpError(w, status, detail)`
   (FastAPI-compatible `{"detail": "..."}` shape).
 - For camera responses, marshal `camera.Camera` (credentials are already
-  excluded) and apply `WithMediaMTXURLs` so URLs reflect current credentials.
+  excluded) and apply `WithMediaMTXURLs` (MediaMTX mode) or `WithEngineURLs`
+  (embedded mode — the live `engine` is set on `App` via `SetMediaEngine`)
+  so URLs reflect the current mode/credentials.
+- When wrapping an old route as a temporary alias, use `deprecatedAlias(successor, fn)`
+  in `server.go` — it sets `Deprecation: true` + RFC 8594 `Warning` on every
+  response so clients can detect the migration.
 
 ## Adding a new camera
 1. Drop a new `<id>.ini` under `data/cameras.d/` (or `/etc/eneverre/cameras.d/`
    in production). Use `doc/example/cameras.d/camera01.ini` (PTZ Thingino) and
    `doc/example/cameras.d/camera02.ini` (fixed) as templates — every key is
    documented in `doc/example/README.md`. The file's `id` must match the path
-   the camera is published under in MediaMTX (see `doc/MEDIAMTX.md`).
+   the camera is published under in MediaMTX (`doc/MEDIAMTX.md`) — and the
+   path the embedded engine records under (`doc/MEDIA.md`).
 2. Add a `[thingino]` section for PTZ / thumbnail / privacy credentials if the
    camera is a [Thingino](https://thingino.com/). A non-empty
    `thingino_api_key` enables thumbnail + privacy; `ptz = true` enables the
    PTZ endpoints. Credential fields are tagged `json:"-"` and never appear in
    API responses.
-3. Restart the API (cameras are loaded at startup).
+3. For the embedded media engine (`[media]`), set `source` to the direct
+   camera RTSP URL (falls back to `live`); it must point at the camera
+   itself, since it carries credentials and is never exposed to clients. Use
+   `transport = tcp|udp|auto` on a single camera to override the global
+   `[media] transport` (e.g. force TCP on a lossy/distant camera).
+4. Restart the API (cameras are loaded at startup).
 
 ## Frontend notes
 - Single static page in `go/static/`, embedded in the binary. No build step.
 - `ENEVERRE_STATIC_DIR` (or an on-disk `./app/static` / `../app/static`) takes
   precedence over the embedded copy — handy for live edits without rebuilding.
-- The HLS URL from `/api/cameras` already embeds MediaMTX credentials; hls.js
-  re-sends them per segment. If MediaMTX is a different origin it must send
-  permissive CORS headers. The Bearer token lives in `localStorage`.
-- The playback timeline (`timeline.js`) draws MediaMTX recordings as the
-  background bar and motion events from `GET /api/cameras/{id}/events` as red
-  Major1 markers (`fetchEvents` in `js/views/playback.js`). Clicking a marker
-  seeks playback to the event's start. Both are fetched per camera for the last
-  24h when the timeline is built.
+- The Bearer token lives in `localStorage`.
+- **Live view** (`js/views/wall.js` + `js/views/hls.js` + `js/views/mse.js`):
+  the wall tries `camera.live_mse` first (embedded engine, fed by
+  `js/views/mse.js` to `/api/camera/{id}/live/stream` via MediaSource
+  Extensions, ~1-2s latency) and falls back to `camera.hls` (external
+  MediaMTX, played with hls.js). In MediaMTX mode only `hls`/`webrtc` are
+  populated; the embedded-mode `live_mse` is the preferred path.
+- **HLS VOD playback** (`js/views/playback.js`): the timeline plays
+  `/api/camera/{id}/recordings/hls/playlist.m3u8` via hls.js
+  (CMAF; `EXT-X-DISCONTINUITY` at coverage gaps), one instance per camera
+  tile. The cursor advances from wall-clock (1x) so it stays monotonic
+  across gaps. Per-tile "No recording" overlays appear when the cursor
+  sits inside a coverage gap; the tile's HLS instance is reinitialized at
+  the cursor's current wall-clock when it exits the gap. Scrubbing resets
+  everything. Auth: every playlist/init/segment request needs the Bearer
+  token (use hls.js `xhrSetup`).
+- The playback timeline (`timeline.js`) draws recordings as the background
+  bar and motion events from `GET /api/camera/{id}/events` (singular
+  prefix; the plural `/api/cameras/{id}/events` is a deprecated alias) as
+  red Major1 markers (`fetchEvents` in `js/views/playback.js`). Clicking a
+  marker seeks playback to the event's start. Both are fetched per camera
+  for the last 24h when the timeline is built.
+- **Deprecated endpoint aliases** (`server.go`'s `deprecatedAlias`): legacy
+  routes `…/playback/{list,get}` and `/api/cameras/{id}/events` are kept
+  as RFC 8594-deprecated shims with `Deprecation: true` and a `Warning`
+  header pointing at the canonical path. New clients should hit the
+  canonical routes (`/recordings/*` and the singular `/api/camera/`
+  prefix); the aliases are removed once no client uses them.
 - **Auto-update prompt** (`js/views/upgrade-prompt.js`): on boot, the page
   sniffs `navigator.userAgent` for an Android device (TV vs phone/tablet).
   On Android it GETs `/api/app/{tv,phone}/update` (anonymous) and, on 200,

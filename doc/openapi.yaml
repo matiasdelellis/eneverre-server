@@ -9,8 +9,8 @@ info:
     Typical flow:
     1. GET /api/cameras
     2. Pick a camera (playback=true if you want recordings)
-    3. GET /api/camera/{id}/playback/list
-    4. GET /api/camera/{id}/playback/get
+    3. GET /api/camera/{id}/recordings/list
+    4. GET /api/camera/{id}/recordings/get
 
 servers:
   - url: http://localhost:8080
@@ -322,7 +322,111 @@ paths:
         '409':
           description: An active talk session already exists for this camera
 
+  /api/recordings/paths:
+    get:
+      summary: Camera ids that have recordings (embedded engine)
+      description: |
+        Embedded media engine only (404 otherwise). Returns the camera ids that
+        have at least one recorded segment in the index — useful for a client
+        that only browses recordings. Equivalent to the NVR standalone's
+        /api/paths.
+      responses:
+        '200':
+          description: Recorded paths (camera ids), sorted
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+              examples:
+                example:
+                  value: ["calle", "frente", "galeria", "interior", "jardin"]
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/camera/{camera_id}/playback/list:
+    get:
+      deprecated: true
+      summary: List recordings (deprecated alias)
+      description: |
+        **Deprecated compatibility alias** for
+        `GET /api/camera/{camera_id}/recordings/list`, kept only during the
+        transition while clients migrate. Identical behavior; responses carry a
+        `Deprecation: true` header. Use the `recordings/` path in new code.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: start
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Recording segments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Recording'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/playback/get:
+    get:
+      deprecated: true
+      summary: Download recorded video clip (deprecated alias)
+      description: |
+        **Deprecated compatibility alias** for
+        `GET /api/camera/{camera_id}/recordings/get`, kept only during the
+        transition while clients migrate. Identical behavior (including gap
+        fill / `fill_gaps`); responses carry a `Deprecation: true` header. Use
+        the `recordings/` path in new code.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: start
+          in: query
+          required: true
+          description: Clip start (RFC3339, UTC).
+          schema:
+            type: string
+            format: date-time
+        - name: duration
+          in: query
+          required: true
+          description: Clip length in seconds.
+          schema:
+            type: number
+        - name: fill_gaps
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: fragmented-MP4 clip (video/mp4).
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/recordings/list:
     get:
       summary: List recordings
       parameters:
@@ -362,24 +466,53 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /api/camera/{camera_id}/playback/get:
+  /api/camera/{camera_id}/recordings/get:
     get:
-      summary: Get recorded video
+      summary: Download recorded video clip
+      description: |
+        Returns a single continuous fragmented-MP4 clip covering
+        [start, start+duration], stitching consecutive segments gaplessly.
+
+        **Embedded engine (gap fill):** coverage gaps within the window are
+        filled with a black "SIN GRABACIÓN" frame occupying the real gap time,
+        so the clip is never silently trimmed and spans the full requested
+        window. To make the spliced black frame decode alongside the recording
+        (different SPS), the clip is emitted as **avc3** (H264 parameter sets
+        carried in-band). Players must support avc3 — mainstream players
+        (VLC, browsers, QuickTime, ffmpeg-based) do. Pass `fill_gaps=false` to
+        get the legacy gapless behavior (avc1, truncated at the first gap).
+        In external MediaMTX mode this is a straight proxy (no gap fill).
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - name: start
           in: query
           required: true
+          description: Clip start (RFC3339, UTC).
           schema:
             type: string
+            format: date-time
         - name: duration
           in: query
           required: true
+          description: Clip length in seconds.
           schema:
             type: number
+        - name: fill_gaps
+          in: query
+          required: false
+          description: >
+            Embedded engine only. Default true (fill gaps with black + emit
+            avc3). Set to `false` for legacy gapless output (truncates at the
+            first gap, avc1).
+          schema:
+            type: boolean
+            default: true
       responses:
         '200':
-          description: Video stream (MP4)
+          description: >
+            fragmented-MP4 clip (video/mp4). H264 (avc3 when gaps were filled) +
+            AAC/G711 audio when present. On a miss, 404 with an
+            `X-Next-Available` header pointing at the next recorded start.
           content:
             video/mp4:
               schema:
@@ -391,6 +524,201 @@ paths:
 
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/recordings/timeline:
+    get:
+      summary: Recorded extent (embedded engine)
+      description: |
+        Embedded media engine only (404 otherwise). Returns the recorded extent
+        for a camera: first start, last end, and segment count. start/end are
+        null when there are no recordings.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: Recorded extent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  start:
+                    type: string
+                    nullable: true
+                    format: date-time
+                  end:
+                    type: string
+                    nullable: true
+                    format: date-time
+                  count:
+                    type: integer
+              examples:
+                example:
+                  value:
+                    start: "2026-05-04T10:00:00Z"
+                    end: "2026-05-04T13:20:00Z"
+                    count: 1180
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/recordings/gaps:
+    get:
+      summary: Recording coverage gaps (embedded engine)
+      description: |
+        Embedded media engine only (404 otherwise). Returns interruptions longer
+        than 1s between consecutive segments, optionally bounded by start/end.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: start
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Coverage gaps
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    start:
+                      type: string
+                      format: date-time
+                    end:
+                      type: string
+                      format: date-time
+                    duration:
+                      type: number
+              examples:
+                example:
+                  value:
+                    - start: "2026-05-04T10:30:00Z"
+                      end: "2026-05-04T10:30:12Z"
+                      duration: 12
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/recordings/hls/playlist.m3u8:
+    get:
+      summary: HLS VOD playlist (embedded engine)
+      description: |
+        Embedded media engine only. An HLS VOD (CMAF) playlist for
+        [start, end], for scrubbable timeline playback via hls.js. Gaps are
+        collapsed into a continuous timeline; `EXT-X-PROGRAM-DATE-TIME` per
+        segment gives wall-clock. The playlist's init/segment URIs are relative
+        and resolve under this same `/recordings/hls/` prefix; every request
+        needs the Bearer token (use hls.js `xhrSetup`).
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: start
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: HLS VOD playlist
+          content:
+            application/vnd.apple.mpegurl:
+              schema: { type: string }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/recordings/hls/init.mp4:
+    get:
+      summary: HLS VOD CMAF init segment (embedded engine)
+      description: Referenced by the playlist (`EXT-X-MAP`). Embedded engine only.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: CMAF init
+          content:
+            video/mp4:
+              schema: { type: string, format: binary }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/recordings/hls/segment.m4s:
+    get:
+      summary: HLS VOD CMAF media segment (embedded engine)
+      description: Referenced by the playlist. Embedded engine only.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: CMAF media segment
+          content:
+            video/iso.segment:
+              schema: { type: string, format: binary }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/live/info:
+    get:
+      summary: Live stream availability (embedded engine)
+      description: |
+        Only served when the embedded media engine ([media]) is active; returns
+        404 otherwise. Reports whether a live MSE source is available for the
+        camera and the codec string the browser needs to build a MediaSource.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: Availability
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  available:
+                    type: boolean
+                  mime:
+                    type: string
+              examples:
+                example:
+                  value:
+                    available: true
+                    mime: 'video/mp4; codecs="avc1.42c00c"'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/live/stream:
+    get:
+      summary: Live video stream (embedded engine, MSE fMP4)
+      description: |
+        Only served when the embedded media engine ([media]) is active; returns
+        404 otherwise. Streams the camera's live fragmented-MP4 (init + parts)
+        as chunked HTTP, to be fed into a browser MediaSource SourceBuffer.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: Chunked fMP4 stream
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: No live source
 
   /api/auth:
     post:
@@ -423,7 +751,80 @@ paths:
               schema:
                 $ref: '#/components/schemas/Message'
 
+  /api/camera/{camera_id}/events/{event_id}:
+    delete:
+      summary: Delete an event
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: event_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Event deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/cameras/{camera_id}/events:
+    get:
+      deprecated: true
+      summary: List motion events (deprecated alias)
+      description: |
+        **Deprecated compatibility alias** for
+        `GET /api/camera/{camera_id}/events` (note the singular `camera`), kept
+        only during the transition while clients migrate. Identical behavior;
+        responses carry a `Deprecation: true` header. Use the singular path in
+        new code.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+        - name: since
+          in: query
+          schema:
+            type: string
+          description: Start timestamp (unix seconds or RFC3339). Optional.
+        - name: until
+          in: query
+          schema:
+            type: string
+          description: End timestamp (unix seconds or RFC3339). Optional.
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Event list + total
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+                  total:
+                    type: integer
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/events:
     get:
       summary: List motion events
       description: |
@@ -472,29 +873,6 @@ paths:
                     type: integer
         '404':
           $ref: '#/components/responses/NotFound'
-
-  /api/cameras/{camera_id}/events/{event_id}:
-    delete:
-      summary: Delete an event
-      parameters:
-        - $ref: '#/components/parameters/camera_id'
-        - name: event_id
-          in: path
-          required: true
-          schema:
-            type: integer
-            format: int64
-      responses:
-        '200':
-          description: Event deleted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Message'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /api/camera/{camera_id}/events:
     post:
       summary: Event webhook (motion/IO/etc.)
       description: |
