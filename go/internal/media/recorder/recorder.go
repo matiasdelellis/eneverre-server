@@ -1,46 +1,50 @@
 // Package recorder connects to an RTSP source, extracts its H264 video track
-// (and, if present, its AAC audio track) and writes them to disk as
+// (and, if present, its AAC or G711 audio track) and writes them to disk as
 // fragmented-MP4 segments compatible with the MediaMTX layout (including the
 // "mtxi" box for gapless concatenation on playback).
 //
 // It is a focused, multi-track port of MediaMTX's fMP4 recorder: video (H264) +
-// optional audio (MPEG-4 Audio / AAC). Segments always start on a video keyframe.
+// optional audio (MPEG-4 Audio / AAC, or G711 converted to LPCM). Segments
+// always start on a video keyframe.
+//
+// The implementation is split across recorder.go (orchestration), track.go
+// (per-track state), segment.go (on-disk segment + part writing), init.go
+// (fMP4 init/duration header writers), and helpers.go (timestamp math).
 package recorder
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	amp4 "github.com/abema/go-mp4"
 	"github.com/bluenviron/gortsplib/v5"
 	"github.com/bluenviron/gortsplib/v5/pkg/base"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/g711"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
-	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4/seekablebuffer"
 	mcodecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mp4/codecs"
 	"github.com/google/uuid"
 	"github.com/pion/rtp"
 
-	"eneverre/internal/media/mtxi"
 	"eneverre/internal/media/recstore"
 )
 
-// this bounds how far apart tracks may start a segment (avoids large basetimes)
+// maxBasetime bounds how far apart tracks may start a segment (avoids large basetimes).
 const maxBasetime = 1 * time.Second
+
+// noVideoTimeout forces a reconnect when no video packet arrives for this long
+// while connected. Well above any camera's keyframe interval, so a healthy
+// stream never trips it, but a stalled one recovers instead of hanging forever.
+const noVideoTimeout = 8 * time.Second
 
 // ErrNoSupportedVideo is returned by Start when the RTSP stream carries no video
 // codec the recorder can handle (currently H264 only; H265/AV1/etc. are not).
@@ -58,7 +62,7 @@ type SegmentInfo struct {
 	StreamID      string
 }
 
-// Recorder records a single RTSP stream (H264 video + optional AAC audio).
+// Recorder records a single RTSP stream (H264 video + optional AAC/G711 audio).
 type Recorder struct {
 	URL             string
 	PathName        string
@@ -72,9 +76,9 @@ type Recorder struct {
 	// broadcaster, but does NOT write segments to disk and does NOT call
 	// OnSegment (no index rows either). The engine sets this explicitly per
 	// camera; the zero value is false (live-only).
-	Record          bool
-	OnSegment       func(SegmentInfo)
-	Logf            func(string, ...any)
+	Record    bool
+	OnSegment func(SegmentInfo)
+	Logf      func(string, ...any)
 
 	// Live relay hooks (optional). OnSource is called with the camera description
 	// once connected; OnRTP is called for every incoming RTP packet (raw
@@ -98,9 +102,9 @@ type Recorder struct {
 	videoStarted bool
 
 	// lastVideoNano is the UnixNano of the most recent video RTP packet. A media
-	// watchdog (see Start) uses it to force a reconnect when a camera goes silent
-	// while keeping the RTSP session half-alive (common on weak/distant links),
-	// which the transport-level read timeout doesn't always catch.
+	// watchdog uses it to force a reconnect when a camera goes silent while
+	// keeping the RTSP session half-alive (common on weak/distant links), which
+	// the transport-level read timeout doesn't always catch.
 	lastVideoNano atomic.Int64
 
 	// shared multi-track state (guarded by mu, since RTP callbacks for
@@ -111,11 +115,6 @@ type Recorder struct {
 	currentSegment    *segment
 	nextSegmentNumber uint64
 }
-
-// noVideoTimeout forces a reconnect when no video packet arrives for this long
-// while connected. Well above any camera's keyframe interval, so a healthy
-// stream never trips it, but a stalled one recovers instead of hanging forever.
-const noVideoTimeout = 8 * time.Second
 
 // Start connects and records. Blocks until the connection ends or Close.
 func (r *Recorder) Start() error {
@@ -186,8 +185,6 @@ func (r *Recorder) Start() error {
 		return err
 	}
 
-	// Log the codecs the stream advertises, so an unsupported camera (e.g. one
-	// that only sends H265) is diagnosable instead of just failing to record.
 	var offered []string
 	for _, m := range desc.Medias {
 		for _, f := range m.Formats {
@@ -237,130 +234,14 @@ func (r *Recorder) Start() error {
 	}
 
 	// --- audio (optional: AAC, or G711 converted to LPCM) ---
-	audioOK := false
-
-	// AAC (MPEG-4 Audio)
-	var aacForma *format.MPEG4Audio
-	if aacMedia := desc.FindFormat(&aacForma); aacMedia != nil && aacForma.Config != nil {
-		audioTrack := r.addTrack(uint32(aacForma.ClockRate()),
-			&mcodecs.MPEG4Audio{Config: *aacForma.Config})
-		aacDec, err2 := aacForma.CreateDecoder()
-		if err2 != nil {
-			return err2
-		}
-		if _, err2 = r.client.Setup(desc.BaseURL, aacMedia, 0, 0); err2 != nil {
-			return err2
-		}
-		r.Logf("audio track: AAC %d Hz", aacForma.ClockRate())
-
-		r.client.OnPacketRTP(aacMedia, aacForma, func(pkt *rtp.Packet) {
-			if r.OnRTP != nil {
-				r.OnRTP(aacMedia, pkt)
-			}
-			if !demux {
-				return // relay-only: raw RTP already forwarded above
-			}
-			pts, ok := r.client.PacketPTS(aacMedia, pkt)
-			if !ok {
-				return
-			}
-			aus, err3 := aacDec.Decode(pkt)
-			if err3 != nil {
-				if !errors.Is(err3, rtpmpeg4audio.ErrMorePacketsNeeded) {
-					r.Logf("aac rtp decode: %v", err3)
-				}
-				return
-			}
-			ntp := time.Now()
-			r.mu.Lock()
-			if r.videoStarted { // drop audio until first video keyframe
-				for i, a := range aus {
-					p := pts + int64(i)*mpeg4audio.SamplesPerAccessUnit
-					audioTrack.write(&sample{
-						Sample: &fmp4.Sample{Payload: a},
-						dts:    p,
-						ntp:    ntp.Add(timestampToDuration(p-pts, int(audioTrack.clockRate))),
-					})
-				}
-			}
-			r.mu.Unlock()
-		})
-		audioOK = true
-	}
-
-	// G711 (A-law / mu-law) -> LPCM 16-bit big-endian (fMP4 can't carry G711)
-	if !audioOK {
-		var g711Forma *format.G711
-		if g711Media := desc.FindFormat(&g711Forma); g711Media != nil {
-			audioTrack := r.addTrack(uint32(g711Forma.ClockRate()), &mcodecs.LPCM{
-				LittleEndian: false,
-				BitDepth:     16,
-				SampleRate:   g711Forma.SampleRate,
-				ChannelCount: g711Forma.ChannelCount,
-			})
-			g711Dec, err2 := g711Forma.CreateDecoder()
-			if err2 != nil {
-				return err2
-			}
-			if _, err2 = r.client.Setup(desc.BaseURL, g711Media, 0, 0); err2 != nil {
-				return err2
-			}
-			law := "A-law"
-			if g711Forma.MULaw {
-				law = "mu-law"
-			}
-			r.Logf("audio track: G711 %s %d Hz -> LPCM", law, g711Forma.ClockRate())
-
-			mulaw := g711Forma.MULaw
-			r.client.OnPacketRTP(g711Media, g711Forma, func(pkt *rtp.Packet) {
-				if r.OnRTP != nil {
-					r.OnRTP(g711Media, pkt)
-				}
-				if !demux {
-					return // relay-only: raw RTP already forwarded above
-				}
-				pts, ok := r.client.PacketPTS(g711Media, pkt)
-				if !ok {
-					return
-				}
-				enc, err3 := g711Dec.Decode(pkt)
-				if err3 != nil {
-					r.Logf("g711 rtp decode: %v", err3)
-					return
-				}
-				var lpcm []byte
-				if mulaw {
-					var m g711.Mulaw
-					m.Unmarshal(enc)
-					lpcm = m
-				} else {
-					var a g711.Alaw
-					a.Unmarshal(enc)
-					lpcm = a
-				}
-				ntp := time.Now()
-				r.mu.Lock()
-				if r.videoStarted { // drop audio until first video keyframe
-					audioTrack.write(&sample{
-						Sample: &fmp4.Sample{Payload: lpcm},
-						dts:    pts,
-						ntp:    ntp,
-					})
-				}
-				r.mu.Unlock()
-			})
-			audioOK = true
-		}
-	}
-
-	if !audioOK {
-		r.Logf("no supported audio track found; recording video only")
+	if err := r.setupAudio(desc, demux); err != nil {
+		return err
 	}
 
 	// --- video callback ---
 	r.client.OnPacketRTP(videoMedia, videoForma, func(pkt *rtp.Packet) {
 		r.lastVideoNano.Store(time.Now().UnixNano()) // feed the media watchdog
-		if r.OnRTP != nil {              // forward raw to live relay (lowest latency)
+		if r.OnRTP != nil {                          // forward raw to live relay (lowest latency)
 			r.OnRTP(videoMedia, pkt)
 		}
 		if !demux {
@@ -475,6 +356,153 @@ func (r *Recorder) addTrack(clockRate uint32, codec mcodecs.Codec) *recTrack {
 	return t
 }
 
+// setupAudio discovers the audio track (AAC or G711), wires its RTP callback,
+// and returns an error when the decoder or RTSP SETUP fails. A missing audio
+// track (neither AAC nor G711 in the SDP) is not an error — the recorder
+// continues video-only.
+func (r *Recorder) setupAudio(desc *description.Session, demux bool) error {
+	audioOK := false
+
+	// AAC (MPEG-4 Audio)
+	var aacForma *format.MPEG4Audio
+	if aacMedia := desc.FindFormat(&aacForma); aacMedia != nil && aacForma.Config != nil {
+		if err := r.setupAAC(desc, aacMedia, aacForma, demux); err != nil {
+			return err
+		}
+		audioOK = true
+	}
+
+	// G711 (A-law / mu-law) -> LPCM 16-bit big-endian (fMP4 can't carry G711)
+	if !audioOK {
+		var g711Forma *format.G711
+		if g711Media := desc.FindFormat(&g711Forma); g711Media != nil {
+			if err := r.setupG711(desc, g711Media, g711Forma, demux); err != nil {
+				return err
+			}
+			audioOK = true
+		}
+	}
+
+	if !audioOK {
+		r.Logf("no supported audio track found; recording video only")
+	}
+	return nil
+}
+
+func (r *Recorder) setupAAC(desc *description.Session, aacMedia *description.Media, aacForma *format.MPEG4Audio, demux bool) error {
+	audioTrack := r.addTrack(uint32(aacForma.ClockRate()),
+		&mcodecs.MPEG4Audio{Config: *aacForma.Config})
+	aacDec, err := aacForma.CreateDecoder()
+	if err != nil {
+		return fmt.Errorf("aac decoder: %w", err)
+	}
+	if _, err = r.client.Setup(desc.BaseURL, aacMedia, 0, 0); err != nil {
+		return fmt.Errorf("aac setup: %w", err)
+	}
+	r.Logf("audio track: AAC %d Hz", aacForma.ClockRate())
+
+	r.wireAudio(audioTrack, aacMedia, aacForma, demux, func(pkt *rtp.Packet, pts int64) []*sample {
+		aus, err := aacDec.Decode(pkt)
+		if err != nil {
+			if !errors.Is(err, rtpmpeg4audio.ErrMorePacketsNeeded) {
+				r.Logf("aac rtp decode: %v", err)
+			}
+			return nil
+		}
+		// One RTP packet may carry several access units; each is a sample with
+		// its own PTS/NTP (SamplesPerAccessUnit apart at the track clock rate).
+		ntp := time.Now()
+		samples := make([]*sample, len(aus))
+		for i, a := range aus {
+			p := pts + int64(i)*mpeg4audio.SamplesPerAccessUnit
+			samples[i] = &sample{
+				Sample: &fmp4.Sample{Payload: a},
+				dts:    p,
+				ntp:    ntp.Add(timestampToDuration(p-pts, int(audioTrack.clockRate))),
+			}
+		}
+		return samples
+	})
+	return nil
+}
+
+func (r *Recorder) setupG711(desc *description.Session, g711Media *description.Media, g711Forma *format.G711, demux bool) error {
+	audioTrack := r.addTrack(uint32(g711Forma.ClockRate()), &mcodecs.LPCM{
+		LittleEndian: false,
+		BitDepth:     16,
+		SampleRate:   g711Forma.SampleRate,
+		ChannelCount: g711Forma.ChannelCount,
+	})
+	g711Dec, err := g711Forma.CreateDecoder()
+	if err != nil {
+		return fmt.Errorf("g711 decoder: %w", err)
+	}
+	if _, err = r.client.Setup(desc.BaseURL, g711Media, 0, 0); err != nil {
+		return fmt.Errorf("g711 setup: %w", err)
+	}
+	law := "A-law"
+	if g711Forma.MULaw {
+		law = "mu-law"
+	}
+	r.Logf("audio track: G711 %s %d Hz -> LPCM", law, g711Forma.ClockRate())
+
+	mulaw := g711Forma.MULaw
+	r.wireAudio(audioTrack, g711Media, g711Forma, demux, func(pkt *rtp.Packet, pts int64) []*sample {
+		enc, err := g711Dec.Decode(pkt)
+		if err != nil {
+			r.Logf("g711 rtp decode: %v", err)
+			return nil
+		}
+		var lpcm []byte
+		if mulaw {
+			var m g711.Mulaw
+			m.Unmarshal(enc)
+			lpcm = m
+		} else {
+			var a g711.Alaw
+			a.Unmarshal(enc)
+			lpcm = a
+		}
+		return []*sample{{
+			Sample: &fmp4.Sample{Payload: lpcm},
+			dts:    pts,
+			ntp:    time.Now(),
+		}}
+	})
+	return nil
+}
+
+// wireAudio registers the RTP-callback envelope shared by every audio codec:
+// raw OnRTP passthrough, the relay-only short-circuit (!demux), PTS extraction,
+// and the mu-guarded "drop until first video keyframe" gate. decode turns one
+// packet into zero or more samples (nil on a decode error it already logged);
+// they are written to the track under r.mu only once video has started.
+func (r *Recorder) wireAudio(t *recTrack, media *description.Media, forma format.Format, demux bool, decode func(pkt *rtp.Packet, pts int64) []*sample) {
+	r.client.OnPacketRTP(media, forma, func(pkt *rtp.Packet) {
+		if r.OnRTP != nil {
+			r.OnRTP(media, pkt)
+		}
+		if !demux {
+			return
+		}
+		pts, ok := r.client.PacketPTS(media, pkt)
+		if !ok {
+			return
+		}
+		samples := decode(pkt, pts)
+		if len(samples) == 0 {
+			return
+		}
+		r.mu.Lock()
+		if r.videoStarted { // drop audio until first video keyframe
+			for _, s := range samples {
+				t.write(s)
+			}
+		}
+		r.mu.Unlock()
+	})
+}
+
 // processH264 turns an access unit into a sample and feeds it to the video track.
 // Caller must hold r.mu.
 func (r *Recorder) processH264(t *recTrack, au [][]byte, pts int64, ntp time.Time) {
@@ -547,356 +575,4 @@ func (r *Recorder) processH264(t *recTrack, au [][]byte, pts int64, ntp time.Tim
 		return
 	}
 	t.write(&sample{Sample: &s, dts: dts, ntp: ntp})
-}
-
-// --- sample + track (port of MediaMTX format_fmp4_track) ---
-
-type sample struct {
-	*fmp4.Sample
-	dts int64 // in the track's clock rate units
-	ntp time.Time
-}
-
-type recTrack struct {
-	r         *Recorder
-	clockRate uint32
-	initTrack *fmp4.InitTrack
-
-	nextSample *sample
-}
-
-// write buffers one sample of lookahead (to compute the previous sample's
-// duration) and drives segment creation/rotation. Caller must hold r.mu.
-//
-// In live-only mode (r.Record == false) the segment creation/writing and
-// rotation are skipped entirely, but the live broadcaster still receives the
-// sample (so MSE /live/stream keeps working). The on-disk layout is unchanged
-// for cameras that do record.
-func (t *recTrack) write(smp *sample) {
-	r := t.r
-	if t.initTrack.Codec.IsVideo() {
-		r.hasVideo = true
-	}
-
-	smp, t.nextSample = t.nextSample, smp
-	if smp == nil {
-		return
-	}
-
-	duration := t.nextSample.dts - smp.dts
-	if duration < 0 {
-		t.nextSample.dts = smp.dts
-		duration = 0
-	}
-	smp.Duration = uint32(duration)
-
-	// feed the same finalized sample to the live web broadcaster. Done
-	// unconditionally — the broadcaster is independent of disk persistence.
-	if r.OnLiveSample != nil {
-		r.OnLiveSample(t.initTrack.ID, smp.Sample, smp.dts)
-	}
-
-	// Live-only mode: skip segment creation, writing, and rotation. r.currentSegment
-	// stays nil; the disconnect/Close handlers no-op on it.
-	if !r.Record {
-		return
-	}
-
-	dts := timestampToDuration(smp.dts, int(t.clockRate))
-
-	if r.currentSegment == nil {
-		r.currentSegment = r.newSegment(dts, smp.ntp)
-	} else if (dts - r.currentSegment.startDTS) < 0 {
-		r.Logf("sample of track %d received too late, discarding", t.initTrack.ID)
-		return
-	}
-
-	if err := r.currentSegment.write(t, smp, dts); err != nil {
-		r.Logf("segment write: %v", err)
-		r.currentSegment.close() //nolint:errcheck
-		r.currentSegment = nil
-		return
-	}
-
-	// rotate only on a video keyframe once the minimum duration elapsed
-	nextDTS := timestampToDuration(t.nextSample.dts, int(t.clockRate))
-	if (!r.hasVideo || t.initTrack.Codec.IsVideo()) &&
-		!t.nextSample.IsNonSyncSample &&
-		(nextDTS-r.currentSegment.startDTS) >= r.SegmentDuration {
-		if err := r.currentSegment.close(); err != nil {
-			r.Logf("segment close: %v", err)
-		}
-		oldestNTP, oldestDTS := r.nextSegmentStartingPos()
-		r.currentSegment = r.newSegment(oldestDTS, oldestNTP)
-	}
-}
-
-// nextSegmentStartingPos picks the oldest pending sample across tracks (within
-// maxBasetime of the newest) so the next segment starts early enough for every
-// track, avoiding negative or huge basetimes.
-func (r *Recorder) nextSegmentStartingPos() (time.Time, time.Duration) {
-	var maxDTS time.Duration
-	for _, t := range r.tracks {
-		if t.nextSample != nil {
-			dts := timestampToDuration(t.nextSample.dts, int(t.clockRate))
-			if dts > maxDTS {
-				maxDTS = dts
-			}
-		}
-	}
-	var oldestNTP time.Time
-	oldestDTS := maxDTS
-	for _, t := range r.tracks {
-		if t.nextSample != nil {
-			dts := timestampToDuration(t.nextSample.dts, int(t.clockRate))
-			if (maxDTS-dts) <= maxBasetime && dts <= oldestDTS {
-				oldestNTP = t.nextSample.ntp
-				oldestDTS = dts
-			}
-		}
-	}
-	return oldestNTP, oldestDTS
-}
-
-func (r *Recorder) newSegment(startDTS time.Duration, startNTP time.Time) *segment {
-	s := &segment{r: r, startDTS: startDTS, startNTP: startNTP, number: r.nextSegmentNumber, endDTS: startDTS}
-	r.nextSegmentNumber++
-	return s
-}
-
-// --- segment ---
-
-type segment struct {
-	r        *Recorder
-	startDTS time.Duration
-	startNTP time.Time
-	number   uint64
-
-	path           string
-	fi             *os.File
-	curPart        *part
-	endDTS         time.Duration
-	nextPartNumber uint32
-}
-
-func (s *segment) write(t *recTrack, smp *sample, dts time.Duration) error {
-	endDTS := dts + timestampToDuration(int64(smp.Duration), int(t.clockRate))
-	if endDTS > s.endDTS {
-		s.endDTS = endDTS
-	}
-
-	if s.curPart == nil {
-		s.curPart = newPart(s.startDTS, s.nextPartNumber, dts)
-		s.nextPartNumber++
-	} else if s.curPart.duration() >= s.r.PartDuration {
-		if err := s.closeCurPart(); err != nil {
-			s.curPart = nil
-			return err
-		}
-		s.curPart = newPart(s.startDTS, s.nextPartNumber, dts)
-		s.nextPartNumber++
-	}
-
-	return s.curPart.write(t, smp, dts)
-}
-
-func (s *segment) closeCurPart() error {
-	if s.fi == nil {
-		s.path = recstore.Path{Start: s.startNTP}.Encode(s.r.pathFmt)
-		if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-			return err
-		}
-		fi, err := os.Create(s.path)
-		if err != nil {
-			return err
-		}
-		if err = writeInit(fi, s.r.streamID, s.number, s.startDTS, s.startNTP, s.r.tracks); err != nil {
-			fi.Close()
-			return err
-		}
-		s.fi = fi
-	}
-	return s.curPart.close(s.fi)
-}
-
-func (s *segment) close() error {
-	var err error
-	if s.curPart != nil {
-		err = s.closeCurPart()
-	}
-	if s.fi != nil {
-		duration := s.endDTS - s.startDTS
-		if e := writeDuration(s.fi, duration); err == nil {
-			err = e
-		}
-		e := s.fi.Close()
-		if err == nil {
-			err = e
-		}
-		if e == nil && s.r.OnSegment != nil {
-			s.r.OnSegment(SegmentInfo{
-				Path:          s.path,
-				Start:         s.startNTP,
-				Duration:      duration,
-				SegmentNumber: s.number,
-				StreamID:      s.r.streamID.String(),
-			})
-		}
-	}
-	return err
-}
-
-// --- part (fMP4 fragment, multi-track) ---
-
-type part struct {
-	segmentStartDTS time.Duration
-	number          uint32
-	startDTS        time.Duration
-	endDTS          time.Duration
-
-	partTracks map[*recTrack]*fmp4.PartTrack
-	size       uint64
-}
-
-func newPart(segmentStartDTS time.Duration, number uint32, startDTS time.Duration) *part {
-	return &part{
-		segmentStartDTS: segmentStartDTS,
-		number:          number,
-		startDTS:        startDTS,
-		endDTS:          startDTS,
-		partTracks:      make(map[*recTrack]*fmp4.PartTrack),
-	}
-}
-
-func (p *part) write(t *recTrack, smp *sample, dts time.Duration) error {
-	size := uint64(len(smp.Payload))
-	if t.r.MaxPartSize > 0 && (p.size+size) > t.r.MaxPartSize {
-		return fmt.Errorf("reached maximum part size")
-	}
-	p.size += size
-
-	pt, ok := p.partTracks[t]
-	if !ok {
-		// dts is guaranteed >= segmentStartDTS by the "received too late" guard
-		// in recTrack.write (a sample older than the current segment is dropped
-		// before it reaches here). Clamp anyway: a negative delta would wrap the
-		// uint64 BaseTime into a garbage value, corrupting the whole part.
-		baseDelta := int64(dts - p.segmentStartDTS)
-		if baseDelta < 0 {
-			baseDelta = 0
-		}
-		pt = &fmp4.PartTrack{
-			ID:       t.initTrack.ID,
-			BaseTime: uint64(multiplyAndDivide(baseDelta, int64(t.clockRate), int64(time.Second))),
-		}
-		p.partTracks[t] = pt
-	}
-	pt.Samples = append(pt.Samples, smp.Sample)
-
-	endDTS := dts + timestampToDuration(int64(smp.Duration), int(t.clockRate))
-	if endDTS > p.endDTS {
-		p.endDTS = endDTS
-	}
-	return nil
-}
-
-func (p *part) close(w io.Writer) error {
-	tracks := make([]*fmp4.PartTrack, 0, len(p.partTracks))
-	for _, pt := range p.partTracks {
-		tracks = append(tracks, pt)
-	}
-	fpart := &fmp4.Part{SequenceNumber: p.number, Tracks: tracks}
-
-	var buf seekablebuffer.Buffer
-	if err := fpart.Marshal(&buf); err != nil {
-		return err
-	}
-	_, err := w.Write(buf.Bytes())
-	return err
-}
-
-func (p *part) duration() time.Duration { return p.endDTS - p.startDTS }
-
-// --- fMP4 init/duration writers ---
-
-func writeInit(f io.Writer, streamID uuid.UUID, segNumber uint64, dts time.Duration, ntp time.Time, tracks []*recTrack) error {
-	fmp4Tracks := make([]*fmp4.InitTrack, len(tracks))
-	for i, t := range tracks {
-		fmp4Tracks[i] = t.initTrack
-	}
-
-	init := fmp4.Init{
-		Tracks: fmp4Tracks,
-		UserData: []amp4.IBox{
-			&mtxi.Box{
-				FullBox:       amp4.FullBox{Version: 0},
-				StreamID:      [16]byte(streamID),
-				SegmentNumber: segNumber,
-				DTS:           int64(dts),
-				NTP:           ntp.UnixNano(),
-			},
-		},
-	}
-	var buf seekablebuffer.Buffer
-	if err := init.Marshal(&buf); err != nil {
-		return err
-	}
-	_, err := f.Write(buf.Bytes())
-	return err
-}
-
-// writeDuration rewrites the total duration into mvhd (timescale 1000).
-func writeDuration(f io.ReadWriteSeeker, d time.Duration) error {
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-
-	buf := make([]byte, 8)
-	if _, err := io.ReadFull(f, buf); err != nil {
-		return err
-	}
-	if !bytes.Equal(buf[4:], []byte{'f', 't', 'y', 'p'}) {
-		return fmt.Errorf("ftyp box not found")
-	}
-	ftypSize := uint32(buf[0])<<24 | uint32(buf[1])<<16 | uint32(buf[2])<<8 | uint32(buf[3])
-
-	if _, err := f.Seek(int64(ftypSize), io.SeekStart); err != nil {
-		return err
-	}
-	if _, err := io.ReadFull(f, buf); err != nil {
-		return err
-	}
-	if !bytes.Equal(buf[4:], []byte{'m', 'o', 'o', 'v'}) {
-		return fmt.Errorf("moov box not found")
-	}
-	moovSize := uint32(buf[0])<<24 | uint32(buf[1])<<16 | uint32(buf[2])<<8 | uint32(buf[3])
-
-	moovPos, err := f.Seek(8, io.SeekCurrent)
-	if err != nil {
-		return err
-	}
-
-	var mvhd amp4.Mvhd
-	if _, err = amp4.Unmarshal(f, uint64(moovSize-8), &mvhd, amp4.Context{}); err != nil {
-		return err
-	}
-	mvhd.DurationV0 = uint32(d / time.Millisecond)
-
-	if _, err = f.Seek(moovPos, io.SeekStart); err != nil {
-		return err
-	}
-	_, err = amp4.Marshal(f, &mvhd, amp4.Context{})
-	return err
-}
-
-// --- timestamp helpers ---
-
-func multiplyAndDivide(v, m, d int64) int64 {
-	secs := v / d
-	dec := v % d
-	return secs*m + dec*m/d
-}
-
-func timestampToDuration(t int64, clockRate int) time.Duration {
-	return time.Duration(multiplyAndDivide(t, int64(time.Second), int64(clockRate)))
 }
