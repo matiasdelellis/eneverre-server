@@ -6,14 +6,9 @@
 // The pipeline is: caller feeds native-rate mono S16LE PCM via FeedPCM →
 // anti-alias low-pass + linear resample to 8 kHz → G.711 (A-law/µ-law) encode →
 // 160-sample RTP frames every 20 ms → RTSP interleaved ($-framing, channel 0)
-// over the same TCP connection as the RTSP control messages. Cameras that
-// advertise an MPEG4-GENERIC track instead take raw AAC access units via FeedAU,
-// forwarded unclocked as they arrive (see aac.go and Session.sendLoopAAC).
+// over the same TCP connection as the RTSP control messages.
 //
 // Everything is hand-implemented with the standard library (no external RTSP or
 // G.711 dependency). Trace logging goes through slog at debug level, so run with
 // ENEVERRE_LOG_LEVEL=debug to see the RTSP exchange.
-//
-// The implementation is split across g711.go, rtp.go, aac.go, resample.go,
-// sdp.go, rtsp.go, and session.go.
 package backchannel
