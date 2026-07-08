@@ -276,9 +276,15 @@ see request query strings and the more verbose media-engine traces
 - **Device (TV) sessions are deliberately non-renewable**: the device-login
   flow issues only an access token with `refresh_token` left NULL, so they
   cannot hit `/api/auth/refresh` and must re-pair when the access token lapses.
-- `cleanupExpiredTokens()` (called opportunistically on login, like
-  `cleanupExpiredDevices`) deletes dead sessions: renewable rows past their
-  refresh window, non-renewable/legacy rows past their access expiry.
+- `cleanupExpiredTokens()` runs both on every login **and** on a background
+  ticker (`[auth] cleanup_interval_minutes`, default 60 min) so the tokens
+  table stays lean even on rarely-used installations. Deletes dead sessions:
+  renewable rows past their refresh window, non-renewable/legacy rows past
+  their access expiry. The deletion applies a grace window
+  (`[auth] cleanup_grace_hours`, default 24h) so expired tokens remain visible
+  in the sessions list long enough for a user to see them labelled "expired".
+  Set the interval to 0 to keep only login-time cleanup. Set the grace to 0
+  for the previous immediate-deletion behaviour.
 - `GET /api/users/me/sessions` reports a renewable session as alive while its
   *refresh* token is valid (its `expires_at` in the response is the refresh
   expiry) and adds a `renewable` boolean; otherwise it uses the access expiry.

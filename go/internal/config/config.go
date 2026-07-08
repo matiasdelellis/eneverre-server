@@ -277,6 +277,45 @@ func parseSize(s string) (int64, error) {
 	return n * mult, nil
 }
 
+// AuthCleanupIntervalMinutes returns how often the background token-cleanup
+// goroutine runs, in minutes. 0 or negative means the background ticker is not
+// started (cleanup still runs opportunistically on login). Default: 60 (1h).
+// Precedence: [auth] cleanup_interval_minutes > ENEVERRE_TOKEN_CLEANUP_INTERVAL
+// > 60.
+func (c *Config) AuthCleanupIntervalMinutes() int {
+	const def = 60
+	if v := strings.TrimSpace(c.Auth.Get("cleanup_interval_minutes", "")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	if env := strings.TrimSpace(os.Getenv("ENEVERRE_TOKEN_CLEANUP_INTERVAL")); env != "" {
+		if n, err := strconv.Atoi(env); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
+// AuthCleanupGraceHours returns how many hours a token remains in the database
+// after it expires, so the frontend can still show it in the sessions list as
+// "expired". Default: 24 (1 day). Precedence: [auth] cleanup_grace_hours >
+// ENEVERRE_TOKEN_CLEANUP_GRACE_HOURS > 24.
+func (c *Config) AuthCleanupGraceHours() int {
+	const def = 24
+	if v := strings.TrimSpace(c.Auth.Get("cleanup_grace_hours", "")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	if env := strings.TrimSpace(os.Getenv("ENEVERRE_TOKEN_CLEANUP_GRACE_HOURS")); env != "" {
+		if n, err := strconv.Atoi(env); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return def
+}
+
 // UpdatesSection returns the [updates] section or an empty Section. Safe to
 // call when the section is missing (returns a non-nil Section that yields
 // defaults).

@@ -81,15 +81,17 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// cleanupExpiredTokens deletes dead sessions: renewable ones past their refresh
-// window, and non-renewable (device-flow or legacy) ones past their access
-// expiry. Called opportunistically on login, mirroring cleanupExpiredDevices.
+// cleanupExpiredTokens deletes dead sessions: renewable ones past their
+// refresh-window + grace, and non-renewable (device-flow or legacy) ones past
+// their access expiry + grace. The grace keeps tokens visible in the sessions
+// list for a while after they expire. Called on every login and on a
+// background ticker when [auth] cleanup_interval_minutes > 0.
 func (a *App) cleanupExpiredTokens() {
-	now := time.Now().Unix()
+	cut := time.Now().Unix() - a.cleanupGrace
 	_, _ = a.db.Exec(
 		"DELETE FROM tokens WHERE (refresh_token IS NOT NULL AND refresh_expires_at < ?) "+
 			"OR (refresh_token IS NULL AND expires_at < ?)",
-		now, now,
+		cut, cut,
 	)
 }
 

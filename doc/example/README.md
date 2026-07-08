@@ -42,6 +42,17 @@ work and retention is handled elsewhere:
 ; password-login renewal window, slid forward on every refresh.
 access_token_ttl_hours = 24
 refresh_token_ttl_days = 90
+; Token-cleanup background interval (minutes). A ticker prunes expired token
+; rows between user logins so the DB doesn't accumulate dead sessions on a
+; rarely-used installation. 0 disables the background loop (login-time
+; cleanup still runs). Precedence: this key > ENEVERRE_TOKEN_CLEANUP_INTERVAL
+; > 60.
+;cleanup_interval_minutes = 60
+;
+; Grace period in hours: a token stays visible in the sessions list for this
+; long after it expires before the cleaner deletes it. 0 deletes expired
+; tokens immediately (previous behaviour). Default 24.
+;cleanup_grace_hours = 24
 
 [media]
 ; Embedded media engine — records each camera, relays it over RTSP and

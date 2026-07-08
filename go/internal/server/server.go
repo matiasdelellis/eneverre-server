@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"eneverre/internal/auth"
 	"eneverre/internal/backchannel"
@@ -45,8 +46,14 @@ type App struct {
 	// at startup from the [auth] section. accessTTL is the Bearer (access)
 	// token life (login + device); refreshTTL is the refresh-token life that a
 	// password-login session slides forward on each refresh.
-	accessTTL  int64
-	refreshTTL int64
+	accessTTL    int64
+	refreshTTL   int64
+	// cleanupGrace is the number of seconds a token stays visible in the
+	// sessions list after it expires. The background cleaner deletes tokens
+	// only when they have been expired for longer than this window. This lets
+	// the frontend display expired sessions (in a separate "expired" list)
+	// instead of having them disappear the moment they lapse.
+	cleanupGrace int64
 
 	// privacy tracks the live privacy (lens blackout) state per camera id. It is
 	// seeded once at startup from each camera's slow heartbeat and thereafter
@@ -108,6 +115,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, cameras []came
 		staticCacheControl: staticCacheControl,
 		accessTTL:          accessTTL,
 		refreshTTL:         refreshTTL,
+		cleanupGrace:       int64(cfg.AuthCleanupGraceHours()) * 3600,
 		privacy:            make(map[string]bool),
 		updates:            updateStores,
 		talk:               make(map[string]*backchannel.Session),
@@ -125,6 +133,11 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, cameras []came
 	// RTSP probe must not delay serving, and unreachable cameras just report no
 	// codecs (clients then assume G.711).
 	go a.seedTalkCodecs()
+	// Start the periodic token-cleanup ticker (0 or negative interval means
+	// the background loop is disabled; cleanup still runs on login).
+	if min := cfg.AuthCleanupIntervalMinutes(); min > 0 {
+		go a.startTokenCleaner(time.Duration(min) * time.Minute)
+	}
 	return a
 }
 
@@ -133,6 +146,18 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, cameras []came
 // engine means the [media] section is not configured; the playback endpoints
 // answer 404 in that case.
 func (a *App) SetMediaEngine(e *media.Engine) { a.engine = e }
+
+// startTokenCleaner runs cleanupExpiredTokens on a ticker. The ticker is
+// stopped when the App's lifecycle ends (the goroutine exits when the program
+// does). This keeps the tokens table lean between logins, so a rarely-used
+// installation doesn't accumulate dead rows for days.
+func (a *App) startTokenCleaner(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		a.cleanupExpiredTokens()
+	}
+}
 
 // seedTalkCodecs probes each backchannel-capable camera once to discover which
 // push-to-talk codecs it accepts, so /api/cameras can tell clients whether AAC
