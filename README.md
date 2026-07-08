@@ -111,15 +111,14 @@ Cameras are one INI file each, under `data/cameras.d/` (or
 `/etc/eneverre/cameras.d/`). They are loaded at startup, so adding or
 editing a camera needs a restart.
 
-A fixed camera is the bare minimum — an id, a name, and a public
-`live` URL:
+A fixed camera is the bare minimum — an id, a name, and a `source` URL:
 
 ```ini
 [camera]
 id       = front_door
 name     = Front door
 location = Entrance
-live     = rtsp://user:pass@192.168.1.91:554/stream
+source   = rtsp://user:pass@192.168.1.91:554/stream
 ```
 
 Add a `[thingino]` section and you unlock PTZ, live thumbnails and privacy
@@ -131,7 +130,7 @@ to automatically:
 id        = yard
 name      = Backyard
 location  = Garden
-live      = rtsp://user:pass@192.168.1.92:554/stream
+source    = rtsp://user:pass@192.168.1.92:554/stream
 playback  = true
 width     = 1920
 height    = 1080
@@ -176,9 +175,19 @@ and is hardened out of the box.
 
 ## Embedded media engine
 
-Eneverre ships a built-in media engine — add a `[media]` section and it
-records, relays (RTSP) and broadcasts (live to browsers) every camera
-in-process, with **no external streamer to install or supervise**:
+Eneverre ships a built-in media engine — it runs for every camera with
+a `source` URL, with **no external streamer to install or supervise**.
+
+The engine has two modes:
+
+- **No `[media]`** — live-only mode. The live MSE feed
+  (`/api/camera/<id>/live/stream`) and the RTSP relay (`:8554`) are
+  up; no disk write, no index, `/recordings/*` answer 404. The wall
+  works end-to-end; retention is handled elsewhere.
+- **`[media]` set** — full mode. The same live feed + relay, plus
+  per-camera recording into `[media].record_dir` indexed in
+  `[media].index_path`, with `[media].retain` enforcing age-based
+  cleanup. Per-camera opt-out via `record = false` in the camera INI.
 
 ```ini
 [media]
@@ -188,7 +197,7 @@ rtsp_address = :8554       ; RTSP relay for apps
 ;rtsp_host   = nvr.example.com
 ```
 
-Each camera records/relays from its `source` (or `live`) RTSP URL. The web
+Each camera records/relays from its `source` RTSP URL. The web
 UI plays live over MediaSource (`/api/camera/<id>/live/stream`, ~1-2s
 latency); Android plays it over the RTSP relay; playback (VOD) is served
 straight from the on-disk segment index. H264 (+AAC/G711) only. Full

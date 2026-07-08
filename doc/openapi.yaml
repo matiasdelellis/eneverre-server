@@ -1447,19 +1447,13 @@ components:
           description: >-
             RTSP URL. When the embedded media engine ([media]) is enabled, the
             embedded relay URL with rotating credentials is returned; otherwise
-            the raw `live` INI value.
-        webrtc:
+            the raw `source` INI value.
+        live_mse:
           type: string
           description: >-
-            WebRTC (WHEP) URL. Empty in embedded-engine mode (the engine does
-            not serve WebRTC). With neither [media] nor another streamer in
-            front, the raw `webrtc` INI value.
-        hls:
-          type: string
-          description: >-
-            HLS URL. Empty in embedded-engine mode (the engine does not serve
-            HLS). With neither [media] nor another streamer in front, the raw
-            `hls` INI value.
+            Same-origin MSE fMP4 path the web UI uses to play live
+            (`/api/camera/{id}/live/stream`). Set only when the embedded media
+            engine ([media]) is enabled.
         width:
           type: integer
         height:

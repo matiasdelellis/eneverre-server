@@ -170,37 +170,46 @@ func main() {
 		slog.Info("auto-update disabled (no [updates] storage_dir and no ENEVERRE_UPDATES_DIR)")
 	}
 
-	// Embedded media engine. When the [media] section is present it records,
-	// relays (RTSP) and broadcasts (MSE) every camera that has a source URL.
-	// The RTSP relay is protected with the current rotating credential pair.
-	var engine *media.Engine
+	// Embedded media engine — always built and started. Live MSE + RTSP relay
+	// are on by default for any camera with a `source` URL, because that's
+	// the point of the app. The optional [media] section adds recording
+	// (off by default; enable explicitly with `[media] record = true`) and
+	// tunes the rest of the engine (paths, segment timing, retention, …).
+	// Per-camera `record = false` / `live = false` INI keys opt a single
+	// camera out of recording or out of the live pipeline respectively.
+	var mopts media.Options
 	if cfg.Media != nil {
-		mopts := media.OptionsFromSection(cfg.Media)
-		mopts.RelayCredsFn = creds.Pairs // rotation-aware relay auth (current + grace)
-		engine, err = media.New(mopts)
-		if err != nil {
-			fatal("media engine init failed", "err", err)
-		}
-		defer engine.Close()
-		engine.Start(cams)
+		mopts = media.OptionsFromSection(cfg.Media)
+	} else {
+		mopts = media.DefaultOptions()
 	}
+	mopts.RelayCredsFn = creds.Pairs // rotation-aware relay auth (current + grace)
+	var engine *media.Engine
+	engine, err = media.New(mopts)
+	if err != nil {
+		fatal("media engine init failed", "err", err)
+	}
+	defer engine.Close()
+	engine.Start(cams)
 
 	app := server.New(cfg, db, creds, cams, uiFS, opts.staticCacheControl,
 		int64(accessHours)*3600, int64(refreshDays)*86400, updateStores)
-	if engine != nil {
-		app.SetMediaEngine(engine)
-	}
+	app.SetMediaEngine(engine)
 
 	// Auto-rotate the stream/relay credentials. The previous pair stays valid
 	// for one interval (grace window) so active streams are not dropped at the
-	// moment of rotation. Driven by [media]; default 24h (0 disables).
+	// moment of rotation. The interval comes from [media].rotate_hours when
+	// [media] is configured; otherwise we use the 24h default — the relay
+	// runs even without [media], so a fresh pair is just as useful.
+	rotateHours := 24
 	if cfg.Media != nil {
-		if hours := cfg.Media.GetInt("rotate_hours", 24); hours > 0 {
-			creds.StartRotation(time.Duration(hours) * time.Hour)
-			slog.Info("credential rotation enabled", "every_hours", hours)
-		} else {
-			slog.Info("credential rotation disabled (rotate_hours <= 0)")
-		}
+		rotateHours = cfg.Media.GetInt("rotate_hours", 24)
+	}
+	if rotateHours > 0 {
+		creds.StartRotation(time.Duration(rotateHours) * time.Hour)
+		slog.Info("credential rotation enabled", "every_hours", rotateHours)
+	} else {
+		slog.Info("credential rotation disabled (rotate_hours <= 0)")
 	}
 
 	// Resolve host/port with precedence CLI flag > [server] section > default.

@@ -67,6 +67,12 @@ type Recorder struct {
 	PartDuration    time.Duration
 	MaxPartSize     uint64
 	Transport       string // "auto" (default: UDP with TCP fallback) | "tcp" | "udp"
+	// Record controls disk persistence. When false the recorder still
+	// connects, demuxes and forwards RTP to the live RTSP relay + browser MSE
+	// broadcaster, but does NOT write segments to disk and does NOT call
+	// OnSegment (no index rows either). The engine sets this explicitly per
+	// camera; the zero value is false (live-only).
+	Record          bool
 	OnSegment       func(SegmentInfo)
 	Logf            func(string, ...any)
 
@@ -190,6 +196,13 @@ func (r *Recorder) Start() error {
 	}
 	r.Logf("stream codecs: %s", strings.Join(offered, ", "))
 
+	// Relay-only cameras (no live web broadcaster wired, recording off) don't
+	// need the H264/AAC/G711 -> fMP4 sample pipeline: the RTSP relay is fed by
+	// the raw-RTP OnRTP path. When neither sink is active we still connect,
+	// Setup every media (so OnRTP forwards them) and run the watchdog, but skip
+	// the per-packet decode + sample assembly.
+	demux := r.OnLiveSample != nil || r.Record
+
 	// --- video (required) ---
 	var videoForma *format.H264
 	videoMedia := desc.FindFormat(&videoForma)
@@ -243,6 +256,9 @@ func (r *Recorder) Start() error {
 		r.client.OnPacketRTP(aacMedia, aacForma, func(pkt *rtp.Packet) {
 			if r.OnRTP != nil {
 				r.OnRTP(aacMedia, pkt)
+			}
+			if !demux {
+				return // relay-only: raw RTP already forwarded above
 			}
 			pts, ok := r.client.PacketPTS(aacMedia, pkt)
 			if !ok {
@@ -300,6 +316,9 @@ func (r *Recorder) Start() error {
 				if r.OnRTP != nil {
 					r.OnRTP(g711Media, pkt)
 				}
+				if !demux {
+					return // relay-only: raw RTP already forwarded above
+				}
 				pts, ok := r.client.PacketPTS(g711Media, pkt)
 				if !ok {
 					return
@@ -343,6 +362,9 @@ func (r *Recorder) Start() error {
 		r.lastVideoNano.Store(time.Now().UnixNano()) // feed the media watchdog
 		if r.OnRTP != nil {              // forward raw to live relay (lowest latency)
 			r.OnRTP(videoMedia, pkt)
+		}
+		if !demux {
+			return // relay-only: skip H264 decode + fMP4 assembly
 		}
 		pts, ok := r.client.PacketPTS(videoMedia, pkt)
 		if !ok {
@@ -545,6 +567,11 @@ type recTrack struct {
 
 // write buffers one sample of lookahead (to compute the previous sample's
 // duration) and drives segment creation/rotation. Caller must hold r.mu.
+//
+// In live-only mode (r.Record == false) the segment creation/writing and
+// rotation are skipped entirely, but the live broadcaster still receives the
+// sample (so MSE /live/stream keeps working). The on-disk layout is unchanged
+// for cameras that do record.
 func (t *recTrack) write(smp *sample) {
 	r := t.r
 	if t.initTrack.Codec.IsVideo() {
@@ -563,6 +590,18 @@ func (t *recTrack) write(smp *sample) {
 	}
 	smp.Duration = uint32(duration)
 
+	// feed the same finalized sample to the live web broadcaster. Done
+	// unconditionally — the broadcaster is independent of disk persistence.
+	if r.OnLiveSample != nil {
+		r.OnLiveSample(t.initTrack.ID, smp.Sample, smp.dts)
+	}
+
+	// Live-only mode: skip segment creation, writing, and rotation. r.currentSegment
+	// stays nil; the disconnect/Close handlers no-op on it.
+	if !r.Record {
+		return
+	}
+
 	dts := timestampToDuration(smp.dts, int(t.clockRate))
 
 	if r.currentSegment == nil {
@@ -577,11 +616,6 @@ func (t *recTrack) write(smp *sample) {
 		r.currentSegment.close() //nolint:errcheck
 		r.currentSegment = nil
 		return
-	}
-
-	// feed the same finalized sample to the live web broadcaster
-	if r.OnLiveSample != nil {
-		r.OnLiveSample(t.initTrack.ID, smp.Sample, smp.dts)
 	}
 
 	// rotate only on a video keyframe once the minimum duration elapsed

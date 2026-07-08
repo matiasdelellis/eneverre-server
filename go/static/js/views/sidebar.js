@@ -1,7 +1,6 @@
 import { $, $$, escapeHtml } from "../util/dom.js";
 import { setWallFilter, setWallFilterBeforeCam, getState, on } from "../state.js";
 import { fetchCameras, token } from "../api.js";
-import { captureFrame } from "./hls.js";
 import { isMobileViewport, closeSidebarDrawer } from "./app-shell.js";
 
 function maybeCloseDrawer() {
@@ -15,8 +14,32 @@ function maybeCloseDrawer() {
 const THUMB_CACHE = new Map(); // camId -> dataURL (in-memory, faster than localStorage)
 
 const SIDEBAR_THUMB_REFRESH_MS = 10 * 60 * 1000;
+const THUMB_PERSIST_MS = 2 * 60 * 1000; // throttle localStorage writes for live frames
 let sidebarThumbTimer = null;
 let sidebarThumbCams = [];
+const lastPersist = new Map(); // camId -> last localStorage write (live thumbs)
+
+// publishLiveThumb is called by the wall while a camera plays live: it stores
+// the freshly grabbed frame as that camera's thumbnail (in-memory always,
+// localStorage throttled) and updates the visible sidebar tile. This is how
+// non-Thingino cameras get a current thumbnail — from the video the wall is
+// already decoding, with no extra stream or server round-trip.
+export function publishLiveThumb(camId, dataUrl) {
+  if (!dataUrl) return;
+  THUMB_CACHE.set(camId, dataUrl);
+  const now = Date.now();
+  if (now - (lastPersist.get(camId) || 0) > THUMB_PERSIST_MS) {
+    lastPersist.set(camId, now);
+    try { localStorage.setItem(`thumb_${camId}`, dataUrl); } catch {}
+  }
+  const tile = $(`#viewer-side-scroll .viewer-thumb[data-id="${CSS.escape(camId)}"]`);
+  if (tile) {
+    const img = tile.querySelector("img");
+    const loading = tile.querySelector(".thumb-loading");
+    if (img) img.src = dataUrl;
+    if (loading) loading.hidden = true;
+  }
+}
 
 export function groupByLocation(cams) {
   const byLoc = new Map();
@@ -42,9 +65,12 @@ function renderViewerThumb(cam) {
   tile.className = "viewer-thumb";
   tile.dataset.id = cam.id;
   tile.dataset.location = cam.location || "";
+  // The banner is the static poster shown while the real thumbnail is
+  // loading (or fails to load). loadViewerThumb() replaces it with the
+  // camera's actual frame when available.
   tile.innerHTML = `
     <div class="thumb-preview">
-      <img alt="" />
+      <img alt="" src="/img/camera-banner.png" />
       <span class="thumb-loading">Loading…</span>
       <div class="thumb-caption">${escapeHtml(cam.name || cam.id)}</div>
     </div>
@@ -166,22 +192,26 @@ async function loadViewerThumb(cam, tile, { force = false } = {}) {
     THUMB_CACHE.delete(cam.id);
   }
 
-  // Source priority:
-  //  1. cam.hls (external MediaMTX) → grab a keyframe from the HLS stream.
-  //  2. /api/camera/{id}/thumbnail → server-side JPEG (Thingino cameras;
-  //     works in embedded mode where hls is empty).
-  //  3. "No preview" placeholder.
+  // Thumbnail source, in priority order:
+  //  1. Thingino endpoint (`/api/camera/{id}/thumbnail`) when the camera has
+  //     a Thingino API key — fast, returns a server-rendered JPEG.
+  //  2. Live frame pushed by the wall via publishLiveThumb while the camera
+  //     plays (already handled through THUMB_CACHE above — nothing to pull
+  //     here). Cameras that aren't currently playing simply keep the poster
+  //     until they start.
+  //  3. Keep the static `camera-banner.png` poster that renderViewerThumb
+  //     set in the <img> — we just drop the "Loading…" overlay so it
+  //     shows the banner alone, recognisable instead of empty.
   let dataUrl;
-  if (cam.hls) {
-    try { dataUrl = await captureFrame(cam.hls); }
-    catch (e) { console.warn(`HLS snapshot failed for ${cam.id}:`, e); }
-  }
-  if (!dataUrl) {
+  if (cam.capabilities && cam.capabilities.thumbnail) {
     try { dataUrl = await fetchThumbnailDataUrl(cam.id); }
     catch (e) { console.warn(`Thumbnail endpoint failed for ${cam.id}:`, e); }
   }
   if (!dataUrl) {
-    loading.textContent = "No preview";
+    // No server-side thumbnail available — leave the camera-banner poster in
+    // place and drop the "Loading…" overlay. If the camera is on the wall the
+    // live frame will replace it within a few seconds via publishLiveThumb.
+    loading.hidden = true;
     return;
   }
   img.src = dataUrl;
@@ -225,10 +255,15 @@ export function stopSidebarThumbRefresh() {
   }
   sidebarThumbCams = [];
   for (const k of [...THUMB_CACHE.keys()]) THUMB_CACHE.delete(k);
+  lastPersist.clear();
 }
 
 async function refreshSidebarThumbs() {
   for (const cam of sidebarThumbCams) {
+    // Live cameras refresh themselves via publishLiveThumb from the wall while
+    // playing; force-reloading them here would wipe the live frame back to the
+    // poster. Only re-pull server-side (Thingino) thumbnails on the timer.
+    if (!(cam.capabilities && cam.capabilities.thumbnail)) continue;
     const tile = $(`#viewer-side-scroll .viewer-thumb[data-id="${CSS.escape(cam.id)}"]`);
     if (tile) await loadViewerThumb(cam, tile, { force: true });
   }

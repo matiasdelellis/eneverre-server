@@ -28,9 +28,12 @@ port = 8080
 > start. Manage further users through the `/api/users` endpoints or the web UI.
 
 Optional sections (all commented out by default). `[media]` is the embedded
-media engine (record + RTSP relay + browser MSE live). With it absent,
-Eneverre serves each camera's `live`/`hls`/`webrtc` URLs from its INI
-as-is and you must secure them yourself (Caddy, go2rtc, lightNVR, …):
+media engine. The engine is always built for cameras with a `source`
+URL; with `[media]` it records per the per-camera `record` INI key
+(default true) and enforces `[media].retain`. **Without `[media]`** the
+engine runs in **live-only mode** (live MSE + RTSP relay, no disk write,
+`/recordings/*` answer 404) — useful when you only want the wall to
+work and retention is handled elsewhere:
 
 ```ini
 [auth]
@@ -56,13 +59,13 @@ refresh_token_ttl_days = 90
 webhook_secret = changeme    ; required to accept POST /api/camera/{id}/events
 ```
 
-When `[media]` is present, every camera records/relays from its `source` (or
-`live`) RTSP URL and the public `rtsp` URL is the embedded relay (rotating
-credentials included), `live_mse` is the same-origin browser feed, and
-`hls`/`webrtc` are empty (the engine doesn't serve them). Without it,
-recordings/playback endpoints answer 404. See [`doc/MEDIA.md`](../MEDIA.md)
-for the full endpoint list, client integration notes, and the
-codec/coverage-gap semantics.
+With `[media]`, every camera records/relays from its `source` RTSP URL
+and the public `rtsp` URL is the embedded relay (rotating credentials
+included) and `live_mse` is the same-origin browser feed. Without it,
+the engine runs in live-only mode: `live_mse` and `rtsp` are still
+populated (so the wall works), but `/recordings/*` answer 404. See
+[`doc/MEDIA.md`](../MEDIA.md) for the full endpoint list, client
+integration notes, and the codec/coverage-gap semantics.
 
 ## cameras.d/<id>.ini
 
@@ -78,13 +81,13 @@ id = camera01
 name = Outside
 comment = Thingino 360 Camera
 location = Exterior
-live = rtsp://username:password@camera_url:port/path
+source = rtsp://username:password@camera_url:port/path
 playback = true
 width = 1920
 height = 1080
 ; Optional: direct RTSP URL to the camera for two-way audio (ONVIF Profile T).
-; Unlike `live`, this must point at the camera itself. Its presence enables
-; the push-to-talk endpoint.
+; Must point at the camera itself. Its presence enables the push-to-talk
+; endpoint.
 backchannel = rtsp://username:password@192.168.1.91:554/ch0
 
 ; The [thingino] section is optional. Its presence (specifically a
@@ -106,24 +109,28 @@ privacy_y = 1600
  * **id:** Camera id; the path the embedded engine records/relays under.
    One id, one camera.
  * **name / comment / location:** Friendly labels shown by the clients.
- * **live:** Public RTSP URL for playing the camera. With the embedded
-   media engine this key is also used as the **fallback source** for
-   recording and the RTSP relay; prefer an explicit `source` so the
-   credentials aren't shared with whatever serves `rtsp`/`hls` in
-   non-engine mode.
- * **source:** Direct RTSP URL (with credentials) to the camera itself, used
-   by the **embedded media engine** (`[media]`) for both recording and the
-   RTSP relay. Falls back to `live` when omitted. Must point at the camera
-   (not at a streamer in front of it) because the engine speaks RTSP directly
-   to the camera. Like `backchannel`, it is never exposed in API responses.
+ * **source:** The camera's RTSP URL. With the embedded media engine
+   (`[media]`) the engine records/relays from it; without the engine it
+   is served as-is from `/api/cameras` as `rtsp`. Must point at the
+   camera itself because the engine speaks RTSP directly to it (not at a
+   streamer in front). Never exposed in API responses.
+ * **mse:** Per-camera opt-out of the live MSE (fMP4) browser feed. Default
+    true. Set to `false` to skip the MSE broadcaster for this camera — it
+    will not appear with a `live_mse` URL in `/api/cameras`. The RTSP relay
+    and recording are unaffected. Gated independently of `relay`.
+ * **relay:** Per-camera opt-out of the RTSP relay entry. Default true. Set
+    to `false` to skip the RTSP relay for this camera — it will not appear
+    with an `rtsp` URL in `/api/cameras`. The MSE feed and recording are
+    unaffected. Gated independently of `mse`.
+ * **record:** Per-camera opt-out of recording. Default true (cameras with
+    a Source are recorded). Set to `false` to keep the live MSE feed and
+    the RTSP relay working for this camera but skip writing to disk — the
+    `/recordings/*` endpoints for it answer 404. Useful for privacy-
+    sensitive cameras you only want to watch live.
  * **transport:** Embedded-engine only. Per-camera override of the global
    `[media] transport` for the source RTSP: `auto` (default), `tcp` (reliable,
    recommended for lossy/distant links), or `udp`. Useful to force TCP on a
    single camera without changing the global default.
- * **hls / webrtc:** Optional public HLS / WebRTC URLs, ignored when
-   `[media]` is configured (the engine doesn't serve them). With neither
-   section, the URLs are served as-is and securing them is up to your
-   reverse proxy.
  * **playback:** Tells clients this camera has recordings available. With
    `[media]` the engine serves them from its segment index; without it,
    playback endpoints answer 404.

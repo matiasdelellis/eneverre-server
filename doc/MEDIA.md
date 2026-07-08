@@ -3,10 +3,13 @@
 Eneverre runs an in-process media engine for recording, RTSP relay and
 browser live. It is the **only** streaming mode — the historical
 external-[MediaMTX] integration was removed (see
-[Why the embedded engine](#why-the-embedded-engine) below). Enable it
-with a `[media]` section in `eneverre.ini`; without that section, all
-recording endpoints answer 404 and the camera list returns the raw INI
-`live`/`hls`/`webrtc` URLs as-is.
+[Why the embedded engine](#why-the-embedded-engine) below). The engine is
+always started for every camera with a `source` URL: the live MSE feed and
+the RTSP relay are **on by default**, with no `[media]` section required.
+Adding a `[media]` section turns on disk recording (off by default) and
+tunes paths, timing and retention. Each feature is an independent switch,
+global (`[media]`) with a per-camera opt-out (see
+[Independent switches](#independent-switches)).
 
 [MediaMTX]: https://github.com/bluenviron/mediamtx
 
@@ -35,9 +38,35 @@ and the `WithMediaMTXURLs` camera helper. The rotating-credential
 mechanism stayed (now `streamauth.Store`) because the embedded RTSP
 relay still needs it.
 
+### Independent switches
+
+The engine exposes three independent on/off switches — **live MSE**, **RTSP
+relay**, and **recording** — each with a global default in `[media]` and a
+per-camera opt-out in the camera INI. A camera is served if at least one of
+the three is on for it (so a record-only camera, with MSE and relay off, still
+connects and writes to disk).
+
+| switch   | global (`[media]`) | per-camera (`cameras.d/<id>.ini`) | effect when on |
+|----------|--------------------|-----------------------------------|----------------|
+| `mse`    | `true`             | `true`                            | live fMP4 feed at `/api/camera/{id}/live/stream` |
+| `relay`  | `true`             | `true`                            | RTSP relay at `[media].rtsp_address` (default `:8554`) |
+| `record` | `false`            | `true`                            | segments on disk, indexed for `/recordings/*` |
+
+The per-camera flag can only **turn a feature off** for that camera: the global
+switch is the master, and the effective state is `global AND per-camera`. So a
+per-camera `record = true` does nothing unless `[media] record = true` is also
+set; use it to keep a camera in the default-on state while opting others out.
+
+Because MSE and relay default to on, the engine is fully useful with **no
+`[media]` section at all** (live-only): the live feed and relay come up, but no
+`[media]` means recording is off, no SQLite index is opened, and the
+`/recordings/*` endpoints answer 404. Add `[media] record = true` (with a
+`record_dir`) to turn recording on and enable the retention cleaner
+(`[media].retain`).
+
 ## What it does
 
-For every camera that has a `source` (or `live`) RTSP URL, the engine:
+For every camera that has a `source` RTSP URL, the engine:
 
 1. **Records** the stream to fragmented-MP4 segments on disk (H264 video +
    optional AAC/G711 audio), cataloging each segment in a shared SQLite index —
@@ -93,7 +122,7 @@ reference. Keep `record_dir` under `/var/lib/eneverre` (the systemd
 ### Camera source
 
 The engine records/relays from each camera's **direct** RTSP URL. Set it with
-the `source` key in the camera INI (falls back to `live` when omitted). It must
+the `source` key in the camera INI. It must
 point at the camera itself and carries credentials — it is **never** exposed to
 clients.
 
@@ -112,13 +141,11 @@ In embedded mode each camera's stream fields are rebuilt as:
 |------------|------------------------------------------------------------------|
 | `live_mse` | `/api/camera/<id>/live/stream` (same-origin browser MSE)         |
 | `rtsp`     | `rtsp://<user>:<pass>@<host>:<port>/<id>` — `host` is `rtsp_host` when set, else the host the client used to reach the API |
-| `hls`, `webrtc` | empty (not served by the engine)                            |
 
-The credentials embedded in `rtsp` are the rotating pair (see below). `hls` and
-`webrtc` are cleared, and the raw camera `source` is never returned. Set
-`rtsp_host` to pin the host in public / reverse-proxied deployments (where the
-API host and the RTSP relay host differ); on a LAN the request-host fallback
-fills `rtsp` automatically.
+The credentials embedded in `rtsp` are the rotating pair (see below); the raw
+camera `source` is never returned. Set `rtsp_host` to pin the host in public /
+reverse-proxied deployments (where the API host and the RTSP relay host
+differ); on a LAN the request-host fallback fills `rtsp` automatically.
 
 ## Credentials & rotation
 
@@ -199,15 +226,13 @@ Bearer (or Basic) auth.
 - **Web / MSE**: use `camera.live_mse` (`/api/camera/{id}/live/stream`). It is a
   chunked-HTTP fMP4 stream (init + parts) for a `MediaSource` `SourceBuffer`;
   fetch it with the Bearer token and query `live/info` first for the codec
-  `mime`. ~1-2s latency. (This replaces playing `camera.hls` with hls.js.)
+  `mime`. ~1-2s latency.
 - **Apps / RTSP**: use `camera.rtsp` (the relay `rtsp://…:8554/{id}`), present
   only when `[media] rtsp_host` is set. Standard RTSP; the embedded creds
   rotate, so re-read `/api/cameras` for a fresh URL.
-- In embedded mode `camera.hls` and `camera.webrtc` are **empty**. Without
-  `[media]` the camera is returned as-is from the INI (so `hls`/`webrtc`
-  are populated if the camera INI defines them and the user fronts
-  Eneverre with their own streamer); the wall falls back to
-  `camera.hls` + hls.js in that case.
+- Without `[media]` the camera is returned as-is from the INI and the live
+  view is unavailable (the wall shows "No live stream" — the embedded
+  engine is the only streaming surface Eneverre serves itself).
 
 **Recordings / timeline**
 - `recordings/timeline` → draw the recorded extent; `recordings/gaps` → mark gaps.
@@ -231,10 +256,16 @@ Live (MSE) and playback are plain HTTP under `/api/*`, so a single
 The RTSP relay (`:8554`) does **not** go through the proxy; expose it directly
 (firewalled) for RTSP clients. See [`doc/example/Caddyfile`](example/Caddyfile).
 
-## Without the engine
+## Without recording
 
-The engine is opt-in. Without `[media]`, Eneverre serves each camera's
-`live`/`hls`/`webrtc` URLs from its INI as-is (so you can still front it
-with go2rtc, lightNVR or a plain reverse proxy) and every recording
-endpoint answers 404. This is independent of the engine and is the only
-way to get a non-H264 codec, WebRTC, or HLS out of Eneverre today.
+There is no "without the engine" mode: the engine is always started for
+cameras with a `source` URL. Omitting `[media]` only turns **recording** off —
+the live MSE feed and RTSP relay still run (live-only mode), and the
+`/recordings/*` endpoints answer 404. The raw camera `source` URL is never
+exposed to clients; the relay `rtsp://…:8554/{id}` (rotating credentials) is
+served instead.
+
+Eneverre only streams H264 (+AAC/G711) itself. To serve a non-H264 codec,
+WebRTC or HLS, front the camera with an external streamer (go2rtc, lightNVR, a
+reverse proxy) and turn the built-in feeds off — set `mse = false` and
+`relay = false` per camera, or globally in `[media]`.

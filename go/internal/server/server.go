@@ -388,14 +388,22 @@ func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
 	}
 	// Rebuild the embedded engine's stream URLs from the current rotating
 	// credentials so rotation is reflected immediately. Camera marshals without
-	// the Thingino fields, so this is the public view. When the [media]
-	// section is absent the camera is returned unchanged (raw INI URLs).
+	// the Thingino fields, so this is the public view. The global [media]
+	// toggles come from the engine (falling back to defaults when the engine is
+	// absent, e.g. in tests); camera.ResolveFeatures then decides, per camera,
+	// which feeds to advertise — the same rule the engine uses to start them.
+	def := media.DefaultOptions()
+	gMSE, gRelay, gRecord := def.MSEEnabled, def.RelayEnabled, def.RecordEnabled
+	if a.engine != nil {
+		gMSE, gRelay, gRecord = a.engine.GlobalToggles()
+	}
 	creds := a.creds.Current()
 	a.privacyMu.RLock()
 	a.talkCodecsMu.RLock()
 	out := make([]camera.Camera, len(a.cameras))
 	for i, c := range a.cameras {
-		out[i] = c.WithEngineURLs(a.cfg, creds, r.Host)
+		f := c.ResolveFeatures(gMSE, gRelay, gRecord)
+		out[i] = c.WithEngineURLs(a.cfg, creds, r.Host, f)
 		out[i].Privacy = a.privacy[c.ID]
 		out[i].Capabilities.TalkCodecs = a.talkCodecs[c.ID]
 	}

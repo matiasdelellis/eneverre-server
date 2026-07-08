@@ -28,7 +28,7 @@ func parseISOTime(ts string) (time.Time, error) {
 }
 
 func (a *App) handlePlaybackList(w http.ResponseWriter, r *http.Request) {
-	if a.engine == nil {
+	if a.engine == nil || !a.engine.RecordingEnabled() {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
@@ -70,9 +70,9 @@ func (a *App) handlePlaybackList(w http.ResponseWriter, r *http.Request) {
 // handleRecordingPaths lists the camera ids that have at least one recorded
 // segment in the index. Useful for a client that only browses recordings.
 // Returns a plain JSON array of strings ([] when empty). Requires the embedded
-// engine.
+// engine in recording mode.
 func (a *App) handleRecordingPaths(w http.ResponseWriter, r *http.Request) {
-	if a.engine == nil {
+	if a.engine == nil || !a.engine.RecordingEnabled() {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
@@ -94,7 +94,7 @@ func (a *App) handleRecordingPaths(w http.ResponseWriter, r *http.Request) {
 // last end, and segment count. Requires the embedded engine; start/end are null
 // when there are no recordings.
 func (a *App) handlePlaybackTimeline(w http.ResponseWriter, r *http.Request) {
-	if a.engine == nil {
+	if a.engine == nil || !a.engine.RecordingEnabled() {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
@@ -123,7 +123,7 @@ func (a *App) handlePlaybackTimeline(w http.ResponseWriter, r *http.Request) {
 // between consecutive segments) for a camera, optionally bounded by start/end.
 // Requires the embedded engine.
 func (a *App) handlePlaybackGaps(w http.ResponseWriter, r *http.Request) {
-	if a.engine == nil {
+	if a.engine == nil || !a.engine.RecordingEnabled() {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
@@ -172,7 +172,7 @@ func (a *App) handlePlaybackGaps(w http.ResponseWriter, r *http.Request) {
 // hlsGate enforces engine-active + user auth + playback capability for the HLS
 // VOD endpoints, returning the camera or nil (after writing the error).
 func (a *App) hlsGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
-	if a.engine == nil {
+	if a.engine == nil || !a.engine.RecordingEnabled() {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return nil
 	}
@@ -235,7 +235,7 @@ func (a *App) handlePlaybackHLSSegment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handlePlaybackGet(w http.ResponseWriter, r *http.Request) {
-	if a.engine == nil {
+	if a.engine == nil || !a.engine.RecordingEnabled() {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}

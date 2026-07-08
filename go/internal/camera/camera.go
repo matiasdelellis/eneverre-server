@@ -44,12 +44,10 @@ type Camera struct {
 
 	Capabilities Capabilities `json:"capabilities"`
 
-	RTSP   string `json:"rtsp"`
-	WebRTC string `json:"webrtc"`
-	HLS    string `json:"hls"`
+	RTSP string `json:"rtsp"`
 	// LiveMSE is the same-origin path a browser streams live fMP4 from (fed by
 	// the embedded engine's MSE broadcaster). Set only in embedded-engine mode;
-	// omitted otherwise. The web UI prefers it over hls when present.
+	// omitted otherwise. The web UI plays the live stream from this URL.
 	LiveMSE string `json:"live_mse,omitempty"`
 	Width   int    `json:"width"`
 	Height  int    `json:"height"`
@@ -59,14 +57,15 @@ type Camera struct {
 	ThinginoAPIKey string `json:"-"`
 	// Backchannel is the direct RTSP URL (with credentials) used for two-way
 	// audio. It must point at the camera itself, so it is stored raw and never
-	// rebuilt by URL helpers. Tagged json:"-" so the credentials never leak in
+	// rewritten by URL helpers. Tagged json:"-" so the credentials never leak in
 	// API responses.
 	Backchannel string `json:"-"`
 
 	// Source is the direct RTSP URL (with credentials) the embedded media engine
-	// records and relays from. It must point at the camera itself. Read from the
-	// INI `source` key, falling back to `live` (which, in embedded mode, is the
-	// direct camera URL). Tagged json:"-" so credentials never leak in responses.
+	// records and relays from. It must point at the camera itself. Read from
+	// the INI `source` key — the same URL is also the public stream returned
+	// by /api/cameras when the engine is not active. Tagged json:"-" so
+	// credentials never leak in responses.
 	Source string `json:"-"`
 
 	// Transport overrides the embedded engine's RTSP source transport for this
@@ -74,6 +73,26 @@ type Camera struct {
 	// means use the global [media] transport. Useful to force TCP on a lossy
 	// camera while leaving the rest on the default.
 	Transport string `json:"-"`
+
+	// Record controls whether the embedded engine writes this camera's stream
+	// to disk. Read from the INI `record` key; defaults to true (cameras with
+	// a Source are recorded). When false the camera still gets the live MSE
+	// feed and the RTSP relay — only the on-disk segment writer is skipped
+	// (so /recordings/* for this camera answer 404). Useful for privacy-
+	// sensitive cameras or for cameras you only want to watch live.
+	Record bool `json:"-"`
+
+	// MSE controls whether this camera gets a live MSE broadcaster (fMP4
+	// browser feed). Read from the INI `mse` key; defaults to true. Also
+	// gated by the global [media] mse toggle. When false no live_mse URL is
+	// returned in the API response and no broadcaster is started.
+	MSE bool `json:"-"`
+
+	// Relay controls whether this camera gets an RTSP relay entry. Read from
+	// the INI `relay` key; defaults to true. Also gated by the global [media]
+	// relay toggle. When false no rtsp URL is returned in the API response
+	// and no relay entry is registered.
+	Relay bool `json:"-"`
 
 	HomeX    float64 `json:"home_x"`
 	HomeY    float64 `json:"home_y"`
@@ -83,9 +102,8 @@ type Camera struct {
 	Privacy bool `json:"privacy"`
 
 	// Compatibility aliases for older clients.
-	Live          string `json:"live"`
-	PlaybackAlias bool   `json:"playback"`
-	PTZAlias      bool   `json:"ptz"`
+	PlaybackAlias bool `json:"playback"`
+	PTZAlias      bool `json:"ptz"`
 }
 
 func toFloat(value string, def float64) float64 {
@@ -101,10 +119,10 @@ func toFloat(value string, def float64) float64 {
 }
 
 // Load reads every *.ini under the cameras dir (sorted), in startup order.
-// Stream URLs are stored as their raw INI values; when the embedded media
-// engine is enabled the URLs are rebuilt per request from the current rotating
-// credentials via WithEngineURLs, so credential rotation takes effect without a
-// restart.
+// The camera's `source` URL is stored as the raw INI value. When the embedded
+// media engine is enabled, /api/cameras rebuilds the public RTSP URL per
+// request from the current rotating credentials via WithEngineURLs, so
+// credential rotation takes effect without a restart.
 func Load(cfg *config.Config) []Camera {
 	paths, _ := filepath.Glob(filepath.Join(cfg.CamerasDir, "*.ini"))
 	sort.Strings(paths)
@@ -144,15 +162,19 @@ func loadOne(path string) (Camera, bool) {
 		}
 	}
 
-	rtsp := cam.Key("live").String()
-	webrtc := cam.Key("webrtc").String()
-	hls := cam.Key("hls").String()
-	backchannel := strings.TrimSpace(cam.Key("backchannel").String())
 	source := strings.TrimSpace(cam.Key("source").String())
-	if source == "" {
-		source = strings.TrimSpace(rtsp)
-	}
+	backchannel := strings.TrimSpace(cam.Key("backchannel").String())
 	transport := strings.ToLower(strings.TrimSpace(cam.Key("transport").String()))
+	// Default to true: cameras with a Source are recorded. A per-camera
+	// `record = false` opts out of disk writing (the live pipeline keeps
+	// running). Recording itself still requires [media] record = true
+	// globally — see the engine for the gate logic.
+	record := cam.Key("record").MustBool(true)
+	// Default to true: cameras with a Source get an MSE broadcaster.
+	// Gated independently of relay — each can be toggled without affecting
+	// the other. Both still require the global [media] mse/relay toggles.
+	mse := cam.Key("mse").MustBool(true)
+	relay := cam.Key("relay").MustBool(true)
 
 	hasAPIKey := thingino["thingino_api_key"] != ""
 	ptz := strings.ToLower(strings.TrimSpace(thingino["ptz"])) == "true"
@@ -170,12 +192,13 @@ func loadOne(path string) (Camera, bool) {
 			PTZ:       ptz,
 			Talk:      backchannel != "",
 		},
-		RTSP:           rtsp,
-		WebRTC:         webrtc,
-		HLS:            hls,
+		RTSP:           source,
 		Backchannel:    backchannel,
 		Source:         source,
 		Transport:      transport,
+		Record:         record,
+		MSE:            mse,
+		Relay:          relay,
 		Width:          cam.Key("width").MustInt(16),
 		Height:         cam.Key("height").MustInt(9),
 		ThinginoURL:    thingino["thingino_url"],
@@ -185,7 +208,6 @@ func loadOne(path string) (Camera, bool) {
 		PrivacyX:       toFloat(thingino["privacy_x"], -1),
 		PrivacyY:       toFloat(thingino["privacy_y"], -1),
 		Privacy:        false,
-		Live:           rtsp,
 		PlaybackAlias:  playback,
 		PTZAlias:       ptz,
 	}, true
@@ -201,32 +223,53 @@ func Get(cams []Camera, id string) *Camera {
 	return nil
 }
 
+// Features is the resolved on/off state of the engine's three per-camera sinks.
+type Features struct {
+	MSE    bool
+	Relay  bool
+	Record bool
+}
+
+// ResolveFeatures combines the engine's global [media] toggles with this
+// camera's per-camera flags. Each sink is on only when both the global and the
+// per-camera flag are on — the per-camera flag is opt-out only (see the
+// "master switch + opt-out" model in doc/MEDIA.md). This is the single source
+// of truth for the gating rule; both the engine (what it starts) and the API
+// (what URLs it advertises) call it so the two can never disagree.
+func (c Camera) ResolveFeatures(globalMSE, globalRelay, globalRecord bool) Features {
+	return Features{
+		MSE:    globalMSE && c.MSE,
+		Relay:  globalRelay && c.Relay,
+		Record: globalRecord && c.Record,
+	}
+}
+
 // WithEngineURLs returns a copy with URLs rebuilt for the embedded media engine.
-// The web live path (LiveMSE) is same-origin; hls/webrtc are cleared (the engine
-// doesn't serve them). The RTSP relay URL points at the relay host: the
-// configured `[media] rtsp_host` when set (authoritative for public / reverse-
-// proxied deployments), otherwise the host the client used to reach the API
-// (reqHost) so RTSP works out of the box on a LAN. The raw camera source URL
-// (which carries credentials) is never exposed either way. When the [media]
-// section is absent the camera is returned unchanged (raw INI URLs).
-func (c Camera) WithEngineURLs(cfg *config.Config, creds streamauth.Creds, reqHost string) Camera {
-	if cfg.Media == nil {
-		return c
+// A feed's URL is advertised only when its resolved feature is on (f, from
+// ResolveFeatures), so the API never advertises a feed the engine did not start.
+// The host is taken from the configured `[media] rtsp_host` when set
+// (authoritative for public / reverse-proxied deployments), otherwise the host
+// the client used to reach the API (reqHost) so RTSP works out of the box on a
+// LAN. The raw camera source URL (which carries credentials) is never exposed.
+func (c Camera) WithEngineURLs(cfg *config.Config, creds streamauth.Creds, reqHost string, f Features) Camera {
+	if f.MSE {
+		c.LiveMSE = "/api/camera/" + c.ID + "/live/stream"
+	} else {
+		c.LiveMSE = ""
 	}
-	c.WebRTC = ""
-	c.HLS = ""
-	c.LiveMSE = "/api/camera/" + c.ID + "/live/stream"
-	host := cfg.Media.Get("rtsp_host", "")
-	if host == "" {
-		host = hostOnly(reqHost)
-	}
-	if host != "" {
-		port := portFromAddr(cfg.Media.Get("rtsp_address", ":8554"))
-		c.RTSP = creds.RtspURL(host, port, c.ID)
-		c.Live = c.RTSP
+	if f.Relay {
+		host := cfg.Media.Get("rtsp_host", "")
+		if host == "" {
+			host = hostOnly(reqHost)
+		}
+		if host != "" {
+			port := portFromAddr(cfg.Media.Get("rtsp_address", ":8554"))
+			c.RTSP = creds.RtspURL(host, port, c.ID)
+		} else {
+			c.RTSP = ""
+		}
 	} else {
 		c.RTSP = ""
-		c.Live = ""
 	}
 	return c
 }

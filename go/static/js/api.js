@@ -13,11 +13,11 @@ import { getState, setCamerasCache } from "./state.js";
 
 /**
  * Camera object as returned by GET /api/cameras. Field set depends on the
- * active mode (embedded [media] vs external [mediamtx] vs none):
- *  - hls / webrtc: external MediaMTX HLS and WebRTC URLs (embedded: empty)
- *  - live_mse:     same-origin MSE fMP4 path (embedded: set; otherwise absent)
- *  - rtsp:         RTSP relay URL (embedded: relay; otherwise the INI live URL)
- *  - live:         back-compat alias for rtsp
+ * active mode (embedded [media] vs none):
+ *  - rtsp:     RTSP relay URL (embedded: relay with rotating credentials;
+ *             otherwise: the INI `source` value as-is)
+ *  - live_mse: same-origin MSE fMP4 path (embedded: set; otherwise absent).
+ *              The web UI plays live from this URL.
  *  - source/backchannel/thingino_*: NOT exposed (stripped server-side).
  * @typedef {object} Camera
  * @property {string} id
@@ -26,8 +26,6 @@ import { getState, setCamerasCache } from "./state.js";
  * @property {string} [location]
  * @property {CameraCapabilities} capabilities
  * @property {string} [rtsp]
- * @property {string} [webrtc]
- * @property {string} [hls]
  * @property {string} [live_mse]
  * @property {number} [width]
  * @property {number} [height]
@@ -36,7 +34,6 @@ import { getState, setCamerasCache } from "./state.js";
  * @property {number} [privacy_x]
  * @property {number} [privacy_y]
  * @property {boolean} privacy
- * @property {string} [live]
  * @property {boolean} [playback]
  * @property {boolean} [ptz]
  */

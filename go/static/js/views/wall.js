@@ -1,10 +1,40 @@
 import { $, $$, escapeHtml, makeMsg } from "../util/dom.js";
 import { getState, setWallFilter, setWallFilterBeforeCam, on } from "../state.js";
 import { fetchCameras } from "../api.js";
-import { loadSidebar, updateSidebarActive } from "./sidebar.js";
-import { attachHls, getWallInstances } from "./hls.js";
-import { attachMse } from "./mse.js";
+import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js";
+import { attachMse, captureVideoFrame } from "./mse.js";
 import { updatePtzModal } from "./ptz.js";
+
+// camId -> wall live instance (the MSE handle from attachMse, wrapped so its
+// .destroy() also stops the thumbnail grabber). destroyWall() calls .destroy()
+// on every entry.
+const wallInstances = new Map();
+
+// While a tile plays live, grab a frame every THUMB_GRAB_MS and push it to the
+// sidebar thumbnail — reusing the video the browser is already decoding rather
+// than opening a second stream.
+const THUMB_GRAB_MS = 15000;
+
+// withThumbGrab wraps a live handle so the periodic thumbnail grabber shares its
+// lifecycle: the interval is cleared when the tile is torn down or replaced.
+function withThumbGrab(cam, video, handle) {
+  const grab = () => {
+    if (video.paused) return; // paused/off-screen: keep the last pushed frame
+    publishLiveThumb(cam.id, captureVideoFrame(video, { maxWidth: 480 }));
+  };
+  const kick = setTimeout(grab, 4000); // first frame shortly after the stream starts
+  const iv = setInterval(grab, THUMB_GRAB_MS);
+  return {
+    destroy() {
+      clearTimeout(kick);
+      clearInterval(iv);
+      try { handle.destroy(); } catch {}
+    },
+    stopLoad() { try { handle.stopLoad?.(); } catch {} },
+  };
+}
+
+export function getWallInstances() { return wallInstances; }
 
 function isWallLike() {
   const v = getState().viewMode;
@@ -118,7 +148,6 @@ function revokeTileBlob(tile) {
 export function setTileMode(tile, cam, mode, _opts = {}) {
   const v = tile.querySelector("video");
   tile.dataset.mode = mode;
-  const wallInstances = getWallInstances();
   const h = wallInstances.get(cam.id);
   if (h) { try { h.destroy(); } catch {} wallInstances.delete(cam.id); }
   revokeTileBlob(tile);
@@ -136,10 +165,7 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
   if (mode === "live") {
     if (cam.live_mse) {
       const m = attachMse(cam, video);
-      if (m) wallInstances.set(cam.id, m);
-    } else if (cam.hls) {
-      const nh = attachHls(cam.hls, video);
-      if (nh) wallInstances.set(cam.id, nh);
+      if (m) wallInstances.set(cam.id, withThumbGrab(cam, video, m));
     } else if (video) {
       video.replaceWith(makeMsg("No live stream"));
     }
@@ -147,7 +173,6 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
 }
 
 export function destroyWall() {
-  const wallInstances = getWallInstances();
   for (const [id, h] of wallInstances) {
     try { h.destroy(); } catch {}
     const tile = $(`#wall .wall-tile[data-id="${CSS.escape(id)}"]`);
@@ -160,7 +185,6 @@ export function destroyWall() {
 }
 
 export function pauseWall() {
-  const wallInstances = getWallInstances();
   for (const h of wallInstances.values()) {
     try { h.stopLoad(); } catch {}
   }
@@ -172,7 +196,7 @@ export function resumeWall() {
 }
 
 export function wallSize() {
-  return getWallInstances().size;
+  return wallInstances.size;
 }
 
 async function applyPlayback(filtered) {

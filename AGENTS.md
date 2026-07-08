@@ -63,17 +63,20 @@ response bodies on every data-bearing route).
 All code lives under `go/` (module `eneverre`).
 - `go/main.go` — bootstrap: `config.Load()`, `store.Open()`+`store.Init()`,
   `streamauth.NewStore(db)` (reads/writes the credential row, so it runs
-  after the schema exists), `camera.Load()`. If `[media]` is configured,
-  `media.New()` builds the embedded engine and `engine.Start(cameras)`
-  spins up per-camera recorders + RTSP relay; `server.SetMediaEngine()`
-  then wires it into the handler set. `server.New()` is built next, then
-  the server runs on an `http.Server` with explicit timeouts (ReadHeader 5s
-  / Read 15s / Write 30s / Idle 60s) so a slow or idle client can't hold a
-  goroutine open indefinitely. Credential rotation is started when
-  `[media]` is configured. SIGINT/SIGTERM trigger a graceful
-  `srv.Shutdown` (10s) followed by `engine.Close()`, which finalizes and
-  indexes each camera's in-progress fMP4 segment so a clean stop doesn't
-  lose the tail of a recording.
+  after the schema exists), `camera.Load()`. The embedded engine is
+  always built and started when any camera has a `source` URL — it runs
+  in **live-only mode** without `[media]` (live MSE + RTSP relay, no
+  recording) and in **full mode** with `[media]` (live + per-camera
+  recording). `server.SetMediaEngine()` wires it into the handler set
+  regardless of mode. `server.New()` is built next, then the server runs
+  on an `http.Server` with explicit timeouts (ReadHeader 5s / Read 15s
+  / Write 30s / Idle 60s) so a slow or idle client can't hold a goroutine
+  open indefinitely. Credential rotation is started when the engine is
+  running (always). SIGINT/SIGTERM trigger a graceful `srv.Shutdown`
+  (10s) followed by `engine.Close()`, which finalizes each camera's
+  in-progress fMP4 segment so a clean stop doesn't lose the tail of a
+  recording (in live-only mode the segment has no disk backing — only
+  the live relay/broadcaster state is torn down).
 - `go/embed.go` — `//go:embed all:static` of the web UI.
 - `go/static/` — the vanilla-JS frontend (no build step). `index.html`,
   `style.css`, `timeline.js`, vendored `hls.min.js`, and `app.js` — the entry
@@ -89,7 +92,9 @@ All code lives under `go/` (module `eneverre`).
   read case-insensitively (configparser parity, e.g. `home_Y` → `home_y`).
   `Config` exposes optional section handles (`cfg.Media`, `cfg.Events`,
   `cfg.Auth`, `cfg.Updates`) — `nil` when the section is absent — so
-  callers branch with a single nil check.
+  callers branch with a single nil check. `cfg.Media` specifically
+  drives recording mode: when present, the engine records; when absent,
+  the engine runs in live-only mode.
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
   (`users`, `device_login`, `tokens`, `events`, `streamauth_credentials`),
   idempotent column migrations,
@@ -107,10 +112,11 @@ All code lives under `go/` (module `eneverre`).
   `json:"-"`, so marshaling a `Camera` is the public view (no credential
   leak). `WithEngineURLs` rebuilds the per-request URLs for the embedded
   engine (sets `live_mse` to the same-origin MSE path, populates `rtsp`
-  with the relay URL, clears `hls`/`webrtc`). The camera INI `source` key
-  (falls back to `live`) is the direct camera RTSP URL the embedded engine
+  with the relay URL). The camera INI `source` key
+  is the direct camera RTSP URL the embedded engine
   records/relays from; `transport` overrides the global `[media] transport`
-  per camera.
+  per camera; `record = false` opts the camera out of disk recording while
+  keeping the live MSE feed and RTSP relay.
 - `go/internal/streamauth` — credential `Store`: keeps the live pair in
   memory and persists it to the single-row `streamauth_credentials` table
   (`NewStore` reads it at startup or generates a fresh pair when the
@@ -223,13 +229,12 @@ see request query strings and the more verbose media-engine traces
   `GET /api/cameras` rewrites each camera's stream fields via
   `WithEngineURLs`: `live_mse` becomes the same-origin MSE path
   (`/api/camera/{id}/live/stream`), `rtsp` becomes the relay
-  `rtsp://<user>:<pass>@<host>:<port>/<id>`, and `hls`/`webrtc` are cleared
-  (the engine doesn't serve them). The camera's
+  `rtsp://<user>:<pass>@<host>:<port>/<id>`. The camera's
   `source`/`thingino_*`/`backchannel` are tagged `json:"-"` and never
   appear in responses. Set `[media] rtsp_host` to pin a public host in
   reverse-proxied deployments; otherwise the relay host is taken from the
   request (`r.Host`). When `[media]` is absent the camera is returned
-  unchanged from the INI (raw `live`/`hls`/`webrtc` values), and every
+  unchanged from the INI (raw `source` value), and every
   recording endpoint answers 404.
 - The rotating credential pair (random 8/8 alphanumeric) guards the
   embedded RTSP relay and is embedded in the relay URL on every
@@ -292,9 +297,9 @@ see request query strings and the more verbose media-engine traces
   in-process segment index, and additional embedded-only endpoints are
   served: timeline, gaps, HLS VOD (`/recordings/hls/*`) and the live MSE
   feed (`/live/{info,stream}`). Without `[media]` every recording endpoint
-  answers 404 (and the cameras' `live`/`hls`/`webrtc` are served raw from
-  the INI). Full endpoint list, payload shapes and client integration
-  notes are in [`doc/MEDIA.md`](doc/MEDIA.md).
+  answers 404 (and the cameras' `source` is served raw from the INI).
+  Full endpoint list, payload shapes and client integration notes are in
+  [`doc/MEDIA.md`](doc/MEDIA.md).
 - **Two-way audio (push-to-talk).** `GET /api/camera/{id}/talk` upgrades to a
   WebSocket that relays client mic audio to the camera's ONVIF backchannel
   (see `internal/backchannel`). It is enabled only when the camera INI defines a
@@ -346,10 +351,13 @@ see request query strings and the more verbose media-engine traces
    PTZ endpoints. Credential fields are tagged `json:"-"` and never appear in
    API responses.
 3. For the embedded media engine (`[media]`), set `source` to the direct
-   camera RTSP URL (falls back to `live`); it must point at the camera
-   itself, since it carries credentials and is never exposed to clients. Use
+   camera RTSP URL (it must point at the camera itself, since it carries
+   credentials and is never exposed to clients). Use
    `transport = tcp|udp|auto` on a single camera to override the global
-   `[media] transport` (e.g. force TCP on a lossy/distant camera).
+   `[media] transport` (e.g. force TCP on a lossy/distant camera). Use
+   `record = false` to opt this camera out of disk recording while keeping
+   the live MSE feed and RTSP relay (`/recordings/*` for it answer 404) —
+   useful for privacy-sensitive cameras you only want to watch live.
 4. Restart the API (cameras are loaded at startup).
 
 ## Frontend notes

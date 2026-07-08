@@ -150,3 +150,30 @@ export function attachMse(cam, video) {
   connect();
   return { destroy };
 }
+
+// captureVideoFrame grabs the currently-displayed frame from an already-playing
+// <video> element and returns it as a JPEG data URL, or null if the element has
+// no decoded frame yet (not enough data, zero dimensions, or a tainted canvas).
+// The wall calls this on its live tiles to refresh sidebar thumbnails without
+// opening a second stream — the browser is already decoding the frame.
+// `maxWidth` (0 = native) downscales the frame so thumbnails stay small.
+export function captureVideoFrame(video, { maxWidth = 0, quality = 0.7 } = {}) {
+  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+    return null;
+  }
+  try {
+    let w = video.videoWidth;
+    let h = video.videoHeight;
+    if (maxWidth > 0 && w > maxWidth) {
+      h = Math.round((h * maxWidth) / w);
+      w = maxWidth;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext("2d").drawImage(video, 0, 0, w, h);
+    return canvas.toDataURL("image/jpeg", quality);
+  } catch {
+    return null;
+  }
+}
