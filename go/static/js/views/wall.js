@@ -3,7 +3,7 @@ import { getState, setWallFilter, setWallFilterBeforeCam, on } from "../state.js
 import { fetchCameras, token } from "../api.js";
 import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js";
 import { attachMse, captureVideoFrame } from "./mse.js";
-import { updatePtzModal } from "./ptz.js";
+import { updatePtzModal, hidePtzModal } from "./ptz.js";
 import { toast } from "../ui/toast.js";
 
 // Longest clip the 💾 button will request. Guards against a forgotten
@@ -118,7 +118,7 @@ async function tryLoadThumbnail(tile, camId) {
 }
 
 function toggleCamFilterFromTile(camId) {
-  const { wallFilter } = getState();
+  const { wallFilter, wallFilterBeforeCam } = getState();
   if (wallFilter.type === "cam" && wallFilter.value === camId) {
     setWallFilter(wallFilterBeforeCam || { type: "all" });
     setWallFilterBeforeCam(null);
@@ -425,6 +425,35 @@ export function initWall() {
       await loadWall(viewMode);
     } else {
       updateSidebarActive();
+    }
+  });
+
+  // Escape walks the filter up one level: single camera → its location,
+  // location → all cameras. Ignored while typing or when a blocking
+  // overlay/dialog is open (help and dialogs own Escape themselves).
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (document.querySelector(
+      "#help-overlay:not([hidden]), #dlg-modal:not([hidden]), #user-edit-modal:not([hidden]), #users-view:not([hidden]), #device-auth-view:not([hidden])",
+    )) return;
+    const { wallFilter, camerasCache } = getState();
+    if (wallFilter.type === "cam") {
+      // In camera view an open PTZ panel takes priority: close it first,
+      // and only step out to the location on a subsequent Escape.
+      if (document.querySelector("#ptz-modal:not([hidden])")) {
+        hidePtzModal();
+        e.preventDefault();
+        return;
+      }
+      const cam = (camerasCache || []).find((c) => c.id === wallFilter.value);
+      const loc = cam && cam.location;
+      setWallFilter(loc ? { type: "loc", value: loc } : { type: "all" });
+      e.preventDefault();
+    } else if (wallFilter.type === "loc") {
+      setWallFilter({ type: "all" });
+      e.preventDefault();
     }
   });
 }
