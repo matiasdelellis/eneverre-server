@@ -1673,3 +1673,41 @@ kbd {
   border-bottom-width: 2px;
   border-radius: 5px;
 }
+
+/* ---------- Camera connection status dot ---------- */
+.cam-status-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  z-index: 2;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+  background: var(--muted);
+}
+.cam-status-dot.online { background: var(--good); }
+.cam-status-dot.offline { background: var(--danger); }
+.cam-status-dot.connecting {
+  background: #f59e0b;
+  animation: cam-status-pulse 1.2s ease-in-out infinite;
+}
+@keyframes cam-status-pulse {
+  50% { opacity: 0.35; }
+}
+.thumb-preview .cam-status-dot { top: 6px; right: 6px; }
+
+/* ---------- Connection-lost retry button ---------- */
+.wall-retry-btn {
+  margin-top: 4px;
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 13px;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.wall-retry-btn:hover { filter: brightness(1.08); }

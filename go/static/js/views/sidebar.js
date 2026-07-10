@@ -72,6 +72,7 @@ function renderViewerThumb(cam) {
     <div class="thumb-preview">
       <img alt="" src="/img/camera-banner.png" />
       <span class="thumb-loading">Loading…</span>
+      <span class="cam-status-dot connecting" data-cam="${escapeHtml(cam.id)}" title="Connecting…" aria-label="Connecting…"></span>
       <div class="thumb-caption">${escapeHtml(cam.name || cam.id)}</div>
     </div>
   `;

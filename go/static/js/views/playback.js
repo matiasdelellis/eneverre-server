@@ -5,6 +5,7 @@ import { Timeline } from "../../timeline.js";
 export const PB_DEFAULT_INTERVAL = 6 * 60 * 60 * 1000; // timeline window: 6 hours
 const PB_START_OFFSET_MS = 5 * 60 * 1000;    // cursor lands 5 min in the past
 let pbSpeed = 1;                             // current VOD playback speed
+const PB_FRAME_STEP_SEC = 1 / 15;            // ,/. step size (recordings are ~15fps substreams)
 
 let pbTimeline = null;
 let pbCams = [];
@@ -64,15 +65,19 @@ async function fetchEvents(camId, rangeMs = 24 * 3600 * 1000) {
     );
     if (!r.ok) return [];
     const data = await r.json();
-    return (data.events || []).map((ev) => {
-      const startMs = new Date(ev.start_ts).getTime();
-      const endMs = new Date(ev.end_ts).getTime();
-      return {
-        timestampMsec: startMs,
-        durationMsec: Math.max(1000, endMs - startMs),
-        object: ev,
-      };
-    });
+    return (data.events || [])
+      .map((ev) => {
+        const startMs = new Date(ev.start_ts).getTime();
+        const endMs = new Date(ev.end_ts).getTime();
+        return {
+          timestampMsec: startMs,
+          durationMsec: Math.max(1000, endMs - startMs),
+          object: ev,
+        };
+      })
+      // Newest first, so getNextRecord/getPrevRecord (which assume a
+      // descending list) walk events the same way j/l walk recordings.
+      .sort((a, b) => b.timestampMsec - a.timestampMsec);
   } catch {
     return [];
   }
@@ -508,6 +513,22 @@ export function setVodPaused(paused) {
   }
 }
 
+// frameStep nudges every VOD video by deltaSec while paused and shifts the
+// wall-clock cursor mapping by the same amount so the timeline (and the
+// resume point) tracks the step. No-op when not paused or no videos exist.
+export function frameStep(deltaSec) {
+  if (!vodPaused || !vodInstances.size) return;
+  for (const h of vodInstances.values()) {
+    const m = h && h.media;
+    if (m) { try { m.currentTime = Math.max(0, m.currentTime + deltaSec); } catch {} }
+  }
+  vodPlaybackStartMsec += deltaSec * 1000;
+  if (pbTimeline) {
+    pbTimeline.setCurrent(pbTimeline.getCurrent() + deltaSec * 1000);
+    pbTimeline.draw();
+  }
+}
+
 // showVodNoRecording replaces the video with the terminal "no
 // recording" message (the playlist itself had no segments for the
 // requested range, so hls.js never gets a source).
@@ -719,6 +740,22 @@ export function initPlaybackKeys() {
           pbTimeline.draw();
           startVodPlayback(pbCams, next.timestampMsec);
         }
+      } else if (e.key === "p" || e.key === "n") {
+        // Jump between events (drawn as major markers on the timeline).
+        e.preventDefault();
+        const events = pbTimeline.getMajor1Records(pbTimeline.timelineSelected);
+        const rec = e.key === "p"
+          ? pbTimeline.getPrevRecord(pbTimeline.getCurrent(), events || [])
+          : pbTimeline.getNextRecord(pbTimeline.getCurrent(), events || []);
+        if (rec) {
+          pbTimeline.setCurrent(rec.timestampMsec);
+          pbTimeline.draw();
+          startVodPlayback(pbCams, rec.timestampMsec);
+        }
+      } else if (e.key === "," || e.key === ".") {
+        // Frame-step backward / forward. Only meaningful while paused.
+        e.preventDefault();
+        frameStep(e.key === "," ? -PB_FRAME_STEP_SEC : PB_FRAME_STEP_SEC);
       }
     });
   });

@@ -5,6 +5,7 @@ import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js
 import { attachMse, captureVideoFrame } from "./mse.js";
 import { updatePtzModal, hidePtzModal } from "./ptz.js";
 import { toast } from "../ui/toast.js";
+import { setCamStatus } from "../ui/cam-status.js";
 
 // Longest clip the 💾 button will request. Guards against a forgotten
 // "recording" marker producing a multi-hour download.
@@ -135,6 +136,7 @@ function renderWallTile(cam) {
   tile.dataset.mode = "live";
   tile.innerHTML = `
     <video autoplay playsinline muted poster="/img/camera-banner.png"></video>
+    <span class="cam-status-dot connecting" data-cam="${escapeHtml(cam.id)}" title="Connecting…" aria-label="Connecting…"></span>
     <div class="wall-overlay">
       <div class="wall-bottom">
         <div class="wall-name">${escapeHtml(cam.name || cam.id)}</div>
@@ -272,6 +274,7 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
       const m = attachMse(cam, video);
       if (m) wallInstances.set(cam.id, withThumbGrab(cam, video, m));
     } else if (video) {
+      setCamStatus(cam.id, "offline");
       video.replaceWith(makeMsg("No live stream"));
     }
   }

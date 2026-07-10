@@ -9,6 +9,7 @@
 // black, we rebuild the pipeline and retry until .destroy() is called.
 import { makeMsg } from "../util/dom.js";
 import { token } from "../api.js";
+import { setCamStatus } from "../ui/cam-status.js";
 
 const TARGET = 1.2;          // seconds of latency to hold at the live edge
 const RECONNECT_MS = 1500;   // wait before retrying after the source drops
@@ -71,18 +72,28 @@ export function attachMse(cam, video) {
     try { video.pause(); video.playbackRate = 1.0; video.removeAttribute("src"); video.load(); } catch {}
   };
 
+  // Reset the backoff and reconnect immediately (from the Retry button).
+  const retryNow = () => {
+    if (destroyed) return;
+    if (retry) { clearTimeout(retry); retry = null; }
+    reconnectCount = 0;
+    connect();
+  };
+
   const scheduleReconnect = () => {
     if (destroyed) return;
     clearConn();
     reconnectCount++;
+    const el = ensureOverlay();
     if (reconnectCount > 3) {
-      const el = ensureOverlay();
+      setCamStatus(cam.id, "offline");
       if (el) {
         el.classList.add("wall-connection-lost");
         el.querySelector(".wall-buffering-text").textContent = "Connection lost";
+        ensureRetryButton(el);
       }
     } else {
-      const el = ensureOverlay();
+      setCamStatus(cam.id, "connecting");
       if (el) {
         el.classList.remove("wall-connection-lost");
         el.querySelector(".wall-buffering-text").textContent = "Loading…";
@@ -91,9 +102,21 @@ export function attachMse(cam, video) {
     retry = setTimeout(() => { retry = null; connect(); }, RECONNECT_MS);
   };
 
+  // Adds a Retry button to the connection-lost overlay (once).
+  const ensureRetryButton = (el) => {
+    if (el.querySelector(".wall-retry-btn")) return;
+    const btn = document.createElement("button");
+    btn.className = "wall-retry-btn";
+    btn.type = "button";
+    btn.textContent = "Retry";
+    btn.addEventListener("click", (e) => { e.stopPropagation(); retryNow(); });
+    el.appendChild(btn);
+  };
+
   async function connect() {
     if (destroyed) return;
     removeOverlay();
+    setCamStatus(cam.id, "connecting");
     abort = new AbortController();
     const signal = abort.signal;
 
@@ -108,6 +131,7 @@ export function attachMse(cam, video) {
     if (destroyed) return;
     if (!info.available) { scheduleReconnect(); return; } // camera reconnecting
     if (!MediaSource.isTypeSupported(info.mime)) {
+      setCamStatus(cam.id, "offline");
       video.replaceWith(makeMsg("Live codec unsupported"));
       return; // permanent: don't retry
     }
@@ -169,6 +193,7 @@ export function attachMse(cam, video) {
     video.addEventListener("playing", () => {
       if (waitingTimer) { clearTimeout(waitingTimer); waitingTimer = null; }
       removeOverlay();
+      setCamStatus(cam.id, "online");
     });
 
     timer = setInterval(() => {
