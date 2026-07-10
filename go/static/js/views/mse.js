@@ -34,6 +34,28 @@ export function attachMse(cam, video) {
   let timer = null;      // latency-control interval for the current connection
   let retry = null;      // pending reconnect timeout
   let objectUrl = null;
+  let reconnectCount = 0;
+  const tile = video.closest(".wall-tile");
+  let bufferingEl = null;
+
+  const ensureOverlay = () => {
+    if (!tile) return null;
+    if (!bufferingEl) {
+      bufferingEl = document.createElement("div");
+      bufferingEl.className = "wall-buffering";
+      bufferingEl.setAttribute("role", "status");
+      bufferingEl.setAttribute("aria-live", "polite");
+      bufferingEl.innerHTML = '<span class="wall-buffering-icon" aria-hidden="true">⟳</span><span class="wall-buffering-text">Loading…</span>';
+      const overlay = tile.querySelector(".wall-overlay");
+      if (overlay) tile.insertBefore(bufferingEl, overlay);
+      else tile.appendChild(bufferingEl);
+    }
+    return bufferingEl;
+  };
+  const removeOverlay = () => {
+    if (bufferingEl) { bufferingEl.remove(); bufferingEl = null; }
+    reconnectCount = 0;
+  };
 
   const clearConn = () => {
     if (abort) { try { abort.abort(); } catch {} abort = null; }
@@ -45,17 +67,33 @@ export function attachMse(cam, video) {
     destroyed = true;
     if (retry) { clearTimeout(retry); retry = null; }
     clearConn();
+    removeOverlay();
     try { video.pause(); video.playbackRate = 1.0; video.removeAttribute("src"); video.load(); } catch {}
   };
 
   const scheduleReconnect = () => {
     if (destroyed) return;
     clearConn();
+    reconnectCount++;
+    if (reconnectCount > 3) {
+      const el = ensureOverlay();
+      if (el) {
+        el.classList.add("wall-connection-lost");
+        el.querySelector(".wall-buffering-text").textContent = "Connection lost";
+      }
+    } else {
+      const el = ensureOverlay();
+      if (el) {
+        el.classList.remove("wall-connection-lost");
+        el.querySelector(".wall-buffering-text").textContent = "Loading…";
+      }
+    }
     retry = setTimeout(() => { retry = null; connect(); }, RECONNECT_MS);
   };
 
   async function connect() {
     if (destroyed) return;
+    removeOverlay();
     abort = new AbortController();
     const signal = abort.signal;
 
@@ -112,14 +150,25 @@ export function attachMse(cam, video) {
       pump();
     });
 
+    let waitingTimer = null;
     video.addEventListener("waiting", () => {
-      if (!video.buffered.length) return;
+      if (!tile || tile.querySelector(".wall-buffering")) return;
+      if (!video.buffered.length) {
+        if (!waitingTimer) waitingTimer = setTimeout(() => {
+          if (!video.paused) { const el = ensureOverlay(); if (el) el.classList.remove("wall-connection-lost"); }
+        }, 2000);
+        return;
+      }
       for (let i = 0; i < video.buffered.length; i++) {
         if (video.buffered.start(i) > video.currentTime && video.buffered.start(i) - video.currentTime < 1) {
           video.currentTime = video.buffered.start(i) + 0.01;
           break;
         }
       }
+    });
+    video.addEventListener("playing", () => {
+      if (waitingTimer) { clearTimeout(waitingTimer); waitingTimer = null; }
+      removeOverlay();
     });
 
     timer = setInterval(() => {

@@ -1,10 +1,10 @@
 import { $, $$, makeMsg } from "../util/dom.js";
 import { token } from "../api.js";
+import { Timeline } from "../../timeline.js";
 
-export const PB_CLIP_SECONDS = 5;            // playback window loaded per scrub
-const PB_PRELOAD_MARGIN_SECONDS = 2.0;       // start fetching the next segment this many seconds before the current one ends
 export const PB_DEFAULT_INTERVAL = 6 * 60 * 60 * 1000; // timeline window: 6 hours
 const PB_START_OFFSET_MS = 5 * 60 * 1000;    // cursor lands 5 min in the past
+let pbSpeed = 1;                             // current VOD playback speed
 
 let pbTimeline = null;
 let pbCams = [];
@@ -13,9 +13,6 @@ let preservedPbState = null;
 let pbBuildGen = 0;
 let pbLoadGen = 0;     // initial-playback render; bumped when leaving playback
 let pbSelectGen = 0;   // timeline clicks; bumped when leaving playback or on a newer click
-let pbSessions = [];
-let pbClock = null;    // master clock { startMsec, segmentIndex, segmentStartedAt, intervalMs, preloadTriggered, running, rafId }
-
 export function getTimeline() { return pbTimeline; }
 export function getPbCams() { return pbCams; }
 export function getLoadGen() { return pbLoadGen; }
@@ -82,10 +79,6 @@ async function fetchEvents(camId, rangeMs = 24 * 3600 * 1000) {
 }
 
 export async function loadPlaybackBlob(camId, start, duration, opts = {}) {
-  // Accept either a Date or an epoch-ms number; the caller (startVodPlayback
-  // → preloadPlaybackClips) passes the scrub position as a number, while
-  // the in-loop swappers pass a Date. Normalize here so neither caller
-  // crashes with "start.toISOString is not a function".
   const startDate = start instanceof Date ? start : new Date(start);
   const params = new URLSearchParams({
     start: startDate.toISOString(),
@@ -107,7 +100,7 @@ export async function loadPlaybackBlob(camId, start, duration, opts = {}) {
 }
 
 export function setTilePlaybackLoading(tile) {
-  revokeTileBlob(tile);
+  hideTileBuffering(tile);
   let video = tile.querySelector("video");
   if (video) {
     video.removeAttribute("src");
@@ -119,33 +112,12 @@ export function setTilePlaybackLoading(tile) {
     tile.insertBefore(video, firstEl);
     if (firstEl) firstEl.remove();
   }
+  tile.dataset.poster = video.poster || "/img/camera-banner.png";
   const placeholder = makeMsg("Loading playback…");
   placeholder.classList.add("wall-loading");
   video.replaceWith(placeholder);
   tile._loadingPlaceholder = placeholder;
   tile.dataset.mode = "playback-loading";
-}
-
-function revokeTileBlob(tile) {
-  if (tile && tile._blobUrl) {
-    try { URL.revokeObjectURL(tile._blobUrl); } catch {}
-    tile._blobUrl = null;
-  }
-  if (tile && tile._playbackReq) {
-    tile._playbackReq.cancelled = true;
-    tile._playbackReq = null;
-  }
-}
-
-export async function preloadPlaybackClips(cams, start, duration) {
-  const results = await Promise.allSettled(
-    cams.map((cam) => loadPlaybackBlob(cam.id, start, duration)),
-  );
-  return cams.map((cam, i) => ({
-    cam,
-    blobUrl: results[i].status === "fulfilled" ? results[i].value : null,
-    error: results[i].status === "rejected" ? (results[i].reason && results[i].reason.message) || "fetch failed" : null,
-  }));
 }
 
 export function captureTimelineState() {
@@ -206,7 +178,6 @@ export async function buildPlaybackTimeline(filtered) {
 
   tl.setLiveCallback((_tlIdx, isLive) => {
     if (!isLive) return;
-    killAllSessions();
     killVods();
     // Lazy-load the wall module to break the wall <-> playback import
     // cycle. The wall module is always already loaded by the time the
@@ -285,9 +256,14 @@ export function claimPlaybackLoad() {
 }
 
 export function teardownPlaybackTimeline() {
+  if (pbTimeline) {
+    preservedPbState = {
+      intervalMsec: pbTimeline.getInterval(),
+      selectedMsec: pbTimeline.getCurrent(),
+    };
+  }
   pbBuildGen++;
   pbSelectGen++;
-  killAllSessions();
   killVods();
   pbTimeline = null;
   pbCams = [];
@@ -311,7 +287,9 @@ export function setupPlaybackBar() {
   const playBtn = $("#pb-play");
   const liveBtn = $("#pb-live");
   const canvas = $("#pb-canvas");
+  const speedBtns = $$("#pb-speed .pb-speed-btn");
 
+  // ----- Timeline click / scroll -----
   canvas.addEventListener("click", (e) => {
     if (!pbTimeline) return;
     pbTimeline.onSingleTapUp({ offsetX: e.offsetX, offsetY: e.offsetY });
@@ -332,6 +310,23 @@ export function setupPlaybackBar() {
     }).observe(canvas);
   }
 
+  // ----- Hover tooltip on canvas (only on recorded segments) -----
+  canvas.addEventListener("mousemove", (e) => {
+    if (!pbTimeline || !pbCams.length) { pbTimeline?.clearHover(); return; }
+    const msec = pbTimeline.msecFromPixel(e.offsetX);
+    const OFFSET = 25;
+    const numTL = pbTimeline.options.timelines;
+    const rowH = (canvas.clientHeight - OFFSET * 2) / numTL;
+    const idx = Math.floor((e.offsetY - OFFSET) / rowH);
+    if (idx < 0 || idx >= numTL) { pbTimeline.clearHover(); pbTimeline.draw(); return; }
+    const records = pbTimeline.getBackgroundRecords(idx);
+    if (!records || !findRecordAt(records, msec)) { pbTimeline.clearHover(); pbTimeline.draw(); return; }
+    pbTimeline.setHover(e.offsetX, msec);
+    pbTimeline.draw();
+  });
+  canvas.addEventListener("mouseleave", () => { pbTimeline?.clearHover(); pbTimeline?.draw(); });
+
+  // ----- Play / pause -----
   playBtn.addEventListener("click", () => {
     const videos = $$("#wall .wall-tile video");
     if (!videos.length) return;
@@ -342,8 +337,10 @@ export function setupPlaybackBar() {
     }
     playBtn.textContent = paused ? "⏸" : "▶";
     playBtn.setAttribute("aria-label", paused ? "Pause" : "Play");
+    setVodPaused(!paused);
   });
 
+  // ----- Live button -----
   liveBtn.addEventListener("click", () => {
     if (!pbTimeline) return;
     pbTimeline.setCurrent(Date.now());
@@ -351,6 +348,53 @@ export function setupPlaybackBar() {
     playBtn.textContent = "▶";
     playBtn.setAttribute("aria-label", "Play");
   });
+
+  // ----- Speed control -----
+  for (const btn of speedBtns) {
+    btn.addEventListener("click", () => {
+      pbSpeed = parseFloat(btn.dataset.speed);
+      for (const b of speedBtns) {
+        const active = b === btn;
+        b.classList.toggle("active", active);
+        b.setAttribute("aria-pressed", active ? "true" : "false");
+      }
+      // Apply to all existing VOD videos
+      for (const h of vodInstances.values()) {
+        const m = h && h.media;
+        if (m) m.playbackRate = pbSpeed;
+      }
+    });
+  }
+
+  // ----- Jump to date/time -----
+  const gotoBtn = $("#pb-goto");
+  const gotoInput = $("#pb-goto-input");
+  if (gotoBtn && gotoInput) {
+    gotoBtn.addEventListener("click", () => {
+      if (!pbTimeline) return;
+      gotoInput.value = toLocalDatetimeValue(pbTimeline.getCurrent());
+      // showPicker() where supported; otherwise focusing opens the native UI.
+      if (typeof gotoInput.showPicker === "function") { try { gotoInput.showPicker(); return; } catch {} }
+      gotoInput.focus();
+    });
+    gotoInput.addEventListener("change", () => {
+      if (!pbTimeline || !gotoInput.value) return;
+      const msec = new Date(gotoInput.value).getTime();
+      if (Number.isNaN(msec)) return;
+      const clamped = Math.min(msec, Date.now());
+      pbTimeline.setCurrent(clamped);
+      pbTimeline.draw();
+      startVodPlayback(pbCams, clamped);
+    });
+  }
+}
+
+// Formats an epoch-ms value as the local "YYYY-MM-DDTHH:MM:SS" string a
+// datetime-local input expects (its value is always local, no timezone).
+function toLocalDatetimeValue(msec) {
+  const d = new Date(msec);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 // ---------- HLS VOD playback (embedded engine) ----------
@@ -405,6 +449,27 @@ function vodPlaylistUrl(camId, startMsec) {
   return `/api/camera/${encodeURIComponent(camId)}/recordings/hls/playlist.m3u8?${p}`;
 }
 
+function showTileBuffering(tile) {
+  if (!tile) return;
+  let el = tile.querySelector(".wall-buffering");
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "wall-buffering";
+    el.setAttribute("role", "status");
+    el.setAttribute("aria-live", "polite");
+    el.innerHTML = '<span class="wall-buffering-icon" aria-hidden="true">⟳</span><span class="wall-buffering-text">Loading…</span>';
+    const overlay = tile.querySelector(".wall-overlay");
+    if (overlay) tile.insertBefore(el, overlay);
+    else tile.appendChild(el);
+  }
+  el.classList.remove("wall-connection-lost");
+}
+
+function hideTileBuffering(tile) {
+  const el = tile && tile.querySelector(".wall-buffering");
+  if (el) el.remove();
+}
+
 export function killVods() {
   if (vodCursorTimer) { clearInterval(vodCursorTimer); vodCursorTimer = null; }
   for (const h of vodInstances.values()) { try { h.destroy(); } catch {} }
@@ -414,6 +479,7 @@ export function killVods() {
   vodPaused = false;
   vodPausedAt = 0;
   for (const t of $$("#wall .wall-gap-overlay")) t.remove();
+  for (const t of $$("#wall .wall-buffering")) t.remove();
 }
 
 // setVodPaused toggles the wall-clock cursor and every vod video
@@ -507,6 +573,7 @@ function hideTileGapOverlay(tile) {
 // video element is reused; only the HLS controller is torn down and a
 // fresh one is attached loading the playlist from cursorMsec.
 function reinitTileVideo(tile, cam, cursorMsec) {
+  hideTileBuffering(tile);
   const existing = vodInstances.get(cam.id);
   if (existing) { try { existing.destroy(); } catch {} }
   vodInstances.delete(cam.id);
@@ -528,6 +595,7 @@ function reinitTileVideo(tile, cam, cursorMsec) {
   });
   hls.loadSource(vodPlaylistUrl(cam.id, cursorMsec));
   hls.attachMedia(video);
+  video.playbackRate = pbSpeed;
   vodInstances.set(cam.id, hls);
 }
 
@@ -536,7 +604,6 @@ function reinitTileVideo(tile, cam, cursorMsec) {
 // check (which keys off vodPlaybackStartTime) sees the correct value
 // before the first HLS instance is created.
 export function startVodPlayback(cams, startMsec) {
-  killAllSessions(); // stop any legacy blob player still running
   killVods();
   if (!window.Hls || !Hls.isSupported()) {
     for (const cam of cams) {
@@ -556,6 +623,10 @@ export function startVodPlayback(cams, startMsec) {
 
     const video = document.createElement("video");
     video.autoplay = true; video.playsInline = true; video.muted = true;
+    video.playbackRate = pbSpeed;
+    video.poster = tile.dataset.poster || "/img/camera-banner.png";
+    video.addEventListener("waiting", () => showTileBuffering(tile));
+    video.addEventListener("playing", () => hideTileBuffering(tile));
     const ph = tile._loadingPlaceholder;
     if (ph) { ph.replaceWith(video); tile._loadingPlaceholder = null; }
     else {
@@ -570,6 +641,7 @@ export function startVodPlayback(cams, startMsec) {
     });
     hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
     hls.on(Hls.Events.ERROR, (_e, data) => {
+      hideTileBuffering(tile);
       if (data && data.fatal) {
         try { hls.destroy(); } catch {}
         vodInstances.delete(cam.id);
@@ -580,6 +652,9 @@ export function startVodPlayback(cams, startMsec) {
     hls.attachMedia(video);
     vodInstances.set(cam.id, hls);
   }
+  vodPaused = false;
+  const pbPlay = $("#pb-play");
+  if (pbPlay) { pbPlay.textContent = "⏸"; pbPlay.setAttribute("aria-label", "Pause"); }
   startVodCursor();
 }
 
@@ -613,308 +688,58 @@ function startVodCursor() {
   }, 250);
 }
 
-// ---------- Gapless playback sessions (legacy blob player) ----------
+// ---------- Keyboard shortcuts (j / k / l / Space) for recordings ----------
 
-function startMasterClock(startMsec) {
-  if (pbClock) stopMasterClock();
-  pbClock = {
-    startMsec,
-    segmentIndex: 0,
-    segmentStartedAt: Date.now(),
-    intervalMs: PB_CLIP_SECONDS * 1000,
-    preloadTriggered: false,
-    running: true,
-    rafId: 0,
-  };
-  pbClock.rafId = requestAnimationFrame(tickMasterClock);
-}
-
-function stopMasterClock() {
-  if (!pbClock) return;
-  pbClock.running = false;
-  if (pbClock.rafId) cancelAnimationFrame(pbClock.rafId);
-  pbClock = null;
-}
-
-function tickMasterClock() {
-  if (!pbClock || !pbClock.running) return;
-  let elapsed = Date.now() - pbClock.segmentStartedAt;
-  const preloadAt = pbClock.intervalMs - PB_PRELOAD_MARGIN_SECONDS * 1000;
-  if (elapsed >= preloadAt && elapsed < pbClock.intervalMs && !pbClock.preloadTriggered) {
-    pbClock.preloadTriggered = true;
-    triggerPreloadForAllCams();
-  }
-  while (elapsed >= pbClock.intervalMs) {
-    advanceAllCams();
-    elapsed = Date.now() - pbClock.segmentStartedAt;
-  }
-
-  // Per-tile gap state. The cursor's current wall-clock is the source of
-  // truth; a tile whose cursor position is in a coverage gap pauses its
-  // video and shows the overlay while the other tiles keep playing.
-  // Without this check the master clock would happily swap clips and
-  // play through the gap (the clip is filled with black "NO RECORDING"
-  // frames) — we want the per-tile pause instead so each camera that
-  // has recording in the window keeps advancing at 1x.
-  const currentStartMsec = pbClock.startMsec + pbClock.segmentIndex * pbClock.intervalMs;
-  for (const s of pbSessions) {
-    if (s.killed) continue;
-    const camIndex = pbCams.findIndex((c) => c.id === s.cam.id);
-    if (camIndex < 0) continue;
-    const records = pbTimeline && pbTimeline.getBackgroundRecords(camIndex);
-    if (!records) continue;
-    const inGap = findRecordAt(records, currentStartMsec) === null;
-    setTileGapState(s.tile, inGap);
-  }
-
-  // Drive the timeline cursor from the master clock: the cursor's
-  // wall-clock is startMsec + segmentIndex*clipDuration + elapsed,
-  // so it advances at 1x monotonic regardless of the videos.
-  if (pbTimeline) {
-    const playhead = currentStartMsec + elapsed;
-    if (!pbTimeline.timerSelectedId) {
-      pbTimeline.setCurrent(playhead);
-      pbTimeline.draw();
-    }
-  }
-
-  if (pbClock.running) {
-    pbClock.rafId = requestAnimationFrame(tickMasterClock);
-  }
-}
-
-function triggerPreloadForAllCams() {
-  if (!pbClock) return;
-  const nextStart = pbClock.startMsec + (pbClock.segmentIndex + 1) * pbClock.intervalMs;
-  const expectedSegmentIndex = pbClock.segmentIndex;
-  for (const s of pbSessions) {
-    if (s.killed || s.nextBlobUrl || s.inflightNext) continue;
-    if (!pbTimeline) continue;
-    const camIndex = pbCams.findIndex((c) => c.id === s.cam.id);
-    if (camIndex < 0) continue;
-    const records = pbTimeline.getBackgroundRecords(camIndex);
-    if (!findRecordAt(records, nextStart)) continue;
-    s.inflightNext = true;
-    s.preloadController = new AbortController();
-    const controller = s.preloadController;
-    loadPlaybackBlob(s.cam.id, new Date(nextStart), PB_CLIP_SECONDS, { signal: controller.signal })
-      .then((blobUrl) => {
-        s.inflightNext = false;
-        s.preloadController = null;
-        if (s.killed) { URL.revokeObjectURL(blobUrl); return; }
-        if (!pbClock || pbClock.segmentIndex !== expectedSegmentIndex) {
-          URL.revokeObjectURL(blobUrl);
-          return;
+export function initPlaybackKeys() {
+  document.addEventListener("keydown", (e) => {
+    import("../state.js").then(({ getState }) => {
+      if (getState().viewMode !== "playback") return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (!pbTimeline) return;
+      if (e.key === "j") {
+        e.preventDefault();
+        const records = pbTimeline.getBackgroundRecords(pbTimeline.timelineSelected);
+        const prev = pbTimeline.getPrevRecord(pbTimeline.getCurrent(), records || []);
+        if (prev) {
+          pbTimeline.setCurrent(prev.timestampMsec);
+          pbTimeline.draw();
+          startVodPlayback(pbCams, prev.timestampMsec);
         }
-        s.nextBlobUrl = blobUrl;
-      })
-      .catch((err) => {
-        s.inflightNext = false;
-        s.preloadController = null;
-        if (err && err.name === "AbortError") return;
-      });
-  }
-}
-
-function advanceAllCams() {
-  if (!pbClock) return;
-  pbClock.segmentIndex++;
-  pbClock.segmentStartedAt = Date.now();
-  pbClock.preloadTriggered = false;
-  for (const s of pbSessions) {
-    if (!s.killed) swapCamToNext(s);
-  }
-}
-
-function swapCamToNext(s) {
-  if (s.killed || !pbClock) return;
-  const nextStart = pbClock.startMsec + pbClock.segmentIndex * pbClock.intervalMs;
-  const expectedSegmentIndex = pbClock.segmentIndex;
-  if (s.preloadController) {
-    s.preloadController.abort();
-    s.preloadController = null;
-  }
-  if (s.nextBlobUrl) {
-    const blob = s.nextBlobUrl;
-    s.nextBlobUrl = null;
-    swapPbVideo(s, blob);
-    return;
-  }
-  if (pbTimeline) {
-    const camIndex = pbCams.findIndex((c) => c.id === s.cam.id);
-    if (camIndex >= 0) {
-      const records = pbTimeline.getBackgroundRecords(camIndex);
-      if (!findRecordAt(records, nextStart)) {
-        // Next segment is in a gap: don't fetch a clip, don't replace
-        // the video. The continuous gap check in tickMasterClock pauses
-        // the current video and shows the overlay. The next clip will
-        // be fetched when the cursor exits the gap (next advanceAllCams
-        // sees the next start as having a recording).
-        return;
+      } else if (e.key === "k" || e.key === " ") {
+        e.preventDefault();
+        const btn = $("#pb-play");
+        if (btn) btn.click();
+      } else if (e.key === "l") {
+        e.preventDefault();
+        const records = pbTimeline.getBackgroundRecords(pbTimeline.timelineSelected);
+        const next = pbTimeline.getNextRecord(pbTimeline.getCurrent(), records || []);
+        if (next) {
+          pbTimeline.setCurrent(next.timestampMsec);
+          pbTimeline.draw();
+          startVodPlayback(pbCams, next.timestampMsec);
+        }
       }
-    }
-  }
-  loadPlaybackBlob(s.cam.id, new Date(nextStart), PB_CLIP_SECONDS)
-    .then((blobUrl) => {
-      if (s.killed) { URL.revokeObjectURL(blobUrl); return; }
-      if (!pbClock || pbClock.segmentIndex !== expectedSegmentIndex) {
-        URL.revokeObjectURL(blobUrl);
-        return;
-      }
-      const msg = s.tile.querySelector(".wall-no-recording");
-      if (msg) msg.remove();
-      swapPbVideo(s, blobUrl);
-    })
-    .catch(() => {
-      if (s.killed) return;
-      if (!pbClock || pbClock.segmentIndex !== expectedSegmentIndex) return;
-      // On fetch error (network/4xx/5xx) just leave the tile paused
-      // with the overlay; the next advanceAllCams will retry.
     });
-}
-
-function killAllSessions() {
-  stopMasterClock();
-  for (const s of pbSessions) killSession(s);
-  pbSessions = [];
-}
-
-function killSession(s) {
-  s.killed = true;
-  if (s.preloadController) {
-    s.preloadController.abort();
-    s.preloadController = null;
-  }
-  if (s.video && s.timeUpdateHandler) {
-    s.video.removeEventListener("timeupdate", s.timeUpdateHandler);
-  }
-}
-
-function startPbSession(tile, cam) {
-  const video = tile.querySelector("video");
-  if (!video) return;
-  const s = {
-    tile,
-    cam,
-    video,
-    nextBlobUrl: null,
-    inflightNext: false,
-    preloadController: null,
-    killed: false,
-    lastDrawnPlayhead: 0,
-  };
-  s.timeUpdateHandler = () => onPbTimeUpdate(s);
-  video.addEventListener("timeupdate", s.timeUpdateHandler);
-  pbSessions.push(s);
-}
-
-function onPbTimeUpdate(s) {
-  if (s.killed || !s.video) return;
-  if (!pbTimeline) return;
-  if (pbTimeline.timerSelectedId) return;
-  const currentStartMsec = pbClock
-    ? pbClock.startMsec + pbClock.segmentIndex * pbClock.intervalMs
-    : 0;
-  const playhead = currentStartMsec + s.video.currentTime * 1000;
-  if (Math.abs(playhead - s.lastDrawnPlayhead) > 100) {
-    pbTimeline.setCurrent(playhead);
-    pbTimeline.draw();
-    s.lastDrawnPlayhead = playhead;
-  }
-}
-
-function swapPbVideo(s, blobUrl) {
-  const oldVideo = s.video;
-  if (oldVideo) {
-    oldVideo.removeEventListener("timeupdate", s.timeUpdateHandler);
-    oldVideo.pause();
-  }
-  if (s.tile._blobUrl && s.tile._blobUrl !== blobUrl) {
-    URL.revokeObjectURL(s.tile._blobUrl);
-  }
-  s.tile._blobUrl = blobUrl;
-  const fresh = document.createElement("video");
-  fresh.autoplay = true; fresh.playsInline = true; fresh.muted = true;
-  fresh.src = blobUrl;
-  if (oldVideo) oldVideo.replaceWith(fresh);
-  else s.tile.appendChild(fresh);
-  s.video = fresh;
-  fresh.addEventListener("timeupdate", s.timeUpdateHandler);
-  fresh.play().catch((e) => {
-    console.warn("swapPbVideo play() rejected:", e && e.message);
-    const tile = s.tile;
-    if (tile && !tile.querySelector(".wall-status")) {
-      const msg = document.createElement("div");
-      msg.className = "wall-status wall-no-recording";
-      msg.textContent = `Autoplay blocked: ${e && e.message ? e.message : "play() rejected"}`;
-      fresh.replaceWith(msg);
-    }
   });
-  s.lastDrawnPlayhead = 0;
 }
 
-function showNoRecording(s) {
-  if (s.killed) return;
-  if (s.video) {
-    s.video.removeEventListener("timeupdate", s.timeUpdateHandler);
-    s.video.pause();
-  }
-  if (s.tile._blobUrl) {
-    URL.revokeObjectURL(s.tile._blobUrl);
-    s.tile._blobUrl = null;
-  }
-  if (s.tile.querySelector(".wall-no-recording")) {
-    s.video = null;
-    s.tile.dataset.mode = "playback-no-data";
-    return;
-  }
-  const msg = document.createElement("div");
-  msg.className = "wall-no-recording wall-status";
-  msg.innerHTML = "<div class='wall-no-recording-icon'>📡</div><div>No recording</div>";
-  if (s.video) s.video.replaceWith(msg);
-  else s.tile.appendChild(msg);
-  s.video = null;
-  s.tile.dataset.mode = "playback-no-data";
-}
+// ---------- Download clip ----------
+//
+// Downloads a clip from the camera's recordings using the /recordings/get
+// endpoint. Triggers a browser download with a descriptive filename.
+// `startMsec` is epoch-milliseconds; `durationSec` defaults to 10.
 
-export function bindClipsAndStart(filtered, clips, startMsec) {
-  for (const { cam, blobUrl, error } of clips) {
-    const tile = $(`#wall .wall-tile[data-id="${CSS.escape(cam.id)}"]`);
-    if (!tile) {
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-      continue;
-    }
-    const placeholder = tile._loadingPlaceholder;
-    if (blobUrl) {
-      const fresh = document.createElement("video");
-      fresh.autoplay = true; fresh.playsInline = true; fresh.muted = true;
-      fresh.src = blobUrl;
-      tile._blobUrl = blobUrl;
-      tile.dataset.mode = "playback";
-      if (placeholder) {
-        placeholder.replaceWith(fresh);
-        tile._loadingPlaceholder = null;
-      } else {
-        tile.appendChild(fresh);
-      }
-      startPbSession(tile, cam);
-    } else if (placeholder) {
-      placeholder.textContent = `Playback failed: ${error}`;
-      tile.dataset.mode = "playback-error";
-      tile._loadingPlaceholder = null;
-    }
-  }
-  for (const v of $$("#wall .wall-tile video")) {
-    v.play().catch((e) => {
-      console.warn("play() rejected for", v.src, e && e.message);
-      const tile = v.closest(".wall-tile");
-      if (tile && !tile.querySelector(".wall-status")) {
-        const msg = document.createElement("div");
-        msg.className = "wall-status wall-no-recording";
-        msg.textContent = `Autoplay blocked: ${e && e.message ? e.message : "play() rejected"}`;
-        v.replaceWith(msg);
-      }
-    });
-  }
-  startMasterClock(startMsec);
+export async function downloadClip(camId, startMsec, durationSec = 10) {
+  const blobUrl = await loadPlaybackBlob(camId, startMsec, durationSec);
+  const a = document.createElement("a");
+  const d = new Date(startMsec);
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  a.href = blobUrl;
+  a.download = `eneverre_${camId}_${stamp}.mp4`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
 }

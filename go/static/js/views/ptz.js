@@ -282,23 +282,39 @@ function initPtzDrag() {
 }
 
 function initPtzKeyboard() {
-  // Timeline zoom: "+" enlarges the visible window (more time, less
-  // detail) and "-" shrinks it. Only fires when the timeline is active
-  // and the user is not typing into a field.
   document.addEventListener("keydown", async (e) => {
-    const { viewMode } = getState();
-    if (viewMode !== "playback") return;
+    const { viewMode, wallFilter, lastPtzCam } = getState();
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-    const { getTimeline } = await import("./playback.js");
-    const tl = getTimeline();
-    if (!tl) return;
-    if (e.key === "+") {
-      tl.increaseInterval();
-      e.preventDefault();
-    } else if (e.key === "-") {
-      tl.decreaseInterval();
-      e.preventDefault();
+
+    // Playback mode: + / - zoom timeline
+    if (viewMode === "playback") {
+      const { getTimeline } = await import("./playback.js");
+      const tl = getTimeline();
+      if (!tl) return;
+      if (e.key === "+") { tl.increaseInterval(); e.preventDefault(); }
+      else if (e.key === "-") { tl.decreaseInterval(); e.preventDefault(); }
+      return;
+    }
+
+    // Live mode + single cam + PTZ capable: arrow keys move PTZ
+    if (viewMode === "live" && wallFilter.type === "cam" && lastPtzCam?.capabilities?.ptz) {
+      const map = {
+        ArrowUp:    { x: 0, y: -50 },
+        ArrowDown:  { x: 0, y: 50 },
+        ArrowLeft:  { x: -50, y: 0 },
+        ArrowRight: { x: 50, y: 0 },
+      };
+      const dir = map[e.key];
+      if (dir) {
+        e.preventDefault();
+        try {
+          await api(`/api/camera/${encodeURIComponent(lastPtzCam.id)}/ptz/move?x=${dir.x}&y=${dir.y}`, { method: "POST" });
+        } catch (err) {
+          const { alertModal } = await import("../ui/dialog.js");
+          alertModal(`PTZ failed: ${err.message}`, { title: "PTZ error" });
+        }
+      }
     }
   });
 }

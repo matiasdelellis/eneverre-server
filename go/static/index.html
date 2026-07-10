@@ -102,6 +102,14 @@
           <div id="playback-bar" class="playback-bar" hidden>
             <button id="pb-play" class="pb-btn" title="Play/Pause" aria-label="Play">▶</button>
             <canvas id="pb-canvas" class="pb-canvas"></canvas>
+            <button id="pb-goto" class="pb-btn" title="Jump to date/time" aria-label="Jump to date/time">🕐</button>
+            <input id="pb-goto-input" class="pb-goto-input" type="datetime-local" step="1" aria-label="Jump to date/time" />
+            <div class="pb-speed" id="pb-speed" role="group" aria-label="Playback speed">
+              <button data-speed="0.5" class="pb-btn pb-speed-btn" aria-pressed="false">0.5×</button>
+              <button data-speed="1" class="pb-btn pb-speed-btn active" aria-pressed="true">1×</button>
+              <button data-speed="1.5" class="pb-btn pb-speed-btn" aria-pressed="false">1.5×</button>
+              <button data-speed="2" class="pb-btn pb-speed-btn" aria-pressed="false">2×</button>
+            </div>
             <button id="pb-live" class="pb-btn pb-live-btn">Live</button>
           </div>
         </div>
@@ -240,6 +248,41 @@
     </div>
   </div>
 
+  <div id="help-overlay" class="help-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="help-card">
+      <header class="help-header">
+        <h2 id="help-title">Keyboard shortcuts</h2>
+        <button id="help-close" class="ghost" aria-label="Close">&times;</button>
+      </header>
+      <div class="help-body">
+        <section>
+          <h3>Playback</h3>
+          <dl class="help-list">
+            <div><dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play / pause</dd></div>
+            <div><dt><kbd>j</kbd></dt><dd>Jump to previous recording</dd></div>
+            <div><dt><kbd>l</kbd></dt><dd>Jump to next recording</dd></div>
+            <div><dt><kbd>+</kbd></dt><dd>Zoom timeline out (wider window)</dd></div>
+            <div><dt><kbd>&minus;</kbd></dt><dd>Zoom timeline in (narrower window)</dd></div>
+          </dl>
+        </section>
+        <section>
+          <h3>Live (single PTZ camera)</h3>
+          <dl class="help-list">
+            <div><dt><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></dt><dd>Pan / tilt the camera</dd></div>
+          </dl>
+        </section>
+        <section>
+          <h3>General</h3>
+          <dl class="help-list">
+            <div><dt><kbd>f</kbd></dt><dd>Fullscreen the focused camera</dd></div>
+            <div><dt><kbd>?</kbd></dt><dd>Show this help</dd></div>
+            <div><dt><kbd>Esc</kbd></dt><dd>Close dialogs</dd></div>
+          </dl>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <div id="dlg-modal" class="dlg-modal" hidden role="dialog" aria-modal="true" aria-labelledby="dlg-title">
     <div class="dlg-card">
       <h2 id="dlg-title" class="dlg-title">Confirm</h2>
@@ -261,7 +304,6 @@
   </div>
 
   <script src="hls.min.js"></script>
-  <script src="timeline.js"></script>
   <script src="app.js" type="module"></script>
 </body>
 </html>

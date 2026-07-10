@@ -1,9 +1,21 @@
 import { $, $$, escapeHtml, makeMsg } from "../util/dom.js";
 import { getState, setWallFilter, setWallFilterBeforeCam, on } from "../state.js";
-import { fetchCameras } from "../api.js";
+import { fetchCameras, token } from "../api.js";
 import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js";
 import { attachMse, captureVideoFrame } from "./mse.js";
 import { updatePtzModal } from "./ptz.js";
+import { toast } from "../ui/toast.js";
+
+// Longest clip the 💾 button will request. Guards against a forgotten
+// "recording" marker producing a multi-hour download.
+const MAX_CLIP_SECONDS = 5 * 60;
+
+// mm:ss for the live clip counter.
+function fmtElapsed(sec) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
 
 // camId -> wall live instance (the MSE handle from attachMse, wrapped so its
 // .destroy() also stops the thumbnail grabber). destroyWall() calls .destroy()
@@ -64,7 +76,10 @@ export function gridLayout(count) {
 }
 
 function snapshotTile(tile, video, cam) {
-  if (!video.videoWidth || !video.videoHeight) return;
+  if (!video.videoWidth || !video.videoHeight) {
+    toast("Snapshot unavailable: no video frame yet", { type: "error" });
+    return;
+  }
   const canvas = document.createElement("canvas");
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
@@ -80,6 +95,26 @@ function snapshotTile(tile, video, cam) {
   document.body.appendChild(a);
   a.click();
   a.remove();
+  toast("Snapshot saved", { type: "success" });
+}
+
+async function tryLoadThumbnail(tile, camId) {
+  if (!camId) return;
+  try {
+    const t = token();
+    if (!t) return;
+    const resp = await fetch(`/api/camera/${encodeURIComponent(camId)}/thumbnail`, {
+      headers: { Authorization: `Bearer ${t}` },
+    });
+    if (!resp.ok) return;
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    if (tile._posterBlob) URL.revokeObjectURL(tile._posterBlob);
+    tile._posterBlob = url;
+    tile.dataset.poster = url;
+    const video = tile.querySelector("video");
+    if (video) video.poster = url;
+  } catch {}
 }
 
 function toggleCamFilterFromTile(camId) {
@@ -99,11 +134,12 @@ function renderWallTile(cam) {
   tile.dataset.id = cam.id;
   tile.dataset.mode = "live";
   tile.innerHTML = `
-    <video autoplay playsinline muted></video>
+    <video autoplay playsinline muted poster="/img/camera-banner.png"></video>
     <div class="wall-overlay">
       <div class="wall-bottom">
         <div class="wall-name">${escapeHtml(cam.name || cam.id)}</div>
         <div class="wall-actions">
+          <button data-act="clip" title="Download clip" aria-label="Download clip">💾</button>
           <button data-act="snap" title="Snapshot" aria-label="Snapshot">📷</button>
           <button data-act="mute" title="Unmute" aria-label="Toggle audio">🔇</button>
           <button data-act="fs" title="Fullscreen" aria-label="Fullscreen">⛶</button>
@@ -112,7 +148,7 @@ function renderWallTile(cam) {
     </div>
   `;
   const v = tile.querySelector("video");
-  tile.addEventListener("click", (e) => {
+  tile.addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-act]");
     if (btn) {
       e.stopPropagation();
@@ -125,6 +161,72 @@ function renderWallTile(cam) {
         else tile.requestFullscreen?.();
       } else if (btn.dataset.act === "snap") {
         snapshotTile(tile, v, cam);
+      } else if (btn.dataset.act === "clip") {
+        if (tile._clipStart) {
+          // Second click: mark the end using the same clock as the start
+          // (wall-clock in live, timeline position in playback) so the
+          // duration is measured on a single time base.
+          let endMsec;
+          if (tile.dataset.mode === "live") {
+            endMsec = Date.now();
+          } else {
+            const { getTimeline } = await import("./playback.js");
+            const tl = getTimeline();
+            endMsec = tl ? tl.getCurrent() : Date.now();
+          }
+          resetClipButton(tile, btn);
+          let durationSec = (endMsec - tile._clipStartAt) / 1000;
+          tile._clipStart = null;
+          if (!(durationSec > 0)) {
+            // End is at or before the start (double-click, scrub back):
+            // nothing to download, just reset the button.
+            return;
+          }
+          if (durationSec > MAX_CLIP_SECONDS) {
+            durationSec = MAX_CLIP_SECONDS;
+            toast(`Clip capped at ${MAX_CLIP_SECONDS / 60} min`, { type: "info" });
+          }
+          btn.disabled = true;
+          btn.textContent = "⏳";
+          try {
+            const { downloadClip } = await import("./playback.js");
+            await downloadClip(cam.id, tile._clipStartAt, durationSec);
+          } catch (err) {
+            console.warn("clip download failed", err);
+            btn.textContent = "❌";
+            toast(`Clip download failed: ${err.message}`, { type: "error" });
+            setTimeout(() => { btn.disabled = false; btn.textContent = "💾"; }, 2000);
+            return;
+          }
+          btn.disabled = false;
+          btn.textContent = "💾";
+          toast(`Clip saved (${fmtElapsed(durationSec)})`, { type: "success" });
+        } else {
+          // First click: mark start time
+          const mode = tile.dataset.mode;
+          let startMsec;
+          if (mode === "live") {
+            startMsec = Date.now();
+          } else {
+            const { getTimeline } = await import("./playback.js");
+            const tl = getTimeline();
+            startMsec = tl ? tl.getCurrent() : Date.now();
+          }
+          tile._clipStart = true;
+          tile._clipStartAt = startMsec;
+          btn.classList.add("clipping");
+          btn.title = "Click again to end clip";
+          btn.textContent = "🔴";
+          // Live clips are wall-clock bound, so tick a visible counter.
+          // Playback clips advance with the timeline, so leave the marker
+          // static (the elapsed time isn't real seconds).
+          if (mode === "live") {
+            tile._clipTimer = setInterval(() => {
+              const sec = (Date.now() - tile._clipStartAt) / 1000;
+              btn.textContent = `🔴 ${fmtElapsed(Math.min(sec, MAX_CLIP_SECONDS))}`;
+            }, 500);
+          }
+        }
       }
       return;
     }
@@ -151,6 +253,8 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
   const h = wallInstances.get(cam.id);
   if (h) { try { h.destroy(); } catch {} wallInstances.delete(cam.id); }
   revokeTileBlob(tile);
+  revokeTilePoster(tile);
+  resetClipButton(tile);
   if (v && v.tagName === "VIDEO") {
     v.removeAttribute("src");
     v.load();
@@ -158,6 +262,7 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
     const firstEl = tile.firstElementChild;
     const fresh = document.createElement("video");
     fresh.autoplay = true; fresh.playsInline = true; fresh.muted = true;
+    fresh.poster = tile.dataset.poster || "/img/camera-banner.png";
     tile.insertBefore(fresh, firstEl);
     if (firstEl) firstEl.remove();
   }
@@ -172,15 +277,32 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
   }
 }
 
+// Stops any running live clip counter and restores the 💾 button to its
+// idle look. `btn` is optional; when omitted it is looked up in the tile.
+function resetClipButton(tile, btn) {
+  if (tile._clipTimer) { clearInterval(tile._clipTimer); tile._clipTimer = null; }
+  tile._clipStart = null;
+  const b = btn || tile.querySelector('.wall-actions button[data-act="clip"]');
+  if (b) {
+    b.classList.remove("clipping");
+    b.title = "Download clip";
+    if (b.textContent !== "⏳") b.textContent = "💾";
+  }
+}
+
+function revokeTilePoster(tile) {
+  if (tile._posterBlob) { URL.revokeObjectURL(tile._posterBlob); tile._posterBlob = null; }
+}
+
 export function destroyWall() {
   for (const [id, h] of wallInstances) {
     try { h.destroy(); } catch {}
     const tile = $(`#wall .wall-tile[data-id="${CSS.escape(id)}"]`);
     const v = tile && tile.querySelector("video");
     if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
-    if (tile) revokeTileBlob(tile);
+    if (tile) { revokeTileBlob(tile); revokeTilePoster(tile); }
   }
-  for (const tile of $$("#wall .wall-tile")) revokeTileBlob(tile);
+  for (const tile of $$("#wall .wall-tile")) { revokeTileBlob(tile); revokeTilePoster(tile); resetClipButton(tile); }
   wallInstances.clear();
 }
 
@@ -224,6 +346,7 @@ async function applyPlayback(filtered) {
   for (const cam of filtered) {
     const tile = renderWallTile(cam);
     wall.appendChild(tile);
+    tryLoadThumbnail(tile, cam.id);
     if (hasRecording(cam)) {
       setTilePlaybackLoading(tile);
       camsWithData.push(cam);
@@ -232,7 +355,7 @@ async function applyPlayback(filtered) {
     }
   }
   if (camsWithData.length) {
-    if (myLoadGen !== getLoadGen()) return; // a newer loadWall superseded us
+    if (myLoadGen !== getLoadGen()) return;
     startVodPlayback(camsWithData, initMsec);
   }
 }
@@ -283,6 +406,7 @@ export async function loadWall(mode = "live") {
       const tile = renderWallTile(cam);
       setTileMode(tile, cam, "live");
       wall.appendChild(tile);
+      tryLoadThumbnail(tile, cam.id);
     }
     updateSidebarActive();
   }

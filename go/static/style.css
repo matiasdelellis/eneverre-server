@@ -228,6 +228,7 @@ input {
   padding: 10px 14px;
   background: var(--panel);
   border-top: 1px solid var(--border);
+  position: relative;
 }
 .pb-btn {
   background: var(--panel-2);
@@ -248,6 +249,25 @@ input {
   cursor: pointer;
   background: var(--panel-2);
   border-radius: var(--radius);
+  position: relative;
+}
+
+.pb-speed {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.pb-speed-btn {
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 36px;
+  text-align: center;
+}
+.pb-speed-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
 }
 
 .topbar {
@@ -798,6 +818,35 @@ button.icon-btn {
   font-size: 32px;
   opacity: 0.5;
 }
+.wall-buffering {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  z-index: 1;
+  pointer-events: none;
+  background: var(--video-bg);
+}
+.wall-buffering-icon {
+  font-size: 28px;
+  opacity: 0.6;
+}
+@keyframes wall-buffering-spin {
+  to { transform: rotate(360deg); }
+}
+.wall-buffering:not(.wall-connection-lost) .wall-buffering-icon {
+  animation: wall-buffering-spin 1s linear infinite;
+}
+.wall-buffering-text {
+  font-size: 13px;
+  color: var(--muted);
+}
+.wall-buffering.wall-connection-lost .wall-buffering-text {
+  color: var(--danger);
+}
 .wall-tile {
   position: relative;
   background: var(--video-bg);
@@ -864,6 +913,13 @@ button.icon-btn {
   line-height: 1;
 }
 .wall-actions button:hover { background: rgba(0, 0, 0, 0.8); }
+.wall-actions button.clipping {
+  background: rgba(239, 68, 68, 0.85);
+  animation: clip-pulse 1s ease-in-out infinite;
+}
+@keyframes clip-pulse {
+  50% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.6); }
+}
 
 .cam {
   background: var(--panel);
@@ -1498,4 +1554,122 @@ html.booting body > *:not(#boot) { display: none !important; }
   }
   .upgrade-prompt-main { white-space: normal; }
   .upgrade-prompt-version { display: block; }
+}
+
+/* ---------- Toast notifications ---------- */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  z-index: 600;
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(90vw, 420px);
+  padding: 10px 14px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.toast-show { opacity: 1; transform: translateY(0); }
+.toast-success { border-left-color: var(--good); }
+.toast-error { border-left-color: var(--danger); }
+.toast-icon { font-weight: 700; }
+.toast-success .toast-icon { color: var(--good); }
+.toast-error .toast-icon { color: var(--danger); }
+.toast-info .toast-icon { color: var(--accent); }
+
+/* ---------- Jump-to-datetime input (playback bar) ---------- */
+.pb-goto-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: 0;
+  opacity: 0;
+  border: 0;
+  pointer-events: none;
+}
+
+/* ---------- Keyboard-shortcut help overlay ---------- */
+.help-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+  padding: 20px;
+}
+.help-overlay[hidden] { display: none; }
+.help-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: 480px;
+  max-width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow);
+}
+.help-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.help-header h2 { margin: 0; font-size: 18px; }
+.help-body { padding: 12px 20px 20px; }
+.help-body section { margin-top: 14px; }
+.help-body h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.help-list { margin: 0; }
+.help-list > div {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 4px 0;
+}
+.help-list dt {
+  flex: 0 0 130px;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.help-list dd { margin: 0; color: var(--fg); }
+kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
 }
