@@ -9,6 +9,25 @@ import (
 	"eneverre/internal/auth"
 )
 
+// maxPasswordLen bounds every password handed to PBKDF2 (login verify and the
+// set/change-password endpoints). A multi-MB password would make each hash
+// catastrophically CPU-heavy (600k iterations), so we reject it before hashing.
+// Enforcing the same limit on the write paths means an oversized password can
+// never be stored, so login never has to reconcile one. Real passwords are far
+// shorter, so legitimate users are unaffected.
+const maxPasswordLen = 1024
+
+// passwordTooLong reports whether pw exceeds maxPasswordLen and, if so, writes a
+// 422. Rejecting on length alone leaks nothing about a username, so it is safe
+// on the unauthenticated login path.
+func passwordTooLong(w http.ResponseWriter, pw string) bool {
+	if len(pw) > maxPasswordLen {
+		httpError(w, http.StatusUnprocessableEntity, "Password too long")
+		return true
+	}
+	return false
+}
+
 // Token lifetimes are configurable via the [auth] section
 // (access_token_ttl_hours / refresh_token_ttl_days) and resolved into
 // a.accessTTL / a.refreshTTL (seconds) at startup; see server.New.
@@ -39,6 +58,9 @@ type loginResponse struct {
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if passwordTooLong(w, req.Password) {
 		return
 	}
 	var stored, role string

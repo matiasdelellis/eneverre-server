@@ -41,9 +41,16 @@ func queryFloat(r *http.Request, key string, def float64) float64 {
 	return n
 }
 
+// maxJSONBodyBytes caps request bodies decoded by decodeJSON. Without it a
+// client can POST an arbitrarily large body (fully buffered before any
+// validation) and exhaust memory; the unauthenticated login path is the most
+// exposed. http.MaxBytesReader aborts the read as soon as the limit is crossed.
+const maxJSONBodyBytes = 1 << 20 // 1 MiB
+
 // decodeJSON reads and validates a JSON request body into dst. On failure it
 // writes a 422 and returns false.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
 		httpError(w, http.StatusUnprocessableEntity, "Invalid request body")
 		return false

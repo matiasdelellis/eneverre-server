@@ -104,14 +104,20 @@ func (a *App) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "new_password is required")
 		return
 	}
+	if passwordTooLong(w, req.NewPassword) {
+		return
+	}
 	var stored string
 	err := a.db.QueryRow("SELECT password FROM users WHERE username = ?", me.Username).Scan(&stored)
 	if err != nil || !auth.CheckPasswordHash(stored, req.CurrentPassword) {
 		httpError(w, http.StatusBadRequest, "Current password is incorrect")
 		return
 	}
-	_, _ = a.db.Exec("UPDATE users SET password = ? WHERE username = ?",
-		auth.GeneratePasswordHash(req.NewPassword), me.Username)
+	if _, err := a.db.Exec("UPDATE users SET password = ? WHERE username = ?",
+		auth.GeneratePasswordHash(req.NewPassword), me.Username); err != nil {
+		httpError(w, http.StatusInternalServerError, "Could not update password")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Password updated"})
 }
 
@@ -129,8 +135,11 @@ func (a *App) handleChangeMyName(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	_, _ = a.db.Exec("UPDATE users SET first_name = ?, last_name = ? WHERE username = ?",
-		req.FirstName, req.LastName, me.Username)
+	if _, err := a.db.Exec("UPDATE users SET first_name = ?, last_name = ? WHERE username = ?",
+		req.FirstName, req.LastName, me.Username); err != nil {
+		httpError(w, http.StatusInternalServerError, "Could not update name")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":    "Name updated",
 		"first_name": req.FirstName,
@@ -230,7 +239,15 @@ func (a *App) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "role must be 'admin' or 'user'")
 		return
 	}
-	_, _ = a.db.Exec("UPDATE users SET role = ? WHERE username = ?", req.Role, r.PathValue("username"))
+	res, err := a.db.Exec("UPDATE users SET role = ? WHERE username = ?", req.Role, r.PathValue("username"))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "Could not update role")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		httpError(w, http.StatusNotFound, "User not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Role updated"})
 }
 
@@ -250,8 +267,19 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "password is required")
 		return
 	}
-	_, _ = a.db.Exec("UPDATE users SET password = ? WHERE username = ?",
+	if passwordTooLong(w, req.Password) {
+		return
+	}
+	res, err := a.db.Exec("UPDATE users SET password = ? WHERE username = ?",
 		auth.GeneratePasswordHash(req.Password), r.PathValue("username"))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "Could not update password")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		httpError(w, http.StatusNotFound, "User not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Password updated"})
 }
 

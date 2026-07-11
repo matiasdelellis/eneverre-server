@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -164,10 +163,14 @@ func Load(opts LoadOptions) (*Config, error) {
 }
 
 // UpdatesStorageDir resolves the directory where published APKs and
-// manifests live. Precedence: [updates] storage_dir INI key > the
-// ENEVERRE_UPDATES_DIR env var > <cameras_dir_parent>/app-updates. An empty
-// CamerasDir means the feature stays disabled unless one of the explicit
-// overrides is set; the HTTP layer treats an empty result as "503".
+// manifests live. Precedence: [updates] storage_dir INI key >
+// ENEVERRE_UPDATES_DIR env var. The feature is intentionally DISABLED unless
+// one of those two is set explicitly: an empty result makes the stores report
+// Enabled() == false and the /api/app/* endpoints answer 503 instead of 404.
+// (The historical fallback that derived <cameras_dir_parent>/app-updates was
+// removed because CamerasDir is always resolved at startup, which silently
+// enabled the feature — and sprang up a writable directory — on every install
+// even without any [updates] configuration.)
 func (c *Config) UpdatesStorageDir() string {
 	if v := strings.TrimSpace(c.UpdatesSection().Get("storage_dir", "")); v != "" {
 		return v
@@ -175,14 +178,7 @@ func (c *Config) UpdatesStorageDir() string {
 	if v := strings.TrimSpace(os.Getenv("ENEVERRE_UPDATES_DIR")); v != "" {
 		return v
 	}
-	if c.CamerasDir == "" {
-		return ""
-	}
-	parent := filepath.Dir(c.CamerasDir)
-	if parent == "" || parent == "." {
-		return ""
-	}
-	return filepath.Join(parent, "app-updates")
+	return ""
 }
 
 // UpdatesPublicBaseURL resolves the base URL the manifest's `url` field is
