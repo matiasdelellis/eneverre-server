@@ -10,10 +10,6 @@ const PTZ_MODAL_POS_KEY = "eneverre.ptzModalPos";
 
 let ptzModalDrag = null;
 
-function privacyLabel(on) {
-  return on ? "Privacy: ON" : "Privacy";
-}
-
 function loadPtzModalPos() {
   try {
     const raw = get(PTZ_MODAL_POS_KEY);
@@ -84,7 +80,9 @@ function ptzFabVisible() {
   const { viewMode, wallFilter, lastPtzCam } = getState();
   if (viewMode !== "live" || wallFilter.type !== "cam") return false;
   if (!$("#ptz-modal")?.hidden) return false;
-  return lastPtzCam?.capabilities?.ptz === true || lastPtzCam?.capabilities?.talk === true || lastPtzCam?.capabilities?.privacy === true;
+  // Privacy lives in the topbar now (syncPrivacyButton), so it no longer
+  // drives the PTZ modal — only PTZ and talk do.
+  return lastPtzCam?.capabilities?.ptz === true || lastPtzCam?.capabilities?.talk === true;
 }
 
 function setPtzFab(visible) {
@@ -104,6 +102,7 @@ export async function updatePtzModal() {
     setLastPtzCam(null);
     hidePtzModal();
     syncPtzFab();
+    syncPrivacyButton();
     return;
   }
   let cams;
@@ -113,11 +112,13 @@ export async function updatePtzModal() {
     setLastPtzCam(null);
     hidePtzModal();
     syncPtzFab();
+    syncPrivacyButton();
     return;
   }
   const cam = cams.find((c) => c.id === wallFilter.value) || null;
   setLastPtzCam(cam);
-  if (!cam || !cam.capabilities || !(cam.capabilities.ptz || cam.capabilities.talk || cam.capabilities.privacy)) {
+  syncPrivacyButton();
+  if (!cam || !cam.capabilities || !(cam.capabilities.ptz || cam.capabilities.talk)) {
     hidePtzModal();
     syncPtzFab();
     return;
@@ -126,11 +127,59 @@ export async function updatePtzModal() {
   syncPtzFab();
 }
 
+// --- Privacy control (topbar) ---
+// Privacy is per-camera but lives in the topbar: it shows only for the
+// single selected camera in live view when that camera advertises the
+// capability, and reflects/toggles its current state.
+function syncPrivacyButton() {
+  const btn = $("#privacy-toggle");
+  if (!btn) return;
+  const { viewMode, wallFilter, lastPtzCam } = getState();
+  const cam = lastPtzCam;
+  const show = viewMode === "live"
+    && wallFilter.type === "cam"
+    && cam?.capabilities?.privacy === true;
+  if (!show) {
+    btn.hidden = true;
+    return;
+  }
+  btn.hidden = false;
+  const on = cam.privacy === true;
+  btn.classList.toggle("active", on);
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.textContent = on ? "🔒" : "🔓";
+  btn.title = on ? "Privacy on — click to resume recording" : "Enable privacy";
+  btn.setAttribute("aria-label", btn.title);
+}
+
+async function togglePrivacy(cam) {
+  const next = !(cam.privacy === true);
+  try {
+    await api(`/api/camera/${encodeURIComponent(cam.id)}/privacy?enable=${next}`, { method: "POST" });
+  } catch (e) {
+    alertModal(`Privacy failed: ${e.message}`, { title: "Privacy error" });
+    return;
+  }
+  // Privacy pauses/resumes the media pipeline: invalidate the cached camera
+  // list (its live URLs change), flip the topbar button and the sidebar
+  // thumbnail, and re-render the live wall so the tile flips to/from the
+  // privacy placeholder immediately.
+  cam.privacy = next;
+  setCamerasCache(null);
+  syncPrivacyButton();
+  import("./sidebar.js")
+    .then(({ setSidebarPrivacy }) => setSidebarPrivacy(cam.id, next))
+    .catch(() => {});
+  const { viewMode } = getState();
+  if (viewMode === "live") {
+    import("./wall.js").then(({ loadWall }) => loadWall("live")).catch(() => {});
+  }
+}
+
 function buildPtzPanel(cam) {
   const wrap = document.createElement("div");
   const hasPtz = cam.capabilities?.ptz === true;
   const hasTalk = cam.capabilities?.talk === true;
-  const hasPrivacy = cam.capabilities?.privacy === true;
   let html = `<h3>${hasPtz ? "PTZ" : "Control"}</h3>`;
   if (hasPtz) {
     html += `
@@ -144,15 +193,8 @@ function buildPtzPanel(cam) {
       <span class="empty"></span>
       <button data-dx="0" data-dy="${STEP}" title="Down">↓</button>
       <span class="empty"></span>
-    </div>`;
-  }
-  // Privacy stops recording + transmission for any capable camera; Home is
-  // PTZ-only. Render the actions row whenever either is available.
-  if (hasPtz || hasPrivacy) {
-    html += `<div class="ptz-actions">`;
-    if (hasPtz) html += `<button data-go="home">Home</button>`;
-    if (hasPrivacy) html += `<button data-go="privacy">${privacyLabel(cam.privacy === true)}</button>`;
-    html += `</div>`;
+    </div>
+    <div class="ptz-actions"><button data-go="home">Home</button></div>`;
   }
   if (hasTalk) {
     html += `
@@ -167,29 +209,13 @@ function buildPtzPanel(cam) {
     if (!btn) return;
     const base = `/api/camera/${encodeURIComponent(cam.id)}/ptz`;
     let path;
-    let nextPrivacy;
     if (btn.dataset.dx !== undefined) {
       path = `${base}/move?x=${Number(btn.dataset.dx)}&y=${Number(btn.dataset.dy)}`;
     } else if (btn.dataset.go === "home") {
       path = `${base}/home`;
-    } else if (btn.dataset.go === "privacy") {
-      nextPrivacy = !(cam.privacy === true);
-      path = `/api/camera/${encodeURIComponent(cam.id)}/privacy?enable=${nextPrivacy}`;
     } else return;
     try {
       await api(path, { method: "POST" });
-      if (nextPrivacy !== undefined) {
-        cam.privacy = nextPrivacy;
-        btn.textContent = privacyLabel(nextPrivacy);
-        // Privacy pauses/resumes the media pipeline: invalidate the cached
-        // camera list (its live URLs change) and re-render the live wall so
-        // the tile flips to/from the privacy placeholder immediately.
-        setCamerasCache(null);
-        const { viewMode } = getState();
-        if (viewMode === "live") {
-          import("./wall.js").then(({ loadWall }) => loadWall("live")).catch(() => {});
-        }
-      }
     } catch (e) {
       alertModal(`PTZ failed: ${e.message}`, { title: "PTZ error" });
     }
@@ -335,6 +361,10 @@ function initPtzKeyboard() {
 export function initPtz() {
   $("#ptz-modal-close")?.addEventListener("click", hidePtzModal);
   $("#ptz-fab")?.addEventListener("click", () => updatePtzModal());
+  $("#privacy-toggle")?.addEventListener("click", () => {
+    const { lastPtzCam } = getState();
+    if (lastPtzCam?.capabilities?.privacy === true) togglePrivacy(lastPtzCam);
+  });
   initPtzDrag();
   initPtzKeyboard();
   // Re-render the PTZ panel when the wall filter changes (e.g. clicking

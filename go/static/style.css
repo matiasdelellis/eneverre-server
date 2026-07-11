@@ -390,6 +390,13 @@ button.icon-btn {
   min-width: 36px;
 }
 
+/* Topbar privacy toggle: tinted when privacy is on (recording/streaming
+   stopped) so the active state reads at a glance. */
+.privacy-toggle.active {
+  background: rgba(239, 68, 68, 0.18);
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -625,8 +632,24 @@ button.icon-btn {
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+  z-index: 3;
 }
 .viewer-side.collapsed .viewer-thumb .thumb-caption { display: none; }
+/* Privacy: hide the last cached frame and show a lock, matching the wall
+   tile's "🔒 Privacy" placeholder. The caption (z-index 3) and status dot
+   (z-index 2) stay visible on top. */
+.viewer-thumb .thumb-preview.privacy img { visibility: hidden; }
+.viewer-thumb .thumb-privacy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  background: var(--video-bg);
+  z-index: 1;
+}
+.viewer-side.collapsed .viewer-thumb .thumb-privacy { font-size: 16px; }
 
 @media (max-width: 900px) {
   /* On mobile the camera list lives in a slide-in drawer, not a column.

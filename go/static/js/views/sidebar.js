@@ -34,11 +34,55 @@ export function publishLiveThumb(camId, dataUrl) {
   }
   const tile = $(`#viewer-side-scroll .viewer-thumb[data-id="${CSS.escape(camId)}"]`);
   if (tile) {
+    const preview = tile.querySelector(".thumb-preview");
+    // A camera in privacy publishes no live frames (the wall shows the
+    // placeholder, not video), but guard anyway so a late frame can't
+    // repaint over the lock.
+    if (preview && preview.classList.contains("privacy")) return;
     const img = tile.querySelector("img");
     const loading = tile.querySelector(".thumb-loading");
     if (img) img.src = dataUrl;
     if (loading) loading.hidden = true;
   }
+}
+
+// Show or clear the privacy lock on a sidebar tile. In privacy the engine
+// stops recording and streaming, so the last cached frame must not linger —
+// we hide it behind a 🔒 placeholder mirroring the wall tile.
+function applyThumbPrivacy(tile, on) {
+  const preview = tile.querySelector(".thumb-preview");
+  if (!preview) return;
+  preview.classList.toggle("privacy", on);
+  let lock = preview.querySelector(".thumb-privacy");
+  if (on) {
+    const loading = preview.querySelector(".thumb-loading");
+    if (loading) loading.hidden = true;
+    if (!lock) {
+      lock = document.createElement("span");
+      lock.className = "thumb-privacy";
+      lock.textContent = "🔒";
+      lock.title = "Privacy — not recording";
+      lock.setAttribute("aria-label", "Privacy — not recording");
+      // Before the caption so the camera name stays readable on top.
+      const caption = preview.querySelector(".thumb-caption");
+      preview.insertBefore(lock, caption || null);
+    }
+  } else if (lock) {
+    lock.remove();
+  }
+}
+
+// Called by the PTZ panel when privacy is toggled, so the sidebar tile flips
+// to/from the lock in step with the wall. Keeps the cached camera object's
+// privacy flag in sync so the refresh timer keeps honouring it.
+export function setSidebarPrivacy(camId, on) {
+  const cam = sidebarThumbCams.find((c) => c.id === camId);
+  if (cam) cam.privacy = on;
+  const tile = $(`#viewer-side-scroll .viewer-thumb[data-id="${CSS.escape(camId)}"]`);
+  if (!tile) return;
+  applyThumbPrivacy(tile, on);
+  // Privacy lifted: the last frame is stale, so re-pull a current thumbnail.
+  if (!on && cam) loadViewerThumb(cam, tile, { force: true });
 }
 
 export function groupByLocation(cams) {
@@ -175,6 +219,15 @@ function onSidebarThumbClick(cam) {
 async function loadViewerThumb(cam, tile, { force = false } = {}) {
   const img = tile.querySelector("img");
   const loading = tile.querySelector(".thumb-loading");
+
+  // In privacy there is nothing current to show — the engine has stopped
+  // recording and streaming. Show the lock and skip pulling any thumbnail.
+  if (cam.privacy === true) {
+    applyThumbPrivacy(tile, true);
+    loading.hidden = true;
+    return;
+  }
+  applyThumbPrivacy(tile, false);
 
   if (!force) {
     let dataUrl = THUMB_CACHE.get(cam.id);
