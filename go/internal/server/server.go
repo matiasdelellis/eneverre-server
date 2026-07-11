@@ -152,7 +152,24 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, cameras []came
 // engine is started, so the playback/live handlers serve from it. A nil
 // engine means the [media] section is not configured; the playback endpoints
 // answer 404 in that case.
-func (a *App) SetMediaEngine(e *media.Engine) { a.engine = e }
+func (a *App) SetMediaEngine(e *media.Engine) {
+	a.engine = e
+	// Re-apply any privacy state already seeded (thingino cameras that booted in
+	// privacy) so a boot-time privacy state also pauses recording + transmission,
+	// regardless of whether seedPrivacy ran before or after the engine attached.
+	// SetPrivacy is idempotent, so overlapping with seedPrivacy is harmless.
+	a.privacyMu.RLock()
+	on := make([]string, 0, len(a.privacy))
+	for id, p := range a.privacy {
+		if p {
+			on = append(on, id)
+		}
+	}
+	a.privacyMu.RUnlock()
+	for _, id := range on {
+		e.SetPrivacy(id, true)
+	}
+}
 
 // startTokenCleaner runs cleanupExpiredTokens on a ticker. The ticker is
 // stopped when the App's lifecycle ends (the goroutine exits when the program
@@ -209,6 +226,11 @@ func (a *App) seedPrivacy() {
 			a.privacyMu.Lock()
 			a.privacy[c.ID] = hb.PrivacyEnabled
 			a.privacyMu.Unlock()
+			// A camera that booted in privacy must also be paused (stop
+			// recording + transmission), not just reflected in the state map.
+			if hb.PrivacyEnabled && a.engine != nil {
+				a.engine.SetPrivacy(c.ID, true)
+			}
 		}()
 	}
 }
@@ -448,6 +470,12 @@ func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
 		f := c.ResolveFeatures(gMSE, gRelay, gRecord)
 		out[i] = c.WithEngineURLs(a.cfg, creds, r.Host, f)
 		out[i].Privacy = a.privacy[c.ID]
+		if out[i].Privacy {
+			// Paused for privacy: the engine serves no live feed, so don't
+			// advertise stale live/relay URLs the client would fail to play.
+			out[i].LiveMSE = ""
+			out[i].RTSP = ""
+		}
 		out[i].Capabilities.TalkCodecs = a.talkCodecs[c.ID]
 	}
 	a.talkCodecsMu.RUnlock()
@@ -516,13 +544,18 @@ func (a *App) handlePTZRecalibrate(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-// handlePrivacy toggles the camera's privacy (lens blackout) via prudynt.
+// handlePrivacy toggles a camera's privacy. Privacy stops recording and
+// transmission (live MSE + RTSP relay) for any camera by pausing the media
+// engine's pipeline for it; on thingino cameras it additionally drives the
+// firmware lens blackout (prudynt) and moves a PTZ camera to/from its configured
+// privacy position. Available for every camera whose `privacy` capability is on
+// (INI `privacy != false`).
 func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
 	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.Privacy || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
+	if cam == nil || !cam.Capabilities.Privacy {
 		httpError(w, http.StatusNotFound, "Privacy not available")
 		return
 	}
@@ -531,32 +564,52 @@ func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "Missing or invalid 'enable' query param")
 		return
 	}
-	// When enabling privacy, point the camera at its configured privacy
-	// position first (both coords default to -1 when unset, so >= 0 means set).
-	if enable && cam.PrivacyX >= 0 && cam.PrivacyY >= 0 {
-		if _, err := thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, cam.PrivacyX, cam.PrivacyY); err != nil {
+
+	// Firmware privacy (lens blackout + PTZ privacy position) is only possible
+	// on thingino cameras. Non-thingino cameras rely solely on the engine pause
+	// below to stop recording and transmission.
+	hasThingino := cam.ThinginoURL != "" && cam.ThinginoAPIKey != ""
+	var body []byte
+	if hasThingino {
+		// When enabling privacy, point the camera at its configured privacy
+		// position first (both coords default to -1 when unset, so >= 0 means set).
+		if enable && cam.PrivacyX >= 0 && cam.PrivacyY >= 0 {
+			if _, err := thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, cam.PrivacyX, cam.PrivacyY); err != nil {
+				thinginoError(w, err)
+				return
+			}
+		}
+		body, err = thingino.SetPrivacy(cam.ThinginoURL, cam.ThinginoAPIKey, enable)
+		if err != nil {
 			thinginoError(w, err)
 			return
 		}
-	}
-	body, err := thingino.SetPrivacy(cam.ThinginoURL, cam.ThinginoAPIKey, enable)
-	if err != nil {
-		thinginoError(w, err)
-		return
-	}
-	// When disabling privacy, return the camera to its home position.
-	if !enable && cam.HomeX >= 0 && cam.HomeY >= 0 {
-		if _, err := thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, cam.HomeX, cam.HomeY); err != nil {
-			thinginoError(w, err)
-			return
+		// When disabling privacy, return the camera to its home position.
+		if !enable && cam.HomeX >= 0 && cam.HomeY >= 0 {
+			if _, err := thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, cam.HomeX, cam.HomeY); err != nil {
+				thinginoError(w, err)
+				return
+			}
 		}
 	}
+
+	// Software privacy: pause (or resume) the engine's pipeline so the camera
+	// stops (or resumes) recording and transmission. Applies to every camera.
+	if a.engine != nil {
+		a.engine.SetPrivacy(cam.ID, enable)
+	}
+
 	a.privacyMu.Lock()
 	a.privacy[cam.ID] = enable
 	a.privacyMu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+
+	if body != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"privacy": enable})
 }
 
 func (a *App) handleThumbnail(w http.ResponseWriter, r *http.Request) {

@@ -101,6 +101,35 @@ func TestLoadOneFlags(t *testing.T) {
 	}
 }
 
+// TestLoadPrivacyCapability checks the privacy toggle is offered by default and
+// turned off per camera with `privacy = false` (an always-on camera).
+func TestLoadPrivacyCapability(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"default on", "[camera]\nid = c1\nsource = rtsp://x/c1\n", true},
+		{"opt out", "[camera]\nid = c1\nsource = rtsp://x/c1\nprivacy = false\n", false},
+		{"explicit on", "[camera]\nid = c1\nsource = rtsp://x/c1\nprivacy = true\n", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cam.ini")
+			if err := os.WriteFile(path, []byte(c.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cam, ok := loadOne(path)
+			if !ok {
+				t.Fatal("loadOne returned ok=false")
+			}
+			if cam.Capabilities.Privacy != c.want {
+				t.Errorf("Capabilities.Privacy = %v; want %v", cam.Capabilities.Privacy, c.want)
+			}
+		})
+	}
+}
+
 // TestWithEngineURLs checks the API advertises a feed's URL only when its
 // resolved feature is on, and builds the relay URL from rtsp_host / request host.
 func TestWithEngineURLs(t *testing.T) {

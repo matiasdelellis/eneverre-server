@@ -236,9 +236,16 @@ paths:
     post:
       summary: Enable/disable privacy mode
       description: >-
-        Enables or disables the lens blackout (prudynt). When enabling, if the
-        camera has a privacy position configured (privacy_x/privacy_y >= 0) the
-        PTZ is first moved there; when disabling it returns to home_x/home_y.
+        Enables or disables privacy for the camera. Privacy stops recording and
+        transmission (live MSE + RTSP relay) for any camera by pausing the media
+        engine's pipeline for it — while enabled the camera's `live_mse`/`rtsp`
+        URLs are withheld from `/api/cameras`. On thingino cameras it
+        additionally drives the firmware lens blackout (prudynt): when enabling,
+        if a privacy position is configured (privacy_x/privacy_y >= 0) the PTZ is
+        first moved there; when disabling it returns to home_x/home_y. Available
+        for every camera whose `capabilities.privacy` is true (INI `privacy` key,
+        default true); cameras with `privacy = false` are always-on and return
+        404 here.
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - name: enable
@@ -248,7 +255,9 @@ paths:
             type: boolean
       responses:
         '200':
-          description: Raw response from the Thingino camera
+          description: >-
+            On thingino cameras, the raw response from the camera firmware.
+            On other cameras, `{"privacy": <bool>}`.
           content:
             application/json:
               schema:
@@ -1472,7 +1481,10 @@ components:
           description: PTZ privacy-position Y (-1 if unset).
         privacy:
           type: boolean
-          description: Current lens-blackout (privacy) state.
+          description: >-
+            Current privacy state. When true the camera is paused: recording and
+            transmission are stopped (and `live_mse`/`rtsp` are withheld), plus
+            the firmware lens blackout on thingino cameras.
         live:
           type: string
           description: Compatibility alias for `rtsp` (older clients).
@@ -1488,6 +1500,9 @@ components:
       properties:
         privacy:
           type: boolean
+          description: >-
+            Whether the privacy toggle is offered for this camera (INI `privacy`
+            key, default true). False marks an always-on camera.
         thumbnail:
           type: boolean
         playback:

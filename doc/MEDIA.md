@@ -57,6 +57,21 @@ switch is the master, and the effective state is `global AND per-camera`. So a
 per-camera `record = true` does nothing unless `[media] record = true` is also
 set; use it to keep a camera in the default-on state while opting others out.
 
+### Privacy (runtime pause)
+
+Separately from the static switches above, each camera offers a **privacy**
+toggle at runtime (`POST /api/camera/{id}/privacy?enable=true|false`). Enabling
+privacy **stops recording and transmission**: the engine disconnects the
+camera's recorder and parks its retry loop, so it neither writes segments nor
+feeds the live MSE broadcast / RTSP relay until privacy is turned off (which
+reconnects with a fresh session). While paused, `/api/cameras` withholds the
+camera's `live_mse` and `rtsp` URLs. On thingino cameras privacy additionally
+drives the firmware lens blackout and moves a PTZ to/from its privacy position.
+
+Privacy is offered for every camera by default; set `privacy = false` in the
+camera INI to mark an **always-on** camera that must never be paused (no privacy
+toggle, `capabilities.privacy = false`, the endpoint returns 404).
+
 Because MSE and relay default to on, the engine is fully useful with **no
 `[media]` section at all** (live-only): the live feed and relay come up, but no
 `[media]` means recording is off, no SQLite index is opened, and the

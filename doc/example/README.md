@@ -102,9 +102,10 @@ height = 1080
 backchannel = rtsp://username:password@192.168.1.91:554/ch0
 
 ; The [thingino] section is optional. Its presence (specifically a
-; thingino_api_key) is what enables the thumbnail and privacy capabilities;
-; ptz = true enables the PTZ endpoints. Omit the whole section for a plain
-; fixed camera.
+; thingino_api_key) is what enables the thumbnail capability and the firmware
+; lens blackout used by privacy; ptz = true enables the PTZ endpoints. Omit the
+; whole section for a plain fixed camera (privacy still works — it just stops
+; recording + transmission without a firmware blackout).
 [thingino]
 thingino_url = http://192.168.1.91
 thingino_api_key = <api-key>
@@ -138,6 +139,13 @@ privacy_y = 1600
     the RTSP relay working for this camera but skip writing to disk — the
     `/recordings/*` endpoints for it answer 404. Useful for privacy-
     sensitive cameras you only want to watch live.
+ * **privacy:** Per-camera opt-out of the privacy toggle. Default true: every
+    camera offers a runtime privacy switch (`POST /api/camera/{id}/privacy`)
+    that stops recording **and** transmission (live MSE + RTSP relay) by pausing
+    the engine's pipeline for it — and, on Thingino cameras, drives the firmware
+    lens blackout + PTZ privacy position. Set to `false` to mark an always-on
+    camera that must never be paused (no privacy button, `capabilities.privacy`
+    is false, the endpoint answers 404).
  * **transport:** Per-camera override of the global
    `[media] transport` for the source RTSP: `auto` (default), `tcp` (reliable,
    recommended for lossy/distant links), or `udp`. Useful to force TCP on a
@@ -157,8 +165,9 @@ privacy_y = 1600
 ### `[thingino]` keys (optional)
 
  * **thingino_url:** Base URL of the [Thingino](https://thingino.com/) camera.
- * **thingino_api_key:** API token. Its presence enables the thumbnail and
-   privacy (lens blackout) capabilities. Never exposed in API responses.
+ * **thingino_api_key:** API token. Its presence enables the thumbnail
+   capability and the firmware lens blackout used by privacy (privacy itself is
+   available on every camera). Never exposed in API responses.
  * **ptz:** `true` if the camera has PTZ support (currently Thingino only).
  * **home_x / home_y:** PTZ position the camera returns to on "home" / when
    privacy is disabled. Unset → `-1` (no auto-move).

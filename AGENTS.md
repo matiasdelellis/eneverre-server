@@ -3,8 +3,9 @@
 ## What this is
 Eneverre is a manufacturer-agnostic NVR API. It serves a uniform camera list
 to clients (Android, Android TV, Web), mediates a Bearer-token device-login
-flow (used by TV/headless clients), and proxies PTZ (move/home/recalibrate),
-privacy (lens blackout), and thumbnail requests to
+flow (used by TV/headless clients), offers a per-camera privacy toggle (stops
+recording + transmission on any camera), and proxies PTZ
+(move/home/recalibrate), the firmware lens blackout, and thumbnail requests to
 [Thingino](https://thingino.com/) cameras.
 
 For actual streaming, Eneverre runs an **embedded media engine** —
@@ -290,15 +291,24 @@ see request query strings and the more verbose media-engine traces
   expiry) and adds a `renewable` boolean; otherwise it uses the access expiry.
 - The `[thingino]` section in a camera INI drives the Thingino capabilities:
   `ptz = true` marks the camera PTZ-capable, and a non-empty `thingino_api_key`
-  enables the privacy/thumbnail capabilities. The credential fields
-  (`thingino_url`/`thingino_api_key`) never appear in API responses.
-- Privacy (lens blackout) is stateful: `App.privacy` is a per-camera in-memory
-  map, seeded once at startup from each privacy-capable camera's slow heartbeat
-  (`seedPrivacy`, concurrent, best-effort — unreachable cameras stay `false`)
-  and updated by `POST /api/camera/{id}/privacy`. Enabling privacy first moves
-  the PTZ to `privacy_x`/`privacy_y` (when both ≥ 0); disabling returns it to
-  `home_x`/`home_y`. `home_x/y` and `privacy_x/y` default to `-1` (unset → no
-  auto-move).   `GET /api/cameras` reflects the current privacy state per camera.
+  enables the thumbnail capability plus the firmware lens blackout used by
+  privacy. The credential fields (`thingino_url`/`thingino_api_key`) never
+  appear in API responses.
+- Privacy is a runtime pause available on **every** camera (`Capabilities.Privacy`
+  from the `[camera] privacy` key, default true; `privacy = false` marks an
+  always-on camera). Enabling it **stops recording and transmission**:
+  `handlePrivacy` calls `Engine.SetPrivacy(id, on)`, which disconnects the
+  recorder and parks its retry loop (a per-camera `camCtrl` in `engine.go`);
+  `OnSourceLost` then tears down the live MSE broadcast + RTSP relay and the
+  in-progress segment is finalized/indexed. State lives in `App.privacy` (a
+  per-camera in-memory map), seeded once at startup from each thingino camera's
+  slow heartbeat (`seedPrivacy`, concurrent, best-effort — unreachable cameras
+  stay `false`; a camera that booted in privacy is re-paused via `SetMediaEngine`).
+  On thingino cameras privacy additionally drives the firmware lens blackout and
+  moves the PTZ to `privacy_x`/`privacy_y` on enable, back to `home_x`/`home_y`
+  on disable (`home_x/y` and `privacy_x/y` default to `-1` → no auto-move).
+  `GET /api/cameras` reflects the privacy state and withholds `live_mse`/`rtsp`
+  while a camera is paused.
 - In **embedded mode** (`[media]`) the recordings endpoints serve from the
   in-process segment index, and additional embedded-only endpoints are
   served: timeline, gaps, HLS VOD (`/recordings/hls/*`) and the live MSE
@@ -351,11 +361,13 @@ see request query strings and the more verbose media-engine traces
    embedded engine records/relays under; the same id was the path the
    external MediaMTX used to publish each camera when that integration was
    the only mode (pre-rename historical note in `doc/MEDIA.md`).
-2. Add a `[thingino]` section for PTZ / thumbnail / privacy credentials if the
-   camera is a [Thingino](https://thingino.com/). A non-empty
-   `thingino_api_key` enables thumbnail + privacy; `ptz = true` enables the
-   PTZ endpoints. Credential fields are tagged `json:"-"` and never appear in
-   API responses.
+2. Add a `[thingino]` section for PTZ / thumbnail credentials and the firmware
+   lens blackout if the camera is a [Thingino](https://thingino.com/). A
+   non-empty `thingino_api_key` enables the thumbnail capability and the
+   blackout used by privacy; `ptz = true` enables the PTZ endpoints. Credential
+   fields are tagged `json:"-"` and never appear in API responses. (Privacy
+   itself works on any camera; use `[camera] privacy = false` to opt a camera
+   out of being paused.)
 3. For the embedded media engine (`[media]`), set `source` to the direct
    camera RTSP URL (it must point at the camera itself, since it carries
    credentials and is never exposed to clients). Use

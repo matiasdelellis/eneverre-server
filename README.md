@@ -39,8 +39,11 @@ In one box you get:
   drops the need for an external streamer. Web live is over MediaSource
   (~1-2s), Android live is over the embedded RTSP relay, and VOD is served
   from an in-process segment index.
-- **PTZ control**, **privacy mode (lens blackout)** and **live thumbnails**
-  for [Thingino](https://thingino.com/) cameras.
+- **Privacy mode** for any camera — stops recording and transmission (live +
+  relay) on demand; on [Thingino](https://thingino.com/) cameras it also drives
+  the firmware lens blackout and PTZ privacy position.
+- **PTZ control** and **live thumbnails** for
+  [Thingino](https://thingino.com/) cameras.
 - **Motion event ingestion** via a simple webhook, surfaced as a timeline in
   the apps.
 - **Auto-update server** for the Android clients — publish a new APK once
@@ -121,9 +124,10 @@ location = Entrance
 source   = rtsp://user:pass@192.168.1.91:554/stream
 ```
 
-Add a `[thingino]` section and you unlock PTZ, live thumbnails and privacy
-(lens blackout), plus optional home/privacy presets the camera will snap
-to automatically:
+Privacy works on any camera out of the box (set `privacy = false` in `[camera]`
+to make it always-on). Add a `[thingino]` section and you also unlock PTZ, live
+thumbnails and the firmware lens blackout, plus optional home/privacy presets
+the camera will snap to automatically when privacy toggles:
 
 ```ini
 [camera]

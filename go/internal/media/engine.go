@@ -134,10 +134,62 @@ type Engine struct {
 	mu           sync.RWMutex
 	broadcasters map[string]*live.Broadcaster // camera id -> live MSE broadcaster
 	recorders    []*recorder.Recorder
+	ctrls        map[string]*camCtrl // camera id -> retry-loop pause control
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+}
+
+// camCtrl lets the privacy endpoint park a camera's retry loop. While paused the
+// recorder is disconnected from the source (so it neither records nor transmits)
+// and the loop waits instead of reconnecting; resuming wakes it to reconnect
+// with a fresh session.
+type camCtrl struct {
+	rec      *recorder.Recorder
+	mu       sync.Mutex
+	paused   bool
+	resumeCh chan struct{} // closed to wake waiters; replaced on each resume
+}
+
+func (c *camCtrl) isPaused() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.paused
+}
+
+// setPaused updates the paused flag and wakes any waiter when resuming.
+// Returns true if the state actually changed.
+func (c *camCtrl) setPaused(p bool) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.paused == p {
+		return false
+	}
+	c.paused = p
+	if !p {
+		close(c.resumeCh)
+		c.resumeCh = make(chan struct{})
+	}
+	return true
+}
+
+// waitWhilePaused blocks until the camera is resumed or the engine shuts down.
+func (c *camCtrl) waitWhilePaused(ctx context.Context) {
+	for {
+		c.mu.Lock()
+		if !c.paused {
+			c.mu.Unlock()
+			return
+		}
+		ch := c.resumeCh
+		c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ch:
+		}
+	}
 }
 
 // New opens the index (only when recording is enabled) and initializes the
@@ -176,6 +228,7 @@ func New(opts Options) (*Engine, error) {
 		relay:        relay,
 		playback:     pb,
 		broadcasters: map[string]*live.Broadcaster{},
+		ctrls:        map[string]*camCtrl{},
 		ctx:          ctx,
 		cancel:       cancel,
 	}
@@ -316,19 +369,35 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 		}
 	}
 
+	ctrl := &camCtrl{rec: rec, resumeCh: make(chan struct{})}
+
 	e.mu.Lock()
 	e.recorders = append(e.recorders, rec)
+	e.ctrls[id] = ctrl
 	e.mu.Unlock()
 
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
 		for {
+			// Park here while the camera is in privacy: the loop must not
+			// reconnect until privacy is turned off (SetPrivacy resumes it).
+			ctrl.waitWhilePaused(e.ctx)
+			if e.ctx.Err() != nil {
+				return
+			}
 			// rec.Start blocks until the stream ends; gortsplib's read timeout
 			// (10s) turns a silent stall on a flaky/far camera into an error, so
 			// this loop reconnects instead of hanging forever.
 			backoff := time.Second
-			if err := rec.Start(); err != nil {
+			err := rec.Start()
+			// If privacy paused us, rec.Close() unblocked Start; skip the
+			// reconnect log/backoff and loop straight back to park.
+			if ctrl.isPaused() {
+				slog.Info("media/recorder paused (privacy)", "camera", id)
+				continue
+			}
+			if err != nil {
 				if errors.Is(err, recorder.ErrNoSupportedVideo) {
 					// Permanent until the camera's codec changes (e.g. an H265-only
 					// camera): report it prominently and retry slowly instead of
@@ -348,6 +417,28 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 			}
 		}
 	}()
+}
+
+// SetPrivacy pauses or resumes a camera's media pipeline at runtime. Pausing
+// (on=true) disconnects the recorder from the source: recording stops and the
+// OnSourceLost hook tears down the live MSE broadcast and RTSP relay, so the
+// camera neither records nor transmits until resumed. Resuming reconnects with a
+// fresh session. Returns false when the camera isn't supervised by the engine
+// (e.g. `privacy = false`, or no Source / all sinks off). Idempotent.
+func (e *Engine) SetPrivacy(camID string, on bool) bool {
+	e.mu.RLock()
+	ctrl := e.ctrls[camID]
+	e.mu.RUnlock()
+	if ctrl == nil {
+		return false
+	}
+	if ctrl.setPaused(on) && on {
+		// Disconnect now; the loop then parks at waitWhilePaused. Closing
+		// finalizes and indexes the in-progress segment (recorder.Close),
+		// so nothing recorded so far is lost.
+		ctrl.rec.Close()
+	}
+	return true
 }
 
 // Broadcaster returns the live MSE broadcaster for a camera id, or nil.

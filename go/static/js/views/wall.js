@@ -270,7 +270,13 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
   }
   const video = tile.querySelector("video");
   if (mode === "live") {
-    if (cam.live_mse) {
+    if (cam.privacy === true) {
+      // Camera is in privacy: the engine has stopped recording and streaming,
+      // so there is no live feed to attach. Show a placeholder instead of
+      // hammering a dead MSE endpoint.
+      setCamStatus(cam.id, "offline");
+      if (video) video.replaceWith(makeMsg("🔒 Privacy — not recording"));
+    } else if (cam.live_mse) {
       const m = attachMse(cam, video);
       if (m) wallInstances.set(cam.id, withThumbGrab(cam, video, m));
     } else if (video) {

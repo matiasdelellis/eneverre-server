@@ -1,6 +1,6 @@
 import { $ } from "../util/dom.js";
 import { get, set } from "../util/storage.js";
-import { getState, setLastPtzCam, on } from "../state.js";
+import { getState, setLastPtzCam, setCamerasCache, on } from "../state.js";
 import { api, fetchCameras } from "../api.js";
 import { alertModal } from "../ui/dialog.js";
 import { createTalkClient } from "../util/talk-client.js";
@@ -84,7 +84,7 @@ function ptzFabVisible() {
   const { viewMode, wallFilter, lastPtzCam } = getState();
   if (viewMode !== "live" || wallFilter.type !== "cam") return false;
   if (!$("#ptz-modal")?.hidden) return false;
-  return lastPtzCam?.capabilities?.ptz === true || lastPtzCam?.capabilities?.talk === true;
+  return lastPtzCam?.capabilities?.ptz === true || lastPtzCam?.capabilities?.talk === true || lastPtzCam?.capabilities?.privacy === true;
 }
 
 function setPtzFab(visible) {
@@ -117,7 +117,7 @@ export async function updatePtzModal() {
   }
   const cam = cams.find((c) => c.id === wallFilter.value) || null;
   setLastPtzCam(cam);
-  if (!cam || !cam.capabilities || !(cam.capabilities.ptz || cam.capabilities.talk)) {
+  if (!cam || !cam.capabilities || !(cam.capabilities.ptz || cam.capabilities.talk || cam.capabilities.privacy)) {
     hidePtzModal();
     syncPtzFab();
     return;
@@ -130,6 +130,7 @@ function buildPtzPanel(cam) {
   const wrap = document.createElement("div");
   const hasPtz = cam.capabilities?.ptz === true;
   const hasTalk = cam.capabilities?.talk === true;
+  const hasPrivacy = cam.capabilities?.privacy === true;
   let html = `<h3>${hasPtz ? "PTZ" : "Control"}</h3>`;
   if (hasPtz) {
     html += `
@@ -143,11 +144,15 @@ function buildPtzPanel(cam) {
       <span class="empty"></span>
       <button data-dx="0" data-dy="${STEP}" title="Down">↓</button>
       <span class="empty"></span>
-    </div>
-    <div class="ptz-actions">
-      <button data-go="home">Home</button>
-      <button data-go="privacy">${privacyLabel(cam.privacy === true)}</button>
     </div>`;
+  }
+  // Privacy stops recording + transmission for any capable camera; Home is
+  // PTZ-only. Render the actions row whenever either is available.
+  if (hasPtz || hasPrivacy) {
+    html += `<div class="ptz-actions">`;
+    if (hasPtz) html += `<button data-go="home">Home</button>`;
+    if (hasPrivacy) html += `<button data-go="privacy">${privacyLabel(cam.privacy === true)}</button>`;
+    html += `</div>`;
   }
   if (hasTalk) {
     html += `
@@ -176,6 +181,14 @@ function buildPtzPanel(cam) {
       if (nextPrivacy !== undefined) {
         cam.privacy = nextPrivacy;
         btn.textContent = privacyLabel(nextPrivacy);
+        // Privacy pauses/resumes the media pipeline: invalidate the cached
+        // camera list (its live URLs change) and re-render the live wall so
+        // the tile flips to/from the privacy placeholder immediately.
+        setCamerasCache(null);
+        const { viewMode } = getState();
+        if (viewMode === "live") {
+          import("./wall.js").then(({ loadWall }) => loadWall("live")).catch(() => {});
+        }
       }
     } catch (e) {
       alertModal(`PTZ failed: ${e.message}`, { title: "PTZ error" });

@@ -18,6 +18,12 @@ import (
 
 // Capabilities flags what a camera supports.
 type Capabilities struct {
+	// Privacy reports whether the privacy toggle is offered for this camera.
+	// It defaults to true (every camera can be put in privacy) and is turned
+	// off per camera with `privacy = false` in the INI — marking an "always-on"
+	// camera the operator never wants paused. Privacy stops recording and
+	// transmission (live MSE + RTSP relay) for any camera; on thingino cameras
+	// it additionally drives the firmware lens blackout + PTZ privacy position.
 	Privacy   bool `json:"privacy"`
 	Thumbnail bool `json:"thumbnail"`
 	Playback  bool `json:"playback"`
@@ -175,6 +181,10 @@ func loadOne(path string) (Camera, bool) {
 	// the other. Both still require the global [media] mse/relay toggles.
 	mse := cam.Key("mse").MustBool(true)
 	relay := cam.Key("relay").MustBool(true)
+	// Privacy control defaults to on: every camera offers the privacy toggle
+	// (stop recording + transmission; plus firmware lens blackout on thingino).
+	// `privacy = false` marks an always-on camera the operator never wants paused.
+	privacyAllowed := cam.Key("privacy").MustBool(true)
 
 	hasAPIKey := thingino["thingino_api_key"] != ""
 	ptz := strings.ToLower(strings.TrimSpace(thingino["ptz"])) == "true"
@@ -186,7 +196,7 @@ func loadOne(path string) (Camera, bool) {
 		Comment:  cam.Key("comment").String(),
 		Location: cam.Key("location").String(),
 		Capabilities: Capabilities{
-			Privacy:   hasAPIKey,
+			Privacy:   privacyAllowed,
 			Thumbnail: hasAPIKey,
 			Playback:  playback,
 			PTZ:       ptz,
