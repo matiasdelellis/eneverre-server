@@ -316,6 +316,18 @@ func (c *Config) AuthCleanupGraceHours() int {
 	return def
 }
 
+// AuthSecurityLog returns the path to the security event log — the file that
+// records authentication failures in a stable, one-line-per-event format for
+// intrusion-prevention tools (fail2ban, CrowdSec) to tail. Empty means no
+// dedicated file is written (events still go to the main log at WARN).
+// Precedence: [auth] security_log > ENEVERRE_SECURITY_LOG > "" (disabled).
+func (c *Config) AuthSecurityLog() string {
+	if v := strings.TrimSpace(c.Auth.Get("security_log", "")); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("ENEVERRE_SECURITY_LOG"))
+}
+
 // UpdatesSection returns the [updates] section or an empty Section. Safe to
 // call when the section is missing (returns a non-nil Section that yields
 // defaults).

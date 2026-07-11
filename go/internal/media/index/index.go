@@ -5,6 +5,7 @@ package index
 
 import (
 	"database/sql"
+	"net/url"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver, no cgo
@@ -42,23 +43,25 @@ type Index struct {
 
 // Open opens (or creates) the SQLite index at the given file path.
 func Open(dbPath string) (*Index, error) {
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, err
-	}
-
 	// WAL lets the recorder write while the API reads without blocking each
 	// other; NORMAL sync is safe under WAL and much faster for the per-segment
-	// inserts; busy_timeout avoids spurious "database is locked" errors.
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA busy_timeout=5000",
-	} {
-		if _, err = db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, err
-		}
+	// inserts; busy_timeout makes concurrent writers wait for the lock instead
+	// of failing with SQLITE_BUSY.
+	//
+	// The PRAGMAs MUST be passed in the DSN, not via db.Exec: database/sql
+	// keeps a connection pool, and a PRAGMA run through db.Exec only affects
+	// the single connection that happened to serve it. busy_timeout and
+	// synchronous are per-connection, so any other pooled connection (opened
+	// on demand when several cameras insert at once, plus the API's reads)
+	// would lack the timeout and return SQLITE_BUSY immediately. Encoding them
+	// in the DSN makes the driver apply them to every new connection.
+	dsn := dbPath + "?" + url.Values{
+		"_pragma": {"busy_timeout(5000)", "journal_mode(WAL)", "synchronous(NORMAL)"},
+	}.Encode()
+
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
 	}
 
 	_, err = db.Exec(`

@@ -50,6 +50,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !auth.CheckPasswordHash(stored, req.Password) {
 		// Even out timing for unknown users by hashing a dummy.
 		auth.CheckPasswordHash("pbkdf2:sha256:600000$dummy$"+strings.Repeat("0", 64), req.Password)
+		a.logAuthFailure(r, req.Username, "invalid_credentials")
 		httpError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}

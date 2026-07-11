@@ -46,8 +46,12 @@ type App struct {
 	// at startup from the [auth] section. accessTTL is the Bearer (access)
 	// token life (login + device); refreshTTL is the refresh-token life that a
 	// password-login session slides forward on each refresh.
-	accessTTL    int64
-	refreshTTL   int64
+	accessTTL  int64
+	refreshTTL int64
+	// secLog records authentication failures for fail2ban / CrowdSec. Never
+	// nil (newSecLogger falls back to main-log-only when no file is set).
+	secLog *secLogger
+
 	// cleanupGrace is the number of seconds a token stays visible in the
 	// sessions list after it expires. The background cleaner deletes tokens
 	// only when they have been expired for longer than this window. This lets
@@ -116,6 +120,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, cameras []came
 		accessTTL:          accessTTL,
 		refreshTTL:         refreshTTL,
 		cleanupGrace:       int64(cfg.AuthCleanupGraceHours()) * 3600,
+		secLog:             newSecLogger(cfg.AuthSecurityLog()),
 		privacy:            make(map[string]bool),
 		updates:            updateStores,
 		talk:               make(map[string]*backchannel.Session),
@@ -382,6 +387,15 @@ func (a *App) unauthorized(w http.ResponseWriter) {
 func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentUser {
 	u := auth.Current(a.db, r)
 	if u == nil {
+		// A present-but-invalid HTTP Basic credential is a real brute-force
+		// signal: the browser UI authenticates with Bearer tokens and never
+		// sends Basic, so a wrong Basic password is a deliberate probe. Log
+		// it for fail2ban / CrowdSec. Missing credentials and merely-expired
+		// Bearer tokens are normal and intentionally not logged (they would
+		// ban legitimate users whose sessions lapsed).
+		if user, _, ok := r.BasicAuth(); ok {
+			a.logAuthFailure(r, user, "basic_auth_failed")
+		}
 		a.unauthorized(w)
 		return nil
 	}
