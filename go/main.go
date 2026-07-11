@@ -21,6 +21,7 @@ import (
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
 	"eneverre/internal/media"
+	"eneverre/internal/metrics"
 	"eneverre/internal/server"
 	"eneverre/internal/store"
 	"eneverre/internal/streamauth"
@@ -195,6 +196,21 @@ func main() {
 	app := server.New(cfg, db, creds, cams, uiFS, opts.staticCacheControl,
 		int64(accessHours)*3600, int64(refreshDays)*86400, updateStores)
 	app.SetMediaEngine(engine)
+
+	// Metrics (Prometheus + JSON). On by default; set [server] metrics = false
+	// to drop the endpoints entirely (no store wired, so the routes 404).
+	// Closures bridge the App's mutable state into the collectors without
+	// exposing App internals.
+	if cfg.Server.GetBool("metrics", true) {
+		m := metrics.New(db, version,
+			func() []media.CameraStatus { return engine.Status() },
+			func(id string) bool { return app.PrivacyState(id) },
+			cams)
+		app.SetMetrics(m)
+		slog.Info("metrics enabled", "prometheus", "/api/metrics", "json", "/api/metrics/json")
+	} else {
+		slog.Info("metrics disabled", "reason", "[server] metrics = false")
+	}
 
 	// Auto-rotate the stream/relay credentials. The previous pair stays valid
 	// for one interval (grace window) so active streams are not dropped at the

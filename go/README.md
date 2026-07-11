@@ -164,6 +164,11 @@ adds a separate surface of its own, mounted under `/api/camera/{id}/`:
   the canonical `/recordings/*` routes.
 - `GET /api/recordings/paths` — camera ids that have recordings.
 
+A Go-side addition beyond the Python surface is `GET /api/metrics` (+
+`/api/metrics/json`): Prometheus instrumentation, open to a local scraper over
+loopback and authenticated otherwise. Camera metrics are aggregate counts with
+no per-camera `id` label. See [`doc/MEDIA.md`](../doc/MEDIA.md#metrics).
+
 Full endpoint list, payload shapes, client integration notes and the
 codec/coverage-gap semantics are in
 [`doc/MEDIA.md`](../doc/MEDIA.md).

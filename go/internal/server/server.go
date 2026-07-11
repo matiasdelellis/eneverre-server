@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
 	"eneverre/internal/media"
+	"eneverre/internal/metrics"
 	"eneverre/internal/streamauth"
 	"eneverre/internal/thingino"
 	"eneverre/internal/updates"
@@ -85,6 +87,10 @@ type App struct {
 	// talkCodecsMu since the background probe writes it while /api/cameras reads.
 	talkCodecsMu sync.RWMutex
 	talkCodecs   map[string][]string
+
+	// metrics exposes Prometheus and JSON instrumentation for the entire service.
+	// Nil when not configured (tests).
+	metrics *metrics.Store
 }
 
 // Token-lifetime defaults, used when nothing (flag/env/[auth]) sets them.
@@ -146,6 +152,20 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, cameras []came
 		go a.startTokenCleaner(time.Duration(min) * time.Minute)
 	}
 	return a
+}
+
+// SetMetrics attaches the metrics store. Called from main so the /api/metrics
+// and /api/metrics/json endpoints serve instrumentation data.
+func (a *App) SetMetrics(m *metrics.Store) {
+	a.metrics = m
+}
+
+// PrivacyState returns the current privacy state for a camera. Safe for
+// concurrent access; used by the metrics collector on each scrape.
+func (a *App) PrivacyState(id string) bool {
+	a.privacyMu.RLock()
+	defer a.privacyMu.RUnlock()
+	return a.privacy[id]
 }
 
 // SetMediaEngine attaches the embedded media engine. Called from main after the
@@ -253,6 +273,15 @@ func (a *App) Handler() http.Handler {
 
 	// health
 	mux.HandleFunc("GET /api/health", a.handleHealth)
+
+	// metrics (Prometheus + JSON). Open to a local scraper (Prometheus on the
+	// same host, hitting us directly) but authenticated from anywhere else, so
+	// the endpoint is not exposed publicly through the reverse proxy. Registered
+	// only when a metrics store has been wired (never in tests).
+	if a.metrics != nil {
+		mux.Handle("GET /api/metrics", a.gateMetrics(a.metrics.PrometheusHandler()))
+		mux.Handle("GET /api/metrics/json", a.gateMetrics(a.metrics.JSONHandler()))
+	}
 
 	// browser sessions
 	mux.HandleFunc("POST /api/auth/login", a.handleLogin)
@@ -426,6 +455,38 @@ func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentU
 		return nil
 	}
 	return u
+}
+
+// gateMetrics wraps a metrics handler so it is reachable without credentials
+// only from a genuinely local client, and requires normal auth otherwise. A
+// local Prometheus scrapes us directly over loopback; anything arriving through
+// the reverse proxy is treated as remote and must authenticate.
+func (a *App) gateMetrics(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLocalRequest(r) && a.requireUser(w, r) == nil {
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// isLocalRequest reports whether the request came directly from a loopback
+// peer with no reverse-proxy in front. It deliberately ignores
+// X-Forwarded-For / X-Real-IP: those are client-supplied and trivially spoofed
+// (a remote caller could send "X-Forwarded-For: 127.0.0.1"), so they must not
+// influence an auth-bypass decision. The presence of either header means the
+// request was forwarded — i.e. not a direct local scrape — so it is treated as
+// remote regardless of the socket peer, even when the proxy runs on localhost.
+func isLocalRequest(r *http.Request) bool {
+	if r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("X-Real-IP") != "" {
+		return false
+	}
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // requireAdmin enforces auth plus the admin role.

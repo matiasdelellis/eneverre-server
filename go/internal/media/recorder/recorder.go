@@ -333,6 +333,22 @@ func (r *Recorder) Start() error {
 	return werr
 }
 
+// IsConnected reports whether the recorder is currently receiving video, i.e.
+// a video packet arrived within the last noVideoTimeout window (plus a small
+// margin). This is the same signal the media watchdog uses.
+func (r *Recorder) IsConnected() bool {
+	// Lock-free on purpose: this is called from the metrics scrape and must not
+	// contend with r.mu, which the RTP callback holds per access-unit around the
+	// fMP4 assembly + disk write. lastVideoNano is atomic and is the real
+	// "receiving video" signal; before the first packet it is 0, so the elapsed
+	// check already reports disconnected without needing to inspect r.client.
+	last := r.lastVideoNano.Load()
+	if last == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, last)) <= noVideoTimeout+2*time.Second
+}
+
 // Close stops recording and flushes the current segment.
 func (r *Recorder) Close() {
 	if r.client != nil {

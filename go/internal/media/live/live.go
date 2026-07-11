@@ -126,6 +126,14 @@ func (b *Broadcaster) SetTracks(all []*fmp4.InitTrack) error {
 	return nil
 }
 
+// IsRunning reports whether the broadcaster has an active live source (the
+// camera is connected and delivering samples).
+func (b *Broadcaster) IsRunning() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.running && b.initBytes != nil
+}
+
 // Stop ends the current live stream (camera disconnected).
 func (b *Broadcaster) Stop() {
 	b.mu.Lock()

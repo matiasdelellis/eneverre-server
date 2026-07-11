@@ -466,6 +466,43 @@ func (e *Engine) GlobalToggles() (mse, relay, record bool) {
 	return e.opts.MSEEnabled, e.opts.RelayEnabled, e.opts.RecordEnabled
 }
 
+// CameraStatus is a snapshot of a single camera's media state, collected by
+// Status() from the engine's internal state at a point in time. The engine's
+// retry loop means a camera may briefly report disconnected between reconnect
+// attempts; check over multiple scrapes for a stable view.
+type CameraStatus struct {
+	ID        string
+	Connected bool   // RTSP stream is connected and receiving video packets
+	Paused    bool   // privacy-paused (recording + transmission stopped)
+	MSEActive bool   // live MSE broadcaster has an active source
+	Recording bool   // the engine is writing segments to disk for this camera
+}
+
+// Status returns a snapshot of every camera supervised by the engine. The
+// caller receives a consistent view taken under the engine's read lock.
+func (e *Engine) Status() []CameraStatus {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]CameraStatus, 0, len(e.ctrls))
+	for id, ctrl := range e.ctrls {
+		s := CameraStatus{
+			ID:        id,
+			Paused:    ctrl.isPaused(),
+			Connected: false,
+			MSEActive: false,
+		}
+		if lb, ok := e.broadcasters[id]; ok {
+			s.MSEActive = lb.IsRunning()
+		}
+		if ctrl.rec != nil {
+			s.Connected = ctrl.rec.IsConnected()
+			s.Recording = ctrl.rec.Record && s.Connected
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // Close stops all recorders, the relay, the retention loop, and the index.
 func (e *Engine) Close() {
 	e.cancel()

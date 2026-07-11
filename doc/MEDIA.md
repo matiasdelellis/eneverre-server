@@ -263,12 +263,59 @@ Bearer (or Basic) auth.
 token. Use hls.js `xhrSetup` (or Basic-in-URL, e.g. VLC:
 `http://user:pass@host/…/playlist.m3u8`).
 
+## Metrics
+
+Two endpoints expose service instrumentation:
+
+| Method + path | Purpose |
+|---|---|
+| `GET /api/metrics`      | Prometheus text format (scrape target) |
+| `GET /api/metrics/json` | the same metrics as a JSON object, keyed by metric name |
+
+**Access.** Both are open **without credentials only to a genuinely local
+client** — a Prometheus scraping the service directly over loopback. Every other
+caller must authenticate (Basic or Bearer), the same as the rest of the API, so
+the endpoints are not exposed publicly through the reverse proxy. The local
+bypass keys off the real socket peer being loopback **and** the absence of any
+`X-Forwarded-For` / `X-Real-IP` header: those headers are client-supplied and
+spoofable, so a forwarded request is always treated as remote — even when the
+proxy runs on the same host. In practice: point the scraper at the service port
+directly (not through Caddy), or give it credentials.
+
+**What is exposed — aggregate only, no per-camera identity.** The camera metrics
+are counts across all cameras; there is deliberately no `id` label, so the
+endpoint answers "how many cameras are recording / in privacy", not "what is
+camera X doing". It is not a per-camera surveillance map.
+
+| Metric | Meaning |
+|---|---|
+| `eneverre_build_info{version}`     | build version (value always 1) |
+| `eneverre_cameras_total`           | configured cameras |
+| `eneverre_cameras_connected`       | cameras with an active RTSP connection |
+| `eneverre_cameras_mse_active`      | cameras with an active live MSE broadcaster |
+| `eneverre_cameras_recording`       | cameras currently recording to disk |
+| `eneverre_cameras_privacy`         | cameras with privacy enabled |
+| `eneverre_db_connections_*`        | SQLite pool stats (open / in-use / idle / waits) |
+| `go_*`                             | standard Go runtime collector (memory, GC, goroutines) |
+
+The JSON variant serializes gauges/counters by value; summary/histogram families
+(e.g. `go_gc_duration_seconds`) are reduced to their sample sum — use the
+Prometheus endpoint if you need quantiles or buckets.
+
+**Turning it off.** Metrics are on by default. Set `[server] metrics = false` to
+drop both endpoints entirely — no collectors are wired and the routes answer
+404. Useful when you don't scrape and prefer to minimize exposed surface.
+
 ## Reverse proxy
 
 Live (MSE) and playback are plain HTTP under `/api/*`, so a single
 `reverse_proxy` to Eneverre covers them — no HLS/WebRTC rules needed.
 The RTSP relay (`:8554`) does **not** go through the proxy; expose it directly
 (firewalled) for RTSP clients. See [`doc/example/Caddyfile`](example/Caddyfile).
+
+`/api/metrics` and `/api/metrics/json` require auth when reached through the
+proxy (see [Metrics](#metrics)); a local Prometheus should scrape the service
+port directly rather than via Caddy.
 
 ## Without recording
 
