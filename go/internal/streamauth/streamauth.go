@@ -122,15 +122,23 @@ func credsMatch(c Creds, user, pass string) bool {
 // Rotate generates a new credential pair, demotes the current pair to the
 // grace window, and persists the new pair. The previous grace-window pair (two
 // rotations old) is discarded.
+//
+// The new pair is persisted to the DB *before* the in-memory state is advanced.
+// That ordering matters: if persist fails we leave the in-memory credentials
+// exactly as they were (still matching the DB), so a crash right after a failed
+// rotation restores the old pair on restart while already-issued URLs keep
+// pointing at it. The previous implementation advanced memory first, so a
+// failed persist left memory and DB permanently divergent until the next
+// successful rotation.
 func (s *Store) Rotate() (Creds, error) {
 	next := Creds{Username: gen(8), Password: gen(8)}
+	if err := s.persist(next); err != nil {
+		return next, err
+	}
 	s.mu.Lock()
 	s.prev = s.cur
 	s.cur = next
 	s.mu.Unlock()
-	if err := s.persist(next); err != nil {
-		return next, err
-	}
 	return next, nil
 }
 
