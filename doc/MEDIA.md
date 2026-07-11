@@ -183,7 +183,6 @@ Backed by the in-process segment index; require user auth + the camera's
 | `GET /api/camera/{id}/recordings/hls/init.mp4` | CMAF init (referenced by the playlist) |
 | `GET /api/camera/{id}/recordings/hls/segment.m4s` | CMAF media segment (referenced by the playlist) |
 
-`timeline`/`gaps` and the HLS VOD endpoints are embedded-engine only.
 Timestamps are RFC3339 (UTC); `duration` is in seconds. The web timeline
 plays the HLS VOD playlist via hls.js (auth via the bearer token on every
 request); the playlist's init and segment URIs are relative, so they

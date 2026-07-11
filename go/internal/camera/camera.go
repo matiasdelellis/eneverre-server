@@ -119,10 +119,10 @@ func toFloat(value string, def float64) float64 {
 }
 
 // Load reads every *.ini under the cameras dir (sorted), in startup order.
-// The camera's `source` URL is stored as the raw INI value. When the embedded
-// media engine is enabled, /api/cameras rebuilds the public RTSP URL per
-// request from the current rotating credentials via WithEngineURLs, so
-// credential rotation takes effect without a restart.
+// The camera's `source` URL is stored as the raw INI value. The embedded
+// media engine is always running, so /api/cameras rebuilds the public RTSP
+// URL per request from the current rotating credentials via WithEngineURLs,
+// so credential rotation takes effect without a restart.
 func Load(cfg *config.Config) []Camera {
 	paths, _ := filepath.Glob(filepath.Join(cfg.CamerasDir, "*.ini"))
 	sort.Strings(paths)

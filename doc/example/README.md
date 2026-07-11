@@ -138,7 +138,7 @@ privacy_y = 1600
     the RTSP relay working for this camera but skip writing to disk — the
     `/recordings/*` endpoints for it answer 404. Useful for privacy-
     sensitive cameras you only want to watch live.
- * **transport:** Embedded-engine only. Per-camera override of the global
+ * **transport:** Per-camera override of the global
    `[media] transport` for the source RTSP: `auto` (default), `tcp` (reliable,
    recommended for lossy/distant links), or `udp`. Useful to force TCP on a
    single camera without changing the global default.

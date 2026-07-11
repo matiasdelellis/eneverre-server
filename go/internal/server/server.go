@@ -32,7 +32,9 @@ type App struct {
 	creds   *streamauth.Store
 	cameras []camera.Camera
 	// engine is the embedded media engine (recording, RTSP relay, live MSE,
-	// playback). Non-nil when the [media] section is configured.
+	// playback). Always attached in normal operation (main builds and starts
+	// it unconditionally); the [media] section only tunes it. May be nil in
+	// tests that construct App directly without SetMediaEngine.
 	engine    *media.Engine
 	staticDir string
 	assets    map[string]staticAsset // precomputed embedded UI (etag + gzip), nil if none
@@ -269,8 +271,10 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/camera/{cam_id}/playback/list", deprecatedAlias("/api/camera/{cam_id}/recordings/list", a.handlePlaybackList))
 	mux.HandleFunc("GET /api/camera/{cam_id}/playback/get", deprecatedAlias("/api/camera/{cam_id}/recordings/get", a.handlePlaybackGet))
 
-	// embedded live (MSE fMP4). Only served when the media engine is active;
-	// otherwise the client uses the camera's hls/webrtc URL from /api/cameras.
+	// embedded live (MSE fMP4). The engine is always running, so these are
+	// always routed; for a camera whose `mse` feature is off there is no
+	// broadcaster, so `info` reports {"available": false} and `stream` returns
+	// 503, and the client falls back to its hls/webrtc URL from /api/cameras.
 	mux.HandleFunc("GET /api/camera/{cam_id}/live/info", a.handleLiveInfo)
 	mux.HandleFunc("GET /api/camera/{cam_id}/live/stream", a.handleLiveStream)
 

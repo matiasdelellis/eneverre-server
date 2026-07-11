@@ -8,7 +8,9 @@ import (
 
 // handleLiveInfo reports whether the embedded engine has a live source for the
 // camera and, if so, the MSE mime type the browser needs to build a
-// MediaSource. Returns 404 when the engine is not active.
+// MediaSource. Reports {"available": false} when the camera has no live
+// broadcaster (its `mse` feature is off). The engine == nil guard only trips
+// in tests that construct App without a media engine.
 func (a *App) handleLiveInfo(w http.ResponseWriter, r *http.Request) {
 	if a.engine == nil {
 		httpError(w, http.StatusNotFound, "Not Found")
@@ -31,7 +33,9 @@ func (a *App) handleLiveInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLiveStream streams the camera's live fMP4 (init + parts) as chunked
-// HTTP for a browser MediaSource. Returns 404 when the engine is not active.
+// HTTP for a browser MediaSource. Returns 503 when the camera has no live
+// broadcaster (its `mse` feature is off). The engine == nil guard only trips
+// in tests that construct App without a media engine.
 func (a *App) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 	if a.engine == nil {
 		httpError(w, http.StatusNotFound, "Not Found")
