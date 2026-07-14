@@ -2,6 +2,7 @@ import { $, $$, escapeHtml } from "../util/dom.js";
 import { setWallFilter, setWallFilterBeforeCam, getState, on } from "../state.js";
 import { fetchCameras, token } from "../api.js";
 import { isMobileViewport, closeSidebarDrawer } from "./app-shell.js";
+import { loadJson, saveJson, LOCATION_ORDER_KEY } from "../util/storage.js";
 
 function maybeCloseDrawer() {
   // Only auto-close the camera list on mobile, where it overlays the
@@ -85,6 +86,33 @@ export function setSidebarPrivacy(camId, on) {
   if (!on && cam) loadViewerThumb(cam, tile, { force: true });
 }
 
+// The user's custom location ordering, persisted in localStorage. It lives only
+// in the browser (no server round-trip) so each viewer arranges their own
+// sidebar. Locations not present in the saved order fall back to alphabetical,
+// which also handles brand-new locations added after the order was saved.
+function loadLocationOrder() {
+  const raw = loadJson(LOCATION_ORDER_KEY);
+  return Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
+}
+
+function saveLocationOrder(order) {
+  saveJson(LOCATION_ORDER_KEY, order);
+}
+
+// Sort location names by the saved custom order first (in that order), then any
+// remaining names alphabetically so newly-seen locations always have a stable
+// place at the end rather than jumping around.
+function orderLocationKeys(keys) {
+  const order = loadLocationOrder();
+  const rank = new Map(order.map((name, i) => [name, i]));
+  return [...keys].sort((a, b) => {
+    const ra = rank.has(a) ? rank.get(a) : Infinity;
+    const rb = rank.has(b) ? rank.get(b) : Infinity;
+    if (ra !== rb) return ra - rb;
+    return a.localeCompare(b, undefined, { sensitivity: "base" });
+  });
+}
+
 export function groupByLocation(cams) {
   const byLoc = new Map();
   for (const cam of cams) {
@@ -95,7 +123,7 @@ export function groupByLocation(cams) {
   for (const list of byLoc.values()) {
     list.sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, undefined, { sensitivity: "base" }));
   }
-  const keys = [...byLoc.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  const keys = orderLocationKeys([...byLoc.keys()]);
   return { keys, byLoc };
 }
 
@@ -170,25 +198,95 @@ export async function loadSidebar() {
   side.innerHTML = "";
   const groups = groupByLocation(cams);
   for (const loc of groups.keys) {
+    const group = document.createElement("div");
+    group.className = "viewer-location-group";
+    group.dataset.location = loc;
+
     const header = document.createElement("div");
     header.className = "viewer-location-header";
     header.dataset.location = loc;
-    header.title = `Filter wall to ${loc}`;
-    header.innerHTML = `<span class="loc-icon" aria-hidden="true">▤</span><span class="loc-text">${escapeHtml(loc)}</span>`;
+    header.title = `Filter wall to ${loc} — drag to reorder`;
+    header.draggable = true;
+    header.innerHTML = `<span class="loc-grip" aria-hidden="true">⠿</span><span class="loc-icon" aria-hidden="true">▤</span><span class="loc-text">${escapeHtml(loc)}</span>`;
     header.addEventListener("click", () => {
       if (isWallLike()) {
         toggleLocFilter(loc);
         maybeCloseDrawer();
       }
     });
-    side.appendChild(header);
+    attachGroupDrag(header, group);
+    group.appendChild(header);
     for (const cam of groups.byLoc.get(loc)) {
-      side.appendChild(renderViewerThumb(cam));
+      group.appendChild(renderViewerThumb(cam));
     }
+    side.appendChild(group);
   }
   side.dataset.loaded = "1";
   updateSidebarActive();
   startSidebarThumbRefresh(cams);
+}
+
+// Drag-and-drop reordering of whole location groups. The header is the drag
+// handle; dropping persists the new order to localStorage so it survives
+// reloads. Reordering is purely visual/client-side and never touches the
+// server — the wall's grouping picks up the same saved order on its next
+// render via groupByLocation().
+let draggingGroup = null;
+
+function attachGroupDrag(header, group) {
+  header.addEventListener("dragstart", (e) => {
+    draggingGroup = group;
+    group.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    // Firefox requires data to be set for the drag to start at all.
+    try { e.dataTransfer.setData("text/plain", group.dataset.location || ""); } catch {}
+  });
+  header.addEventListener("dragend", () => {
+    if (draggingGroup) draggingGroup.classList.remove("dragging");
+    draggingGroup = null;
+    persistLocationOrder();
+  });
+}
+
+function persistLocationOrder() {
+  const order = $$("#viewer-side-scroll .viewer-location-group").map((g) => g.dataset.location);
+  saveLocationOrder(order);
+}
+
+// Given the pointer Y, find the group we should insert the dragged group
+// before (or null to append at the end). Groups being dragged are skipped.
+function groupAfterPointer(container, y) {
+  const groups = [...container.querySelectorAll(".viewer-location-group:not(.dragging)")];
+  let closest = null;
+  let closestOffset = -Infinity;
+  for (const g of groups) {
+    const box = g.getBoundingClientRect();
+    const offset = y - (box.top + box.height / 2);
+    if (offset < 0 && offset > closestOffset) {
+      closestOffset = offset;
+      closest = g;
+    }
+  }
+  return closest;
+}
+
+function initSidebarDnd() {
+  const side = $("#viewer-side-scroll");
+  if (!side) return;
+  side.addEventListener("dragover", (e) => {
+    if (!draggingGroup) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const after = groupAfterPointer(side, e.clientY);
+    if (after == null) {
+      if (side.lastElementChild !== draggingGroup) side.appendChild(draggingGroup);
+    } else if (after !== draggingGroup && after.previousElementSibling !== draggingGroup) {
+      side.insertBefore(draggingGroup, after);
+    }
+  });
+  // Dropping is handled by dragend (which persists); prevent the browser's
+  // default "navigate to text" drop behaviour.
+  side.addEventListener("drop", (e) => e.preventDefault());
 }
 
 function toggleCamFilter(camId) {
@@ -329,4 +427,5 @@ export function initSidebar() {
   // that were filtered out). The wall filter listener in wall.js handles
   // loadWall(); we only need to keep the active class in sync.
   on("wallFilter", () => updateSidebarActive());
+  initSidebarDnd();
 }

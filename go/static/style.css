@@ -556,6 +556,17 @@ button.icon-btn {
 }
 .viewer-side-scroll .viewer-status { padding: 12px; margin: 0; }
 
+/* Each location's header + its camera thumbs are wrapped in a group so the
+   whole block can be dragged to reorder locations. The 8px column gap on
+   .viewer-side-scroll spaces the groups; this inner gap keeps the header and
+   thumbs together the same way the flat list used to. */
+.viewer-location-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.viewer-location-group.dragging { opacity: 0.4; }
+
 .viewer-location-header {
   display: flex;
   align-items: center;
@@ -573,8 +584,21 @@ button.icon-btn {
 }
 .viewer-location-header:hover { color: var(--fg); }
 .viewer-location-header.active { color: var(--accent); opacity: 1; }
-.viewer-location-header:first-child { padding-top: 0; }
+.viewer-location-group:first-child .viewer-location-header { padding-top: 0; }
 .viewer-location-header .loc-icon { display: none; font-size: 14px; line-height: 1; }
+/* Drag handle: subtle by default, clearer on hover. It hints the group is
+   reorderable and gives a grab cursor without stealing the header's click
+   (which still toggles the wall filter). */
+.viewer-location-header .loc-grip {
+  font-size: 12px;
+  line-height: 1;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.viewer-location-header:hover .loc-grip { opacity: 0.6; }
+.viewer-location-header .loc-grip:active { cursor: grabbing; }
+.viewer-side.collapsed .viewer-location-header .loc-grip { display: none; }
 /* Collapsed: hide the text label completely and show a centered icon
    in its place — the location header is still a working filter, just
    compact. Using display:none (not visibility:hidden) on the text is

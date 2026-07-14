@@ -7,6 +7,7 @@ export const THEME_KEY = "eneverre.theme";
 export const USERCODE_KEY = "eneverre.pendingUsercode";
 export const USERCODE_NAME_KEY = "eneverre.pendingUsercodeName";
 export const PTZ_MODAL_POS_KEY = "eneverre.ptzModalPos";
+export const LOCATION_ORDER_KEY = "eneverre.locationOrder";
 
 export function get(key) {
   try { return localStorage.getItem(key); } catch { return null; }
