@@ -3,7 +3,6 @@ import { get, set } from "../util/storage.js";
 import { getState, setLastPtzCam, setCamerasCache, on } from "../state.js";
 import { api, fetchCameras } from "../api.js";
 import { alertModal } from "../ui/dialog.js";
-import { createTalkClient } from "../util/talk-client.js";
 
 const STEP = 50;
 const PTZ_MODAL_POS_KEY = "eneverre.ptzModalPos";
@@ -80,9 +79,10 @@ function ptzFabVisible() {
   const { viewMode, wallFilter, lastPtzCam } = getState();
   if (viewMode !== "live" || wallFilter.type !== "cam") return false;
   if (!$("#ptz-modal")?.hidden) return false;
-  // Privacy lives in the topbar now (syncPrivacyButton), so it no longer
-  // drives the PTZ modal — only PTZ and talk do.
-  return lastPtzCam?.capabilities?.ptz === true || lastPtzCam?.capabilities?.talk === true;
+  // Privacy and push-to-talk now live in the topbar (syncPrivacyButton /
+  // syncTalk), so the PTZ modal — and thus this FAB — is driven by the
+  // PTZ capability alone.
+  return lastPtzCam?.capabilities?.ptz === true;
 }
 
 function setPtzFab(visible) {
@@ -118,12 +118,15 @@ export async function updatePtzModal() {
   const cam = cams.find((c) => c.id === wallFilter.value) || null;
   setLastPtzCam(cam);
   syncPrivacyButton();
-  if (!cam || !cam.capabilities || !(cam.capabilities.ptz || cam.capabilities.talk)) {
+  if (!cam || !cam.capabilities || !cam.capabilities.ptz) {
     hidePtzModal();
     syncPtzFab();
     return;
   }
-  showPtzModal(cam);
+  // Selecting a PTZ camera no longer pops the modal open; it only refreshes an
+  // already-open one (so it doesn't show a stale camera). Opening is an
+  // explicit FAB click.
+  if (!$("#ptz-modal")?.hidden) showPtzModal(cam);
   syncPtzFab();
 }
 
@@ -176,13 +179,12 @@ async function togglePrivacy(cam) {
   }
 }
 
+// The PTZ modal is now PTZ-only (privacy and push-to-talk moved to the
+// topbar), so it always renders the pad + Home for a PTZ-capable camera.
 function buildPtzPanel(cam) {
   const wrap = document.createElement("div");
-  const hasPtz = cam.capabilities?.ptz === true;
-  const hasTalk = cam.capabilities?.talk === true;
-  let html = `<h3>${hasPtz ? "PTZ" : "Control"}</h3>`;
-  if (hasPtz) {
-    html += `
+  wrap.innerHTML = `
+    <h3>PTZ</h3>
     <div class="ptz-pad">
       <span class="empty"></span>
       <button data-dx="0" data-dy="-${STEP}" title="Up">↑</button>
@@ -195,15 +197,6 @@ function buildPtzPanel(cam) {
       <span class="empty"></span>
     </div>
     <div class="ptz-actions"><button data-go="home">Home</button></div>`;
-  }
-  if (hasTalk) {
-    html += `
-    <div class="ptz-talk">
-      <button type="button" class="talk-btn" data-talk>🎤 Hold to talk</button>
-    </div>`;
-  }
-  wrap.innerHTML = html;
-  if (hasTalk) wireTalkButton(wrap.querySelector("[data-talk]"), cam);
   wrap.addEventListener("click", async (e) => {
     const btn = e.target.closest("button");
     if (!btn) return;
@@ -221,46 +214,6 @@ function buildPtzPanel(cam) {
     }
   });
   return wrap;
-}
-
-// wireTalkButton turns the button into a press-and-hold push-to-talk control:
-// the mic streams while the pointer is held down and stops on release or a
-// server-side close. It uses pointer capture so the release is delivered even if
-// the pointer drifts off the button — no document-level listener to leak across
-// modal re-renders.
-function wireTalkButton(btn, cam) {
-  if (!btn) return;
-  const idle = "🎤 Hold to talk";
-  const connecting = "⏳ Connecting…";
-  const live = "🔴 Talking — go ahead";
-  const setState = (cls, text) => {
-    btn.classList.remove("connecting", "talking");
-    if (cls) btn.classList.add(cls);
-    btn.textContent = text;
-  };
-  const reset = () => setState(null, idle);
-  const client = createTalkClient(cam.id, {
-    onReady: () => { if (client.isActive()) setState("talking", live); },
-    onEnd: reset,
-  });
-  const begin = (e) => {
-    e.preventDefault();
-    if (client.isActive()) return;
-    try { btn.setPointerCapture(e.pointerId); } catch {}
-    setState("connecting", connecting);
-    client.start().catch((err) => {
-      reset();
-      alertModal(`Microphone/connection error: ${err.message || err}`, { title: "Talk error" });
-    });
-  };
-  const end = (e) => {
-    e.preventDefault();
-    try { if (e.pointerId != null) btn.releasePointerCapture(e.pointerId); } catch {}
-    client.stop();
-  };
-  btn.addEventListener("pointerdown", begin);
-  btn.addEventListener("pointerup", end);
-  btn.addEventListener("pointercancel", end);
 }
 
 function initPtzDrag() {
@@ -360,7 +313,10 @@ function initPtzKeyboard() {
 
 export function initPtz() {
   $("#ptz-modal-close")?.addEventListener("click", hidePtzModal);
-  $("#ptz-fab")?.addEventListener("click", () => updatePtzModal());
+  $("#ptz-fab")?.addEventListener("click", () => {
+    const { lastPtzCam } = getState();
+    if (lastPtzCam?.capabilities?.ptz === true) showPtzModal(lastPtzCam);
+  });
   $("#privacy-toggle")?.addEventListener("click", () => {
     const { lastPtzCam } = getState();
     if (lastPtzCam?.capabilities?.privacy === true) togglePrivacy(lastPtzCam);
@@ -368,8 +324,9 @@ export function initPtz() {
   initPtzDrag();
   initPtzKeyboard();
   // Re-render the PTZ panel when the wall filter changes (e.g. clicking
-  // a different cam in the sidebar).
+  // a different cam in the sidebar) or after the wall re-renders its tiles.
   on("wallFilter", () => updatePtzModal());
+  on("wallRendered", () => updatePtzModal());
 
   // When the viewport crosses the mobile breakpoint, drop any persisted
   // desktop position so the bottom-sheet layout can take over without

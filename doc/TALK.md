@@ -146,6 +146,30 @@ output buffer (one access unit) as a binary WebSocket message. The `announced`
 `sampleRate` in the handshake is ignored on the AAC path (the AU rate is fixed by
 the encoder), but send it anyway for forward compatibility.
 
+### AAC warm-up (required): stream silence until the user speaks
+
+A camera does not become ready to *receive* backchannel audio the instant it
+answers RTSP `PLAY` — it still has to wire up its decoder and speaker path, and
+that warm-up takes a fraction of a second that the camera never announces on the
+wire. Any real audio that arrives during it is dropped, clipping the start of the
+first word.
+
+The **G.711 path** never notices this: the server streams silence to the camera
+from the moment the session opens, so the channel is already warm by the time the
+user speaks. The **AAC path** is passthrough — the server sends nothing until the
+client sends the first AU — so the camera has no warm-up stream and the client
+must provide it. The server does **not** add a compensating delay on either path;
+it goes live as soon as the RTSP handshake completes.
+
+**What the client must do:** as soon as it receives `{"status":"ready"}`, start
+feeding the encoder **silence** (zero-filled PCM buffers) and send those AUs
+immediately, before the user actually talks. The encoder is already configured
+with the camera's exact format, so encoding silence is free and always correct.
+The camera warms up on that silence during the connect + user-reaction window, so
+the user's first words arrive on an already-live channel — no clipping, no added
+latency. Keep streaming silence during pauses too, or stop and let the next real
+AU restart the flow; either works once the channel is warm.
+
 ## Bandwidth
 
 The client→server leg is **uncompressed** PCM, so its bit rate is just

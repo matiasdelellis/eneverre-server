@@ -397,6 +397,12 @@ button.icon-btn {
   box-shadow: inset 0 0 0 1px var(--danger);
 }
 
+/* Topbar talk button: arms the mic (requests/holds the permission). Ringed
+   with the accent when armed; the actual talk trigger is the tile overlay. */
+.talk-toggle.active {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -940,6 +946,45 @@ button.icon-btn {
   background: rgba(239, 68, 68, 0.85);
   animation: clip-pulse 1s ease-in-out infinite;
 }
+
+/* Push-to-talk trigger, centred at the bottom of the selected camera tile.
+   Injected by views/talk.js only while talk is armed. Idle shows a mic;
+   .connecting swaps in a spinner; .talking pulses red. */
+.wall-talk {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.wall-talk:hover { background: rgba(0, 0, 0, 0.8); }
+.wall-talk.talking {
+  background: var(--danger, #d33);
+  animation: clip-pulse 1s ease-in-out infinite;
+}
+.wall-talk.connecting { cursor: progress; }
+.wall-talk.connecting::before {
+  content: "";
+  width: 22px;
+  height: 22px;
+  border: 3px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: boot-spin 0.8s linear infinite;
+}
 @keyframes clip-pulse {
   50% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.6); }
 }
@@ -1014,25 +1059,6 @@ button.icon-btn {
 .ptz-pad .empty { visibility: hidden; }
 
 .ptz-actions { display: flex; flex-direction: column; gap: 8px; }
-
-.ptz-talk { margin-top: 8px; }
-.talk-btn {
-  width: 100%;
-  padding: 10px;
-  font-size: 14px;
-  cursor: pointer;
-  touch-action: none;
-  user-select: none;
-}
-.talk-btn.connecting {
-  opacity: 0.7;
-  cursor: progress;
-}
-.talk-btn.talking {
-  background: var(--danger, #d33);
-  color: #fff;
-  border-color: var(--danger, #d33);
-}
 
 .playback-form {
   display: flex;

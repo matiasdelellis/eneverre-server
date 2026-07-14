@@ -48,6 +48,10 @@ response bodies on every data-bearing route).
 - [`doc/PLANS/GAPFILL-DYNAMIC.md`](doc/PLANS/GAPFILL-DYNAMIC.md) — the
   design for a date/time-stamped gap-fill caption (currently a static
   message).
+- [`doc/PLANS/TALK-AUDIO-QUALITY.md`](doc/PLANS/TALK-AUDIO-QUALITY.md) —
+  talk audio-quality work: what's done (G.711 latency cap, client-side AAC
+  silence warm-up + no server settle, AAC drop-oldest) and what's deferred
+  (stateful resampling, AAC `a=fmtp` parsing, `AudioWorklet` capture).
 - [`doc/UPDATES.md`](doc/UPDATES.md) — the auto-update protocol for the
   Android clients.
 - [`doc/TALK.md`](doc/TALK.md) — the two-way-audio (push-to-talk) WebSocket

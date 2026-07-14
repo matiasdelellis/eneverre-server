@@ -1,9 +1,9 @@
 import { $, $$, escapeHtml, makeMsg } from "../util/dom.js";
-import { getState, setWallFilter, setWallFilterBeforeCam, on } from "../state.js";
+import { getState, setWallFilter, setWallFilterBeforeCam, on, emit } from "../state.js";
 import { fetchCameras, token } from "../api.js";
 import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js";
 import { attachMse, captureVideoFrame } from "./mse.js";
-import { updatePtzModal, hidePtzModal } from "./ptz.js";
+import { hidePtzModal } from "./ptz.js";
 import { toast } from "../ui/toast.js";
 import { setCamStatus } from "../ui/cam-status.js";
 
@@ -419,7 +419,9 @@ export async function loadWall(mode = "live") {
     }
     updateSidebarActive();
   }
-  updatePtzModal();
+  // Tiles were (re)created: let the topbar controls that inject per-tile
+  // overlays or track the selected cam resync. PTZ and talk both subscribe.
+  emit("wallRendered");
 }
 
 export function initWall() {

@@ -13,14 +13,21 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // rtspClient manages a single TCP connection to an RTSP server and implements
 // the RTSP 1.0 methods needed to set up an ONVIF backchannel session.
 type rtspClient struct {
-	conn      net.Conn
-	br        *bufio.Reader
+	conn net.Conn
+	br   *bufio.Reader
+	// writeMu serializes writes to conn. After Dial returns, the RTP send loop
+	// (writeInterleaved) and the keepalive goroutine (writeRequest) both write
+	// concurrently; without this their bytes could interleave on the wire and
+	// desync the camera's RTSP parser, and their SetWriteDeadline calls would
+	// race. Held only around the SetWriteDeadline+Write pair, never during reads.
+	writeMu   sync.Mutex
 	baseURL   *url.URL
 	cseq      int
 	sessionID string
@@ -89,8 +96,11 @@ func (c *rtspClient) request(method, uri string, extraHeaders map[string]string,
 
 	slog.Debug("rtsp request", "method", method, "uri", uri)
 
+	c.writeMu.Lock()
 	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	if _, err := c.conn.Write([]byte(sb.String())); err != nil {
+	_, err := c.conn.Write([]byte(sb.String()))
+	c.writeMu.Unlock()
+	if err != nil {
 		return 0, nil, nil, fmt.Errorf("write: %w", err)
 	}
 
@@ -111,8 +121,10 @@ func (c *rtspClient) writeRequest(method, uri string) error {
 	sb.WriteString("\r\n")
 
 	slog.Debug("rtsp request (no-wait)", "method", method, "uri", uri)
+	c.writeMu.Lock()
 	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	_, err := c.conn.Write([]byte(sb.String()))
+	c.writeMu.Unlock()
 	return err
 }
 
@@ -356,8 +368,10 @@ func (c *rtspClient) writeInterleaved(channel byte, data []byte) error {
 	binary.BigEndian.PutUint16(chunk[2:4], uint16(len(data)))
 	copy(chunk[4:], data)
 
+	c.writeMu.Lock()
 	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	_, err := c.conn.Write(chunk)
+	c.writeMu.Unlock()
 	return err
 }
 

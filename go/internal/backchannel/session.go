@@ -11,9 +11,15 @@ import (
 
 // TargetRate is the G.711 sample rate (8 kHz).
 // FrameSamples is one 20 ms RTP frame at 8 kHz (160 samples).
+// MaxBufferSamples caps the send-loop backlog at ~400 ms of 8 kHz audio: enough
+// headroom to ride out normal network/ScriptProcessor jitter, but low enough
+// that a burst (a backgrounded tab, a network hiccup releasing a batch) can't
+// build seconds of latency. On overflow the oldest audio is dropped, keeping
+// push-to-talk responsive with the freshest speech.
 const (
-	TargetRate   = 8000
-	FrameSamples = 160
+	TargetRate       = 8000
+	FrameSamples     = 160
+	MaxBufferSamples = TargetRate * 400 / 1000 // 3200 samples ≈ 400 ms
 )
 
 // Session is a live audio backchannel to one camera. Open one with Dial, push
@@ -143,14 +149,14 @@ func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 		return nil, fmt.Errorf("PLAY: %w", err)
 	}
 
-	// Brief pause after PLAY: some cameras are not immediately ready to receive
-	// RTP over the interleaved channel; a short delay avoids the first packets
-	// being dropped.
-	if err := sleepCtx(ctx, 1*time.Second); err != nil {
-		c.conn.Close()
-		return nil, err
-	}
-
+	// No post-PLAY settle delay on either path: a camera isn't ready to receive
+	// backchannel audio the instant it answers PLAY, but that readiness is never
+	// signalled on the wire, so the only robust strategy is to keep the channel
+	// warm with silence rather than wait a fixed guess. The G.711 send loop does
+	// this itself (it streams silence from its first tick); the AAC path is
+	// passthrough, so its client is expected to stream silence AUs until the user
+	// speaks (see doc/TALK.md → AAC warm-up). Either way Dial returns as soon as
+	// the RTSP handshake completes, so the client flips to "talking" that sooner.
 	c.startReader()
 	s.keepaliveDone = make(chan struct{})
 	go keepalive(c, uri, s.keepaliveDone)
@@ -224,7 +230,7 @@ func (s *Session) sendLoop() {
 	defer ticker.Stop()
 
 	var buf []int16
-	maxBuf := TargetRate * 4
+	maxBuf := MaxBufferSamples
 
 	ssrc := rand.Uint32()
 	seq := uint16(rand.Intn(65536))
@@ -332,7 +338,20 @@ func (s *Session) FeedAU(au []byte) {
 	select {
 	case s.auIn <- b:
 	default:
-		slog.Debug("backchannel AAC buffer full, dropping AU", "n", len(au))
+		// Buffer full: shed the OLDEST queued AU and enqueue this one, so a
+		// backlog drops stale audio and keeps the freshest speech (mirroring the
+		// G.711 send loop's latency cap) rather than rejecting new audio and
+		// letting latency grow. FeedAU is the only producer, so once we free a
+		// slot the follow-up send has room.
+		select {
+		case <-s.auIn:
+			slog.Debug("backchannel AAC buffer full, dropping oldest AU")
+		default:
+		}
+		select {
+		case s.auIn <- b:
+		default:
+		}
 	}
 }
 

@@ -5,25 +5,28 @@ import { token } from "../api.js";
 // reverse-proxy access logs). Mirrors talkSubprotocol in handlers_talk.go.
 const TALK_SUBPROTOCOL = "eneverre-talk";
 
-// Keep capturing this long after the button is released before tearing down, so
-// the tail of speech is delivered: the ScriptProcessor only emits full blocks,
-// so the in-progress block (plus anything still queued on the socket) would
-// otherwise be dropped mid-word.
+// Keep capturing this long after stop() before tearing down, so the tail of
+// speech is delivered: the ScriptProcessor only emits full blocks, so the
+// in-progress block (plus anything still queued on the socket) would otherwise
+// be dropped mid-word.
 const TAIL_GRACE_MS = 250;
 
-// createTalkClient builds a push-to-talk client for one camera. start() captures
-// the mic and streams mono S16LE PCM over the /talk WebSocket at the browser's
-// native sample rate (the server resamples to 8 kHz and relays G.711 to the
-// camera's ONVIF backchannel); stop() tears everything down. onReady fires once
-// the server signals the camera backchannel is live (so the UI can switch from
-// "connecting" to "talking"); onEnd fires once when the session ends for any
-// reason (server close, error, stop).
-export function createTalkClient(camId, { onReady, onEnd } = {}) {
+// createTalkClient builds a push-to-talk client for one camera, driving an
+// already-acquired mic MediaStream. The caller owns that stream's lifecycle (it
+// is armed/released by the topbar control in views/talk.js), so this client
+// never calls getUserMedia and never stops the stream's tracks — separating the
+// slow mic-permission step from the connection means start() only pays the
+// WebSocket + RTSP dial. start() opens the /talk WebSocket and streams mono
+// S16LE PCM at the browser's native sample rate (the server resamples to 8 kHz
+// and relays G.711 to the camera's ONVIF backchannel); stop() closes the socket
+// but leaves the mic running. onReady fires once the server signals the camera
+// backchannel is live (UI: connecting → talking); onEnd fires once when the
+// session ends for any reason (server close, error, stop).
+export function createTalkClient(camId, { stream, onReady, onEnd } = {}) {
   let ws = null;
   let ctx = null;
   let source = null;
   let processor = null;
-  let stream = null;
   let active = false;
   let graceTimer = null;
 
@@ -33,23 +36,19 @@ export function createTalkClient(camId, { onReady, onEnd } = {}) {
     active = false;
     try { if (processor) { processor.onaudioprocess = null; processor.disconnect(); } } catch {}
     try { if (source) source.disconnect(); } catch {}
-    try { if (stream) stream.getTracks().forEach((t) => t.stop()); } catch {}
     try { if (ctx) ctx.close(); } catch {}
     try { if (ws && ws.readyState <= WebSocket.OPEN) ws.close(1000, "stop"); } catch {}
-    processor = source = stream = ctx = ws = null;
+    processor = source = ctx = ws = null;
+    // The mic `stream` is owned by the caller (kept live while talk is armed),
+    // so its tracks are deliberately left running here.
     if (typeof onEnd === "function") onEnd();
   }
 
-  async function start() {
+  function start() {
     // A quick re-press cancels a pending stop grace and keeps the session alive.
     if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
-    if (active) return;
+    if (active || !stream) return;
     active = true;
-    // getUserMedia rejects on insecure origins (non-localhost http) and when the
-    // user denies the mic — let the caller surface the error.
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-    });
     ctx = new (window.AudioContext || window.webkitAudioContext)();
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -93,9 +92,9 @@ export function createTalkClient(camId, { onReady, onEnd } = {}) {
     ws.onerror = cleanup;
   }
 
-  // stop keeps the mic capturing for a short grace window before tearing down,
-  // so the tail of speech (the in-progress capture block, plus anything still
-  // queued on the socket) is delivered instead of being clipped on release.
+  // stop keeps capturing for a short grace window before tearing down, so the
+  // tail of speech (the in-progress capture block, plus anything still queued on
+  // the socket) is delivered instead of being clipped.
   function stop() {
     if (!active) { cleanup(); return; }
     if (graceTimer) return;
