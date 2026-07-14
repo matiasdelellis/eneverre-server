@@ -6,6 +6,8 @@ package index
 import (
 	"database/sql"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver, no cgo
@@ -41,8 +43,15 @@ type Index struct {
 	db *sql.DB
 }
 
-// Open opens (or creates) the SQLite index at the given file path.
+// Open opens (or creates) the SQLite index at the given file path, creating its
+// parent directory if needed — otherwise SQLite fails with CANTOPEN (14) when
+// the record dir does not exist yet (fresh install / first recording).
 func Open(dbPath string) (*Index, error) {
+	if dir := filepath.Dir(dbPath); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+	}
 	// WAL lets the recorder write while the API reads without blocking each
 	// other; NORMAL sync is safe under WAL and much faster for the per-segment
 	// inserts; busy_timeout makes concurrent writers wait for the lock instead

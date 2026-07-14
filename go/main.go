@@ -136,7 +136,17 @@ func main() {
 		fatal("stream-auth credentials failed", "err", err)
 	}
 
-	cams := camera.Load(cfg)
+	// Cameras are DB-backed. On a fresh install (or an upgrade from the old
+	// file-based layout) import the per-camera INI files once as the initial
+	// seed; after that the DB is authoritative and the INI files are ignored.
+	if _, err := camera.SeedFromINI(db, cfg, time.Now().Unix()); err != nil {
+		fatal("camera seed failed", "err", err)
+	}
+	camStore := camera.NewStore(db)
+	cams, err := camStore.List()
+	if err != nil {
+		fatal("load cameras failed", "err", err)
+	}
 
 	// Strip the "static/" prefix so the embedded files are served from root.
 	uiFS, err := fs.Sub(staticFiles, "static")
@@ -193,7 +203,7 @@ func main() {
 	defer engine.Close()
 	engine.Start(cams)
 
-	app := server.New(cfg, db, creds, cams, uiFS, opts.staticCacheControl,
+	app := server.New(cfg, db, creds, camStore, cams, uiFS, opts.staticCacheControl,
 		int64(accessHours)*3600, int64(refreshDays)*86400, updateStores)
 	app.SetMediaEngine(engine)
 

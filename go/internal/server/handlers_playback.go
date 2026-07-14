@@ -35,8 +35,8 @@ func (a *App) handlePlaybackList(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.Playback {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.Playback {
 		httpError(w, http.StatusNotFound, "Not found")
 		return
 	}
@@ -101,8 +101,8 @@ func (a *App) handlePlaybackTimeline(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.Playback {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.Playback {
 		httpError(w, http.StatusNotFound, "Not found")
 		return
 	}
@@ -130,8 +130,8 @@ func (a *App) handlePlaybackGaps(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.Playback {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.Playback {
 		httpError(w, http.StatusNotFound, "Not found")
 		return
 	}
@@ -179,12 +179,12 @@ func (a *App) hlsGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
 	if a.requireUser(w, r) == nil {
 		return nil
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.Playback {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.Playback {
 		httpError(w, http.StatusNotFound, "Not found")
 		return nil
 	}
-	return cam
+	return &cam
 }
 
 // delegateHLS rewrites the request to carry path=<camID> and hands it to fn.
@@ -242,8 +242,8 @@ func (a *App) handlePlaybackGet(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.Playback {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.Playback {
 		httpError(w, http.StatusNotFound, "Not found")
 		return
 	}
@@ -253,7 +253,7 @@ func (a *App) handlePlaybackGet(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "start and duration are required")
 		return
 	}
-	a.playbackGetEngine(w, r, cam, start, duration)
+	a.playbackGetEngine(w, r, &cam, start, duration)
 }
 
 // playbackGetEngine serves a clip from the embedded engine's segment index.

@@ -48,6 +48,8 @@ export function refreshUserMenu(user) {
   nameEl.textContent = user ? (user.displayName || user.username) : "";
   const usersBtn = document.getElementById("users-btn");
   if (usersBtn) usersBtn.hidden = !(user && user.is_admin);
+  const camerasBtn = document.getElementById("cameras-btn");
+  if (camerasBtn) camerasBtn.hidden = !(user && user.is_admin);
 }
 
 export function initUserMenu() {

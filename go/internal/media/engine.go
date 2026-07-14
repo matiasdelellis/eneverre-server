@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -53,14 +54,14 @@ import (
 // When [media] is absent MSE and relay keep their defaults (both on),
 // recording stays off.
 type Options struct {
-	MSEEnabled    bool   // default true; from [media] mse
-	RelayEnabled  bool   // default true; from [media] relay
-	RecordEnabled bool   // default false; from [media] record (explicit on)
-	RecordDir     string // base directory recordings live under
-	IndexPath     string // SQLite index file (default <RecordDir>/index.db)
-	CacheDir      string // generated-asset cache (gap-fill frames); default <RecordDir>/../cache
-	GapMessage    string // caption burned into gap-fill black frames (default "NO RECORDING")
-	RecordPath    string // segment path pattern (default <RecordDir>/%path/%Y-%m-%d/%H/<time>)
+	MSEEnabled      bool          // default true; from [media] mse
+	RelayEnabled    bool          // default true; from [media] relay
+	RecordEnabled   bool          // default false; from [media] record (explicit on)
+	RecordDir       string        // base directory recordings live under
+	IndexPath       string        // SQLite index file (default <RecordDir>/index.db)
+	CacheDir        string        // generated-asset cache (gap-fill frames); default <RecordDir>/../cache
+	GapMessage      string        // caption burned into gap-fill black frames (default "NO RECORDING")
+	RecordPath      string        // segment path pattern (default <RecordDir>/%path/%Y-%m-%d/%H/<time>)
 	SegmentDuration time.Duration // min segment length (default 60s)
 	PartDuration    time.Duration // fMP4 fragment length (default 1s)
 	Retain          time.Duration // delete recordings older than this; 0 = keep forever
@@ -150,6 +151,11 @@ type camCtrl struct {
 	mu       sync.Mutex
 	paused   bool
 	resumeCh chan struct{} // closed to wake waiters; replaced on each resume
+	// cancel stops this camera's retry-loop goroutine independently of the
+	// engine-wide shutdown, so RemoveCamera can detach a single camera at
+	// runtime. It cancels a context derived from the engine's, so an engine
+	// Close() still tears every camera down too.
+	cancel context.CancelFunc
 }
 
 func (c *camCtrl) isPaused() bool {
@@ -200,6 +206,17 @@ func New(opts Options) (*Engine, error) {
 	var idx *index.Index
 	var pb *playback.Handler
 	if opts.RecordEnabled {
+		// Ensure the recording + cache dirs exist so a fresh install records out
+		// of the box: the index open, the per-segment writers, and the gap-fill
+		// cache all assume their directories are present.
+		for _, dir := range []string{opts.RecordDir, opts.CacheDir} {
+			if dir == "" {
+				continue
+			}
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, fmt.Errorf("create media dir %s: %w", dir, err)
+			}
+		}
 		var err error
 		idx, err = index.Open(opts.IndexPath)
 		if err != nil {
@@ -244,16 +261,10 @@ func New(opts Options) (*Engine, error) {
 func (e *Engine) Start(cams []camera.Camera) {
 	engaged, mseCount, relayCount, recording := 0, 0, 0, 0
 	for _, cam := range cams {
-		if cam.Source == "" {
+		f, ok := e.AddCamera(cam)
+		if !ok {
 			continue
 		}
-		f := cam.ResolveFeatures(e.opts.MSEEnabled, e.opts.RelayEnabled, e.opts.RecordEnabled)
-		// Engage the camera if any sink is on. Recording counts on its own so a
-		// record-only camera (MSE + relay off) still connects and writes to disk.
-		if !f.MSE && !f.Relay && !f.Record {
-			continue
-		}
-		e.startCamera(cam, f.MSE, f.Relay, f.Record)
 		engaged++
 		if f.MSE {
 			mseCount++
@@ -298,6 +309,67 @@ func (e *Engine) Start(cams []camera.Camera) {
 	if e.opts.RecordEnabled {
 		slog.Info("media recording paths", "record_dir", e.opts.RecordDir, "cache_dir", e.opts.CacheDir)
 	}
+}
+
+// AddCamera engages a camera in the running engine, exactly as Start does at
+// boot: it resolves the camera's sinks against the global toggles, and when at
+// least one is on it starts the recorder retry loop wired to the enabled sinks
+// (MSE broadcaster, RTSP relay, on-disk recording). It returns the resolved
+// features and true when the camera was engaged; false when the camera has no
+// Source, all sinks resolve off, or a camera with the same id is already
+// supervised. Safe to call at runtime — the camera-create endpoint uses it to
+// bring a freshly added camera online without a restart.
+func (e *Engine) AddCamera(cam camera.Camera) (camera.Features, bool) {
+	f := cam.ResolveFeatures(e.opts.MSEEnabled, e.opts.RelayEnabled, e.opts.RecordEnabled)
+	// Engage the camera if any sink is on. Recording counts on its own so a
+	// record-only camera (MSE + relay off) still connects and writes to disk.
+	if cam.Source == "" || (!f.MSE && !f.Relay && !f.Record) {
+		return f, false
+	}
+	// Reject a duplicate id (already supervised). Creation is admin-gated and
+	// effectively serialized, so the check-then-start window is not a concern.
+	e.mu.RLock()
+	_, exists := e.ctrls[cam.ID]
+	e.mu.RUnlock()
+	if exists {
+		return f, false
+	}
+	e.startCamera(cam, f.MSE, f.Relay, f.Record)
+	return f, true
+}
+
+// RemoveCamera stops and detaches a camera from the running engine: it cancels
+// the retry loop, closes the recorder (finalizing and indexing the in-progress
+// segment), tears down the live MSE broadcast and RTSP relay source, and drops
+// the camera's engine state. Returns false when the camera is not supervised.
+// Recorded segments already on disk are left untouched (retention prunes them).
+func (e *Engine) RemoveCamera(id string) bool {
+	e.mu.Lock()
+	ctrl := e.ctrls[id]
+	if ctrl == nil {
+		e.mu.Unlock()
+		return false
+	}
+	lb := e.broadcasters[id]
+	delete(e.ctrls, id)
+	delete(e.broadcasters, id)
+	for i, r := range e.recorders {
+		if r == ctrl.rec {
+			e.recorders = append(e.recorders[:i], e.recorders[i+1:]...)
+			break
+		}
+	}
+	e.mu.Unlock()
+
+	ctrl.cancel()    // stop the retry loop
+	ctrl.rec.Close() // unblock rec.Start and finalize the current segment
+	if e.relay != nil {
+		e.relay.ClearSource(id)
+	}
+	if lb != nil {
+		lb.Stop()
+	}
+	return true
 }
 
 func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
@@ -369,7 +441,11 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 		}
 	}
 
-	ctrl := &camCtrl{rec: rec, resumeCh: make(chan struct{})}
+	// A per-camera context derived from the engine's lets RemoveCamera stop just
+	// this camera's loop; an engine Close() cancels the parent and so tears every
+	// camera down too.
+	camCtx, camCancel := context.WithCancel(e.ctx)
+	ctrl := &camCtrl{rec: rec, resumeCh: make(chan struct{}), cancel: camCancel}
 
 	e.mu.Lock()
 	e.recorders = append(e.recorders, rec)
@@ -382,8 +458,8 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 		for {
 			// Park here while the camera is in privacy: the loop must not
 			// reconnect until privacy is turned off (SetPrivacy resumes it).
-			ctrl.waitWhilePaused(e.ctx)
-			if e.ctx.Err() != nil {
+			ctrl.waitWhilePaused(camCtx)
+			if camCtx.Err() != nil {
 				return
 			}
 			// rec.Start blocks until the stream ends; gortsplib's read timeout
@@ -411,7 +487,7 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 				slog.Info("media/recorder source ended, reconnecting", "camera", id)
 			}
 			select {
-			case <-e.ctx.Done():
+			case <-camCtx.Done():
 				return
 			case <-time.After(backoff):
 			}
@@ -472,10 +548,10 @@ func (e *Engine) GlobalToggles() (mse, relay, record bool) {
 // attempts; check over multiple scrapes for a stable view.
 type CameraStatus struct {
 	ID        string
-	Connected bool   // RTSP stream is connected and receiving video packets
-	Paused    bool   // privacy-paused (recording + transmission stopped)
-	MSEActive bool   // live MSE broadcaster has an active source
-	Recording bool   // the engine is writing segments to disk for this camera
+	Connected bool // RTSP stream is connected and receiving video packets
+	Paused    bool // privacy-paused (recording + transmission stopped)
+	MSEActive bool // live MSE broadcaster has an active source
+	Recording bool // the engine is writing segments to disk for this camera
 }
 
 // Status returns a snapshot of every camera supervised by the engine. The

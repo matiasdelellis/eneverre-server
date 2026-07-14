@@ -29,10 +29,18 @@ import (
 
 // App carries the shared state for every request handler.
 type App struct {
-	cfg     *config.Config
-	db      *sql.DB
-	creds   *streamauth.Store
-	cameras []camera.Camera
+	cfg   *config.Config
+	db    *sql.DB
+	creds *streamauth.Store
+	// camStore is the DB-backed source of truth for cameras. Reads for request
+	// handling go through the in-memory `cameras` snapshot (rebuilt on every
+	// create/delete); camStore is written on create/delete and read at startup.
+	camStore *camera.Store
+	// camerasMu guards the cameras slice, which is now mutable: the create/delete
+	// endpoints add and remove entries at runtime. Every handler reads it through
+	// getCamera/listCameras under this lock.
+	camerasMu sync.RWMutex
+	cameras   []camera.Camera
 	// engine is the embedded media engine (recording, RTSP relay, live MSE,
 	// playback). Always attached in normal operation (main builds and starts
 	// it unconditionally); the [media] section only tunes it. May be nil in
@@ -108,7 +116,7 @@ const (
 // the caller with flag/env/config precedence); pass <= 0 to fall back to the
 // built-in defaults. updateStores are the per-track auto-update stores; pass
 // nil when the feature is not configured.
-func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, cameras []camera.Camera, staticFS fs.FS, staticCacheControl string, accessTTL, refreshTTL int64, updateStores map[string]*updates.Store) *App {
+func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *camera.Store, cameras []camera.Camera, staticFS fs.FS, staticCacheControl string, accessTTL, refreshTTL int64, updateStores map[string]*updates.Store) *App {
 	if staticCacheControl == "" {
 		staticCacheControl = "no-cache"
 	}
@@ -122,6 +130,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, cameras []came
 		cfg:                cfg,
 		db:                 db,
 		creds:              creds,
+		camStore:           camStore,
 		cameras:            cameras,
 		staticDir:          resolveStaticDir(),
 		staticCacheControl: staticCacheControl,
@@ -152,6 +161,53 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, cameras []came
 		go a.startTokenCleaner(time.Duration(min) * time.Minute)
 	}
 	return a
+}
+
+// getCamera returns a copy of the camera with the given id (and true), or a
+// zero Camera and false. Taken under the read lock so it is safe against a
+// concurrent create/delete. Callers get a value copy, so mutating it never
+// races with another reader.
+func (a *App) getCamera(id string) (camera.Camera, bool) {
+	a.camerasMu.RLock()
+	defer a.camerasMu.RUnlock()
+	for i := range a.cameras {
+		if a.cameras[i].ID == id {
+			return a.cameras[i], true
+		}
+	}
+	return camera.Camera{}, false
+}
+
+// listCameras returns a snapshot copy of the current camera set under the read
+// lock, so iterating it never races with a create/delete.
+func (a *App) listCameras() []camera.Camera {
+	a.camerasMu.RLock()
+	defer a.camerasMu.RUnlock()
+	out := make([]camera.Camera, len(a.cameras))
+	copy(out, a.cameras)
+	return out
+}
+
+// addCamera appends a camera to the in-memory set under the write lock. Called
+// by the create endpoint after the DB row and engine pipeline are in place.
+func (a *App) addCamera(cam camera.Camera) {
+	a.camerasMu.Lock()
+	defer a.camerasMu.Unlock()
+	a.cameras = append(a.cameras, cam)
+}
+
+// removeCamera drops the camera with the given id from the in-memory set under
+// the write lock. Returns true when it was present.
+func (a *App) removeCamera(id string) bool {
+	a.camerasMu.Lock()
+	defer a.camerasMu.Unlock()
+	for i := range a.cameras {
+		if a.cameras[i].ID == id {
+			a.cameras = append(a.cameras[:i], a.cameras[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // SetMetrics attaches the metrics store. Called from main so the /api/metrics
@@ -209,50 +265,63 @@ func (a *App) startTokenCleaner(interval time.Duration) {
 // concurrently; failures (unreachable / auth) are logged and leave the list
 // empty, which clients treat as G.711-only.
 func (a *App) seedTalkCodecs() {
-	for i := range a.cameras {
-		c := a.cameras[i]
-		if !c.Capabilities.Talk || c.Backchannel == "" {
-			continue
-		}
-		go func() {
-			codecs, err := backchannel.ProbeCodecs(c.Backchannel)
-			if err != nil {
-				slog.Warn("talk codec probe failed", "camera", c.ID, "err", err)
-				return
-			}
-			a.talkCodecsMu.Lock()
-			a.talkCodecs[c.ID] = codecs
-			a.talkCodecsMu.Unlock()
-			slog.Info("talk codecs discovered", "camera", c.ID, "codecs", codecs)
-		}()
+	for _, c := range a.listCameras() {
+		a.seedTalkCodecsFor(c)
 	}
+}
+
+// seedTalkCodecsFor probes one camera's backchannel codecs in the background
+// (no-op for cameras without talk). Called at startup by seedTalkCodecs and
+// again when a camera is created, so a newly added talk-capable camera advertises
+// its codecs without a restart.
+func (a *App) seedTalkCodecsFor(c camera.Camera) {
+	if !c.Capabilities.Talk || c.Backchannel == "" {
+		return
+	}
+	go func() {
+		codecs, err := backchannel.ProbeCodecs(c.Backchannel)
+		if err != nil {
+			slog.Warn("talk codec probe failed", "camera", c.ID, "err", err)
+			return
+		}
+		a.talkCodecsMu.Lock()
+		a.talkCodecs[c.ID] = codecs
+		a.talkCodecsMu.Unlock()
+		slog.Info("talk codecs discovered", "camera", c.ID, "codecs", codecs)
+	}()
 }
 
 // seedPrivacy queries each privacy-capable camera's slow heartbeat once to
 // initialize the in-memory privacy state. Cameras are polled concurrently;
 // failures (unreachable / bad token) are logged and leave the state false.
 func (a *App) seedPrivacy() {
-	for i := range a.cameras {
-		c := a.cameras[i]
-		if !c.Capabilities.Privacy || c.ThinginoURL == "" || c.ThinginoAPIKey == "" {
-			continue
-		}
-		go func() {
-			hb, err := thingino.State(c.ThinginoURL, c.ThinginoAPIKey)
-			if err != nil {
-				slog.Warn("privacy seed failed", "camera", c.ID, "err", err)
-				return
-			}
-			a.privacyMu.Lock()
-			a.privacy[c.ID] = hb.PrivacyEnabled
-			a.privacyMu.Unlock()
-			// A camera that booted in privacy must also be paused (stop
-			// recording + transmission), not just reflected in the state map.
-			if hb.PrivacyEnabled && a.engine != nil {
-				a.engine.SetPrivacy(c.ID, true)
-			}
-		}()
+	for _, c := range a.listCameras() {
+		a.seedPrivacyFor(c)
 	}
+}
+
+// seedPrivacyFor queries one thingino camera's privacy heartbeat in the
+// background (no-op for non-thingino or privacy-disabled cameras). Called at
+// startup by seedPrivacy and again when a camera is created.
+func (a *App) seedPrivacyFor(c camera.Camera) {
+	if !c.Capabilities.Privacy || c.ThinginoURL == "" || c.ThinginoAPIKey == "" {
+		return
+	}
+	go func() {
+		hb, err := thingino.State(c.ThinginoURL, c.ThinginoAPIKey)
+		if err != nil {
+			slog.Warn("privacy seed failed", "camera", c.ID, "err", err)
+			return
+		}
+		a.privacyMu.Lock()
+		a.privacy[c.ID] = hb.PrivacyEnabled
+		a.privacyMu.Unlock()
+		// A camera that booted in privacy must also be paused (stop
+		// recording + transmission), not just reflected in the state map.
+		if hb.PrivacyEnabled && a.engine != nil {
+			a.engine.SetPrivacy(c.ID, true)
+		}
+	}()
 }
 
 func resolveStaticDir() string {
@@ -290,6 +359,12 @@ func (a *App) Handler() http.Handler {
 
 	// cameras and camera operations
 	mux.HandleFunc("GET /api/cameras", a.handleCameras)
+	// Camera CRUD (admin only). Create/probe live under the plural collection;
+	// delete uses the singular per-camera prefix, consistent with the other
+	// per-camera operations below.
+	mux.HandleFunc("POST /api/cameras", a.handleCreateCamera)
+	mux.HandleFunc("POST /api/cameras/probe", a.handleProbeCamera)
+	mux.HandleFunc("DELETE /api/camera/{cam_id}", a.handleDeleteCamera)
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/move", a.handlePTZMove)
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/home", a.handlePTZHome)
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/recalibrate", a.handlePTZRecalibrate)
@@ -524,10 +599,11 @@ func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
 		gMSE, gRelay, gRecord = a.engine.GlobalToggles()
 	}
 	creds := a.creds.Current()
+	cams := a.listCameras()
 	a.privacyMu.RLock()
 	a.talkCodecsMu.RLock()
-	out := make([]camera.Camera, len(a.cameras))
-	for i, c := range a.cameras {
+	out := make([]camera.Camera, len(cams))
+	for i, c := range cams {
 		f := c.ResolveFeatures(gMSE, gRelay, gRecord)
 		out[i] = c.WithEngineURLs(a.cfg, creds, r.Host, f)
 		out[i].Privacy = a.privacy[c.ID]
@@ -548,8 +624,8 @@ func (a *App) handlePTZMove(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
 		httpError(w, http.StatusNotFound, "PTZ not available")
 		return
 	}
@@ -570,8 +646,8 @@ func (a *App) handlePTZHome(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
 		httpError(w, http.StatusNotFound, "PTZ not available")
 		return
 	}
@@ -590,8 +666,8 @@ func (a *App) handlePTZRecalibrate(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
 		httpError(w, http.StatusNotFound, "PTZ not available")
 		return
 	}
@@ -615,8 +691,8 @@ func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.Privacy {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.Privacy {
 		httpError(w, http.StatusNotFound, "Privacy not available")
 		return
 	}
@@ -677,8 +753,8 @@ func (a *App) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
 		httpError(w, http.StatusNotFound, "Camera not found")
 		return
 	}

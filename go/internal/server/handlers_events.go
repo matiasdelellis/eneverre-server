@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"eneverre/internal/camera"
 	"eneverre/internal/events"
 )
 
@@ -38,7 +37,7 @@ func (a *App) handleWebhookEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	camID := r.PathValue("cam_id")
-	if camera.Get(a.cameras, camID) == nil {
+	if _, ok := a.getCamera(camID); !ok {
 		httpError(w, http.StatusNotFound, "Camera not found")
 		return
 	}
@@ -159,7 +158,7 @@ func (a *App) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	camID := r.PathValue("cam_id")
-	if camera.Get(a.cameras, camID) == nil {
+	if _, ok := a.getCamera(camID); !ok {
 		httpError(w, http.StatusNotFound, "Camera not found")
 		return
 	}
@@ -195,7 +194,7 @@ func (a *App) handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	camID := r.PathValue("cam_id")
-	if camera.Get(a.cameras, camID) == nil {
+	if _, ok := a.getCamera(camID); !ok {
 		httpError(w, http.StatusNotFound, "Camera not found")
 		return
 	}

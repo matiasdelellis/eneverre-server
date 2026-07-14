@@ -83,6 +83,9 @@
             <li role="none">
               <button id="users-btn" class="user-menu-item" role="menuitem" hidden>Manage users</button>
             </li>
+            <li role="none">
+              <button id="cameras-btn" class="user-menu-item" role="menuitem" hidden>Manage cameras</button>
+            </li>
             <li role="none" class="user-menu-item-sm" hidden>
               <button id="audio-toggle-menu" class="user-menu-item" role="menuitem" hidden>Toggle audio</button>
             </li>
@@ -245,6 +248,132 @@
         <div class="user-edit-actions">
           <button type="button" id="user-edit-cancel" class="ghost">Cancel</button>
           <button type="submit" class="primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <section id="cameras-view" class="users-view" hidden>
+    <header class="users-topbar">
+      <button id="cameras-back" class="ghost">&larr; Back to cameras</button>
+      <strong>Cameras</strong>
+      <span class="grow"></span>
+      <button id="cameras-new" class="primary" hidden>+ Add camera</button>
+    </header>
+    <div class="users-body">
+      <p id="cameras-status" class="error" hidden></p>
+
+      <section id="cameras-list-section" class="users-card" hidden>
+        <h2>All cameras</h2>
+        <div class="users-table cameras-table">
+          <div class="users-row cameras-row users-header">
+            <div>Name</div>
+            <div>ID</div>
+            <div>Location</div>
+            <div class="users-actions-col">Actions</div>
+          </div>
+          <div id="cameras-rows"></div>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <div id="cam-wizard-modal" class="user-edit-modal cam-wizard-modal" hidden>
+    <div class="user-edit-card cam-wizard-card">
+      <h2 id="cam-wizard-title">Add camera</h2>
+      <ol class="cam-wizard-steps" id="cam-wizard-steps">
+        <li data-step="1">Basics</li>
+        <li data-step="2">Source</li>
+        <li data-step="3">Options</li>
+        <li data-step="4">Thingino</li>
+        <li data-step="5">Review</li>
+      </ol>
+      <form id="cam-wizard-form" class="users-form" autocomplete="off">
+        <!-- Step 1: basics -->
+        <div class="cam-step" data-step="1">
+          <label>ID <span class="req">*</span>
+            <input name="id" required placeholder="e.g. frente" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" />
+            <small class="muted">Letters, digits, "-" or "_". Used in URLs and the recording path — cannot be changed later.</small>
+          </label>
+          <label>Name
+            <input name="name" placeholder="e.g. Front door" />
+          </label>
+          <label>Location
+            <input name="location" placeholder="e.g. Exterior" />
+          </label>
+          <label>Comment
+            <input name="comment" placeholder="Optional note" />
+          </label>
+        </div>
+
+        <!-- Step 2: source -->
+        <div class="cam-step" data-step="2" hidden>
+          <label>RTSP source URL <span class="req">*</span>
+            <input name="source" placeholder="rtsp://user:pass@192.168.1.50/ch0" />
+            <small class="muted">The camera's own RTSP URL, with credentials. Never exposed to clients.</small>
+          </label>
+          <label>Transport
+            <select name="transport">
+              <option value="">auto (UDP, fall back to TCP)</option>
+              <option value="tcp">tcp (reliable; best for lossy links)</option>
+              <option value="udp">udp</option>
+            </select>
+          </label>
+          <div class="cam-probe">
+            <button type="button" id="cam-probe-btn" class="ghost">Test connection</button>
+            <span id="cam-probe-result" class="cam-probe-result muted"></span>
+          </div>
+        </div>
+
+        <!-- Step 3: media options -->
+        <div class="cam-step" data-step="3" hidden>
+          <label class="cam-check"><input type="checkbox" name="record" checked /> Record to disk <small class="muted">(needs [media] record = true globally)</small></label>
+          <label class="cam-check"><input type="checkbox" name="mse" checked /> Live MSE feed (browser)</label>
+          <label class="cam-check"><input type="checkbox" name="relay" checked /> RTSP relay</label>
+          <label class="cam-check"><input type="checkbox" name="privacy" checked /> Offer privacy toggle</label>
+          <label class="cam-check"><input type="checkbox" name="playback" /> Advertise playback capability</label>
+          <div class="cam-row-2">
+            <label>Width <input name="width" type="number" min="0" placeholder="1920" /></label>
+            <label>Height <input name="height" type="number" min="0" placeholder="1080" /></label>
+          </div>
+          <label>Backchannel URL (two-way audio)
+            <input name="backchannel" placeholder="rtsp://user:pass@192.168.1.50:554/ch0" />
+          </label>
+        </div>
+
+        <!-- Step 4: thingino (optional) -->
+        <div class="cam-step" data-step="4" hidden>
+          <p class="muted">Optional — only for <a href="https://thingino.com/" target="_blank" rel="noopener">Thingino</a> cameras. Enables thumbnails, firmware privacy blackout and PTZ.</p>
+          <label>Thingino URL
+            <input name="thingino_url" placeholder="http://192.168.1.50" />
+          </label>
+          <label>Thingino API key
+            <input name="thingino_api_key" placeholder="API key" />
+          </label>
+          <label class="cam-check"><input type="checkbox" name="ptz" /> PTZ camera</label>
+          <div class="cam-row-2">
+            <label>Home X <input name="home_x" type="number" step="any" placeholder="unset" /></label>
+            <label>Home Y <input name="home_y" type="number" step="any" placeholder="unset" /></label>
+          </div>
+          <div class="cam-row-2">
+            <label>Privacy X <input name="privacy_x" type="number" step="any" placeholder="unset" /></label>
+            <label>Privacy Y <input name="privacy_y" type="number" step="any" placeholder="unset" /></label>
+          </div>
+        </div>
+
+        <!-- Step 5: review -->
+        <div class="cam-step" data-step="5" hidden>
+          <p class="muted">Review and create. The camera comes online immediately — no restart.</p>
+          <dl class="cam-review" id="cam-review"></dl>
+        </div>
+
+        <p id="cam-wizard-status" class="error" hidden></p>
+        <div class="user-edit-actions cam-wizard-actions">
+          <button type="button" id="cam-wizard-cancel" class="ghost">Cancel</button>
+          <span class="grow"></span>
+          <button type="button" id="cam-wizard-back" class="ghost" hidden>Back</button>
+          <button type="button" id="cam-wizard-next" class="primary">Next</button>
+          <button type="submit" id="cam-wizard-create" class="primary" hidden>Create camera</button>
         </div>
       </form>
     </div>

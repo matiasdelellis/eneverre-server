@@ -30,6 +30,13 @@ Config resolution matches the Python app (`app/config.py`):
 |-------------|---------------------------------------------------|-------------------------|
 | Config file | `/etc/eneverre/eneverre.ini`, `./data/eneverre.ini` | `ENEVERRE_CONFIG_PATH`  |
 | Cameras dir | `/etc/eneverre/cameras.d`, `./data/cameras.d`     | `ENEVERRE_CAMERAS_DIR`  |
+
+> **Cameras are DB-backed.** The `cameras.d/*.ini` files are only an *initial
+> seed*, imported into the database once on first start (when no cameras exist
+> yet). After that, add and remove cameras from the web UI (**user menu →
+> Manage cameras**, admin only) or the API (`POST /api/cameras`,
+> `DELETE /api/camera/{id}`); changes take effect immediately, no restart.
+> Editing an INI file after the first run has no effect.
 | Database    | `/var/run/eneverre/eneverre.db`, `./data/eneverre.db` | `ENEVERRE_DB_PATH`  |
 | Static UI   | `./app/static`, `../app/static`, then embedded    | `ENEVERRE_STATIC_DIR`   |
 | Log level   | `[server] log_level` (default `info`)             | `ENEVERRE_LOG_LEVEL`    |

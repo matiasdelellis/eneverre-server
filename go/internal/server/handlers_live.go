@@ -2,8 +2,6 @@ package server
 
 import (
 	"net/http"
-
-	"eneverre/internal/camera"
 )
 
 // handleLiveInfo reports whether the embedded engine has a live source for the
@@ -19,8 +17,8 @@ func (a *App) handleLiveInfo(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok {
 		httpError(w, http.StatusNotFound, "Camera not found")
 		return
 	}
@@ -44,8 +42,8 @@ func (a *App) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok {
 		httpError(w, http.StatusNotFound, "Camera not found")
 		return
 	}

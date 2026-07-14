@@ -12,7 +12,6 @@ import (
 
 	"eneverre/internal/auth"
 	"eneverre/internal/backchannel"
-	"eneverre/internal/camera"
 )
 
 // talkSubprotocol is the WebSocket subprotocol the browser client offers. The
@@ -77,8 +76,8 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cam := camera.Get(a.cameras, r.PathValue("cam_id"))
-	if cam == nil || !cam.Capabilities.Talk || cam.Backchannel == "" {
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.Talk || cam.Backchannel == "" {
 		httpError(w, http.StatusNotFound, "Two-way audio not available")
 		return
 	}

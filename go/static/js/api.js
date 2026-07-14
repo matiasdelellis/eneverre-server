@@ -77,3 +77,32 @@ export async function fetchCameras() {
   setCamerasCache(s.camerasCache);
   return s.camerasCache;
 }
+
+/**
+ * Drop the cached camera list so the next fetchCameras() (sidebar, wall) hits
+ * the server. Call after a create/delete so the change shows up everywhere.
+ */
+export function invalidateCameras() {
+  setCamerasCache(null);
+}
+
+/** Create a camera. body is the create request; returns the new Camera. */
+export async function createCamera(body) {
+  return api("/api/cameras", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Delete a camera by id. */
+export async function deleteCamera(id) {
+  return api(`/api/camera/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/**
+ * Probe an RTSP source before saving. Always resolves (never throws on an
+ * unreachable camera): { ok: true, codecs, width, height } or { ok: false, error }.
+ */
+export async function probeCamera(source, transport) {
+  return api("/api/cameras/probe", {
+    method: "POST",
+    body: JSON.stringify({ source, transport }),
+  });
+}

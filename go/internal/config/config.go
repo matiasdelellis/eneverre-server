@@ -112,14 +112,22 @@ func Load(opts LoadOptions) (*Config, error) {
 		}
 	}
 
+	// The cameras dir need not exist: cameras live in the DB now, and this
+	// directory is only the source of the one-time INI seed (see
+	// camera.SeedFromINI). A missing cameras.d simply means "no seed", not a
+	// fatal error — so, like the DB path, default to the last candidate and let
+	// the seed find no files when it isn't there.
 	camDir := opts.CamerasDir
 	if camDir == "" {
 		camDir = os.Getenv("ENEVERRE_CAMERAS_DIR")
 	}
 	if camDir == "" {
-		var err error
-		if camDir, err = firstExisting(camerasDirs, "cameras.d"); err != nil {
-			return nil, err
+		camDir = camerasDirs[len(camerasDirs)-1]
+		for _, p := range camerasDirs {
+			if _, err := os.Stat(p); err == nil {
+				camDir = p
+				break
+			}
 		}
 	}
 

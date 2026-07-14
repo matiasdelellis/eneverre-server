@@ -63,6 +63,38 @@ var schema = []string{
 		password TEXT NOT NULL,
 		rotated_at INTEGER NOT NULL
 	)`,
+	// Cameras are DB-backed: this table is the source of truth. The per-camera
+	// .ini files under [server] cameras_dir are only an initial seed, imported
+	// once when this table is empty (see camera.SeedFromINI); after that they
+	// are ignored and cameras are created/deleted through the API. Booleans are
+	// stored as 0/1 with the same defaults the INI parser applies; the thingino
+	// PTZ coordinates default to -1 ("unset"). sort_order preserves the display
+	// order (the INI seed used the alphabetical filename order).
+	`CREATE TABLE IF NOT EXISTS cameras (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL DEFAULT '',
+		comment TEXT NOT NULL DEFAULT '',
+		location TEXT NOT NULL DEFAULT '',
+		source TEXT NOT NULL DEFAULT '',
+		backchannel TEXT NOT NULL DEFAULT '',
+		transport TEXT NOT NULL DEFAULT '',
+		record INTEGER NOT NULL DEFAULT 1,
+		mse INTEGER NOT NULL DEFAULT 1,
+		relay INTEGER NOT NULL DEFAULT 1,
+		privacy INTEGER NOT NULL DEFAULT 1,
+		playback INTEGER NOT NULL DEFAULT 0,
+		width INTEGER NOT NULL DEFAULT 16,
+		height INTEGER NOT NULL DEFAULT 9,
+		thingino_url TEXT NOT NULL DEFAULT '',
+		thingino_api_key TEXT NOT NULL DEFAULT '',
+		ptz INTEGER NOT NULL DEFAULT 0,
+		home_x REAL NOT NULL DEFAULT -1,
+		home_y REAL NOT NULL DEFAULT -1,
+		privacy_x REAL NOT NULL DEFAULT -1,
+		privacy_y REAL NOT NULL DEFAULT -1,
+		sort_order INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL DEFAULT 0
+	)`,
 }
 
 // Open opens the SQLite database at path (creating its directory), enabling WAL

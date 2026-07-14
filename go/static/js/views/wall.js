@@ -447,7 +447,7 @@ export function initWall() {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
     if (document.querySelector(
-      "#help-overlay:not([hidden]), #dlg-modal:not([hidden]), #user-edit-modal:not([hidden]), #users-view:not([hidden]), #device-auth-view:not([hidden])",
+      "#help-overlay:not([hidden]), #dlg-modal:not([hidden]), #user-edit-modal:not([hidden]), #users-view:not([hidden]), #cameras-view:not([hidden]), #cam-wizard-modal:not([hidden]), #device-auth-view:not([hidden])",
     )) return;
     const { wallFilter, camerasCache } = getState();
     if (wallFilter.type === "cam") {

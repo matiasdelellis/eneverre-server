@@ -112,6 +112,80 @@ type Camera struct {
 	PTZAlias      bool `json:"ptz"`
 }
 
+// Spec is the persistable configuration of a camera: the raw fields stored in
+// the DB (and, before the DB migration, in the per-camera INI). It excludes
+// everything derived or runtime — capabilities, live stream URLs, and the live
+// privacy state — which Camera() computes. Both the INI seed importer
+// (loadOne) and the DB store map into a Spec, so the derivation of the public
+// Camera model lives in exactly one place.
+type Spec struct {
+	ID       string
+	Name     string
+	Comment  string
+	Location string
+
+	Source      string
+	Backchannel string
+	Transport   string
+
+	Record   bool
+	MSE      bool
+	Relay    bool
+	Privacy  bool // whether the privacy toggle is offered (INI `privacy`, default true)
+	Playback bool
+
+	Width  int
+	Height int
+
+	ThinginoURL    string
+	ThinginoAPIKey string
+	PTZ            bool
+	HomeX          float64
+	HomeY          float64
+	PrivacyX       float64
+	PrivacyY       float64
+}
+
+// Camera expands a Spec into the public Camera model, deriving capabilities
+// exactly as the INI loader historically did: Thumbnail follows a thingino API
+// key, Talk follows a backchannel URL, PTZ/Playback/Privacy come straight from
+// the spec. The live-privacy state and engine stream URLs are left at their
+// zero values; the server fills them per request.
+func (s Spec) Camera() Camera {
+	hasAPIKey := s.ThinginoAPIKey != ""
+	return Camera{
+		ID:       s.ID,
+		Name:     s.Name,
+		Comment:  s.Comment,
+		Location: s.Location,
+		Capabilities: Capabilities{
+			Privacy:   s.Privacy,
+			Thumbnail: hasAPIKey,
+			Playback:  s.Playback,
+			PTZ:       s.PTZ,
+			Talk:      s.Backchannel != "",
+		},
+		RTSP:           s.Source,
+		Backchannel:    s.Backchannel,
+		Source:         s.Source,
+		Transport:      s.Transport,
+		Record:         s.Record,
+		MSE:            s.MSE,
+		Relay:          s.Relay,
+		Width:          s.Width,
+		Height:         s.Height,
+		ThinginoURL:    s.ThinginoURL,
+		ThinginoAPIKey: s.ThinginoAPIKey,
+		HomeX:          s.HomeX,
+		HomeY:          s.HomeY,
+		PrivacyX:       s.PrivacyX,
+		PrivacyY:       s.PrivacyY,
+		Privacy:        false,
+		PlaybackAlias:  s.Playback,
+		PTZAlias:       s.PTZ,
+	}
+}
+
 func toFloat(value string, def float64) float64 {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -124,41 +198,49 @@ func toFloat(value string, def float64) float64 {
 	return n
 }
 
-// Load reads every *.ini under the cameras dir (sorted), in startup order.
-// The camera's `source` URL is stored as the raw INI value. The embedded
-// media engine is always running, so /api/cameras rebuilds the public RTSP
-// URL per request from the current rotating credentials via WithEngineURLs,
-// so credential rotation takes effect without a restart.
-func Load(cfg *config.Config) []Camera {
+// LoadSpecs reads every *.ini under the cameras dir (sorted, in filename order)
+// and returns their raw configuration specs. It is the reader behind the
+// one-time INI → DB seed (see SeedFromINI); it does not touch the DB itself.
+func LoadSpecs(cfg *config.Config) []Spec {
 	paths, _ := filepath.Glob(filepath.Join(cfg.CamerasDir, "*.ini"))
 	sort.Strings(paths)
 
-	cams := make([]Camera, 0, len(paths))
+	specs := make([]Spec, 0, len(paths))
 	for _, p := range paths {
-		if cam, ok := loadOne(p); ok {
-			cams = append(cams, cam)
+		if s, ok := loadSpec(p); ok {
+			specs = append(specs, s)
 		}
 	}
-	slog.Info("loaded cameras", "count", len(cams), "dir", cfg.CamerasDir)
-	return cams
+	return specs
 }
 
+// loadOne parses one camera INI into the public Camera model. Kept as a thin
+// wrapper over loadSpec for tests and any caller that wants the derived model
+// directly.
 func loadOne(path string) (Camera, bool) {
+	s, ok := loadSpec(path)
+	if !ok {
+		return Camera{}, false
+	}
+	return s.Camera(), true
+}
+
+func loadSpec(path string) (Spec, bool) {
 	name := filepath.Base(path)
 	f, err := ini.LoadSources(ini.LoadOptions{Insensitive: true}, path)
 	if err != nil {
 		slog.Warn("skipping camera ini", "file", name, "err", err)
-		return Camera{}, false
+		return Spec{}, false
 	}
 	if !f.HasSection("camera") {
 		slog.Warn("skipping camera ini: missing [camera] section", "file", name)
-		return Camera{}, false
+		return Spec{}, false
 	}
 	cam := f.Section("camera")
 	id := cam.Key("id").String()
 	if id == "" {
 		slog.Warn("skipping camera ini: missing id", "file", name)
-		return Camera{}, false
+		return Spec{}, false
 	}
 
 	thingino := map[string]string{}
@@ -186,40 +268,31 @@ func loadOne(path string) (Camera, bool) {
 	// `privacy = false` marks an always-on camera the operator never wants paused.
 	privacyAllowed := cam.Key("privacy").MustBool(true)
 
-	hasAPIKey := thingino["thingino_api_key"] != ""
 	ptz := strings.ToLower(strings.TrimSpace(thingino["ptz"])) == "true"
 	playback := cam.Key("playback").MustBool(false)
 
-	return Camera{
-		ID:       id,
-		Name:     cam.Key("name").String(),
-		Comment:  cam.Key("comment").String(),
-		Location: cam.Key("location").String(),
-		Capabilities: Capabilities{
-			Privacy:   privacyAllowed,
-			Thumbnail: hasAPIKey,
-			Playback:  playback,
-			PTZ:       ptz,
-			Talk:      backchannel != "",
-		},
-		RTSP:           source,
-		Backchannel:    backchannel,
+	return Spec{
+		ID:             id,
+		Name:           cam.Key("name").String(),
+		Comment:        cam.Key("comment").String(),
+		Location:       cam.Key("location").String(),
 		Source:         source,
+		Backchannel:    backchannel,
 		Transport:      transport,
 		Record:         record,
 		MSE:            mse,
 		Relay:          relay,
+		Privacy:        privacyAllowed,
+		Playback:       playback,
 		Width:          cam.Key("width").MustInt(16),
 		Height:         cam.Key("height").MustInt(9),
 		ThinginoURL:    thingino["thingino_url"],
 		ThinginoAPIKey: thingino["thingino_api_key"],
+		PTZ:            ptz,
 		HomeX:          toFloat(thingino["home_x"], -1),
 		HomeY:          toFloat(thingino["home_y"], -1),
 		PrivacyX:       toFloat(thingino["privacy_x"], -1),
 		PrivacyY:       toFloat(thingino["privacy_y"], -1),
-		Privacy:        false,
-		PlaybackAlias:  playback,
-		PTZAlias:       ptz,
 	}, true
 }
 

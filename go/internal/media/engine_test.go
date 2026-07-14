@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"eneverre/internal/camera"
 )
 
 // TestCamCtrlPauseResume exercises the retry-loop pause control the privacy
@@ -74,5 +76,33 @@ func TestCamCtrlWaitCancels(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("waitWhilePaused did not return on context cancel")
+	}
+}
+
+// TestAddCameraGating checks AddCamera's engage decision without spawning a
+// recorder goroutine: a camera with no Source, or with every sink resolving
+// off, is not engaged. (The happy path connects to real RTSP and is covered by
+// integration use, not this unit test.)
+func TestAddCameraGating(t *testing.T) {
+	// MSE on, relay+record off: New binds no listener and opens no index.
+	e, err := New(Options{MSEEnabled: true})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer e.Close()
+
+	// No Source -> never engaged, even with sinks on.
+	noSource := camera.Camera{ID: "a", Source: "", MSE: true, Relay: true, Record: true}
+	if _, ok := e.AddCamera(noSource); ok {
+		t.Error("AddCamera with empty Source engaged; want false")
+	}
+	// Source present but all per-camera sinks off -> not engaged.
+	allOff := camera.Camera{ID: "b", Source: "rtsp://x/b", MSE: false, Relay: false, Record: false}
+	if _, ok := e.AddCamera(allOff); ok {
+		t.Error("AddCamera with all sinks off engaged; want false")
+	}
+	// Removing a camera that was never added is a no-op.
+	if e.RemoveCamera("ghost") {
+		t.Error("RemoveCamera(ghost) = true; want false")
 	}
 }

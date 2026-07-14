@@ -37,6 +37,7 @@ export async function logout(silent = false) {
     { teardownPlaybackTimeline },
     { hidePtzModal },
     { exitUsersView },
+    { exitCamerasView },
     { hideDeviceAuth },
     { stopSidebarThumbRefresh },
   ] = await Promise.all([
@@ -44,6 +45,7 @@ export async function logout(silent = false) {
     import("./playback.js"),
     import("./ptz.js"),
     import("./users.js"),
+    import("./cameras.js"),
     import("./device-auth.js"),
     import("./sidebar.js"),
   ]);
@@ -51,6 +53,7 @@ export async function logout(silent = false) {
   teardownPlaybackTimeline();
   hidePtzModal();
   exitUsersView();
+  exitCamerasView();
   hideDeviceAuth();
   $("#wall").innerHTML = "";
   $("#viewer-side-scroll").innerHTML = "";

@@ -226,10 +226,19 @@ see request query strings and the more verbose media-engine traces
 (watchdog events, segment rotations, relay auth attempts).
 
 ## Behavioral quirks
-- Cameras are loaded **once at startup** from `/etc/eneverre/cameras.d/*.ini`
-  (with `./data/cameras.d/*.ini` as a dev fallback, overridable via
-  `ENEVERRE_CAMERAS_DIR`). Edits require a restart. A file missing a `[camera]`
-  section or `id` is skipped.
+- Cameras are **DB-backed** — the `cameras` table is the source of truth. The
+  per-camera `*.ini` files under `cameras_dir` are only an **initial seed**:
+  `camera.SeedFromINI` imports them once when the table is empty (a fresh
+  install, or an upgrade from the old file-based layout), then they are ignored.
+  A file missing a `[camera]` section or `id` is skipped during the seed.
+  Thereafter cameras are created and deleted through the admin API
+  (`POST /api/cameras`, `DELETE /api/camera/{id}`) and the web wizard
+  ("Manage cameras" in the user menu). Create/delete take effect **without a
+  restart**: `engine.AddCamera`/`RemoveCamera` bring the camera's recorder,
+  relay and MSE pipeline up or down live, and the server's in-memory camera set
+  (guarded by `camerasMu`) is updated in step. `store.go` maps rows ↔
+  `camera.Spec`; `Spec.Camera()` derives the public model (capabilities) exactly
+  as the INI loader did, so both paths agree.
 - **Single streaming mode (embedded engine).** When `[media]` is set,
   `GET /api/cameras` rewrites each camera's stream fields via
   `WithEngineURLs`: `live_mse` becomes the same-origin MSE path
@@ -358,11 +367,22 @@ see request query strings and the more verbose media-engine traces
   response so clients can detect the migration.
 
 ## Adding a new camera
+The easiest way is the web wizard: **user menu → Manage cameras → Add camera**
+(admin only). It walks through basics, RTSP source (with a "test connection"
+probe), media options, and the optional Thingino section, then creates the
+camera live via `POST /api/cameras` — no restart. Delete is a button on the same
+screen (`DELETE /api/camera/{id}`), which stops the pipeline and removes the row;
+recorded footage on disk is left for retention to prune.
+
+The INI files are now only the **initial seed** (imported once into the DB when
+the `cameras` table is empty), so hand-editing them is a first-run/bootstrap
+path, not the normal way to manage cameras. To seed via INI on a fresh install:
+
 1. Drop a new `<id>.ini` under `data/cameras.d/` (or `/etc/eneverre/cameras.d/`
-   in production). Use `doc/example/cameras.d/camera01.ini` (PTZ Thingino) and
-   `doc/example/cameras.d/camera02.ini` (fixed) as templates — every key is
-   documented in `doc/example/README.md`. The file's `id` is the path the
-   embedded engine records/relays under; the same id was the path the
+   in production) **before first start**. Use `doc/example/cameras.d/camera01.ini`
+   (PTZ Thingino) and `doc/example/cameras.d/camera02.ini` (fixed) as templates —
+   every key is documented in `doc/example/README.md`. The file's `id` is the
+   path the embedded engine records/relays under; the same id was the path the
    external MediaMTX used to publish each camera when that integration was
    the only mode (pre-rename historical note in `doc/MEDIA.md`).
 2. Add a `[thingino]` section for PTZ / thumbnail credentials and the firmware
@@ -380,7 +400,9 @@ see request query strings and the more verbose media-engine traces
    `record = false` to opt this camera out of disk recording while keeping
    the live MSE feed and RTSP relay (`/recordings/*` for it answer 404) —
    useful for privacy-sensitive cameras you only want to watch live.
-4. Restart the API (cameras are loaded at startup).
+4. Start the API. The INI is imported into the `cameras` table on first run
+   (when the table is empty); after that, manage cameras through the API/wizard
+   — later INI edits are ignored.
 
 ## Frontend notes
 - Single static page in `go/static/`, embedded in the binary. No build step.

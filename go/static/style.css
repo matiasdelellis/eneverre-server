@@ -1356,6 +1356,54 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .user-edit-card h2 { margin: 0; font-size: 18px; }
 .user-edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
+/* --- Camera management + create wizard ------------------------------- */
+/* Give the location column a bit more room than the users table default. */
+.cameras-row { grid-template-columns: 1.2fr 1fr 1fr auto; }
+.cam-caps { display: block; font-size: 11px; font-weight: 400; }
+
+.cam-wizard-card { width: 460px; }
+.cam-wizard-steps {
+  list-style: none;
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.cam-wizard-steps li {
+  flex: 1 1 auto;
+  text-align: center;
+  padding: 5px 4px;
+  border-radius: 6px;
+  background: var(--panel-2, var(--panel));
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cam-wizard-steps li.active { border-color: var(--accent); color: var(--fg); font-weight: 600; }
+.cam-wizard-steps li.done { color: var(--good); }
+
+.cam-step { display: flex; flex-direction: column; gap: 10px; }
+.cam-step small.muted { font-weight: 400; }
+.cam-step .req { color: var(--danger); }
+.cam-check { flex-direction: row; align-items: center; gap: 8px; }
+.cam-check input { width: auto; }
+.cam-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+.cam-probe { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cam-probe-result { font-size: 12px; }
+.cam-probe-result.ok { color: var(--good); }
+.cam-probe-result.error { color: var(--danger); }
+
+.cam-review { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+.cam-review > div { display: grid; grid-template-columns: 130px 1fr; gap: 8px; font-size: 13px; }
+.cam-review dt { color: var(--muted); }
+.cam-review dd { margin: 0; word-break: break-all; }
+
+.cam-wizard-actions { align-items: center; }
+.cam-wizard-actions .grow { flex: 1; }
+
 /* Generic confirm/prompt/alert dialog — used to replace native
    window.confirm / window.prompt / window.alert, which the browser
    throttles after a few uses ("Prevent this page from creating
