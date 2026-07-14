@@ -60,7 +60,9 @@ and prints it once to the log. Open <http://localhost:8080/>, log in, and
 change it before exposing the port beyond `localhost`.
 
 See [`doc/RELEASES.md`](doc/RELEASES.md) for install-script flags, the
-`systemd` service, and how to verify a download.
+`systemd` service, and how to verify a download. On **Windows**, grab the
+binary from Releases and follow [`doc/WINDOWS.md`](doc/WINDOWS.md) to run it
+as a service.
 
 [releases]: https://github.com/matiasdelellis/eneverre-server/releases
 
@@ -111,6 +113,8 @@ This is the Android client. 😍
   clients.
 - [`doc/RELEASES.md`](doc/RELEASES.md) — release process, supported
   platforms, and how to verify a download.
+- [`doc/WINDOWS.md`](doc/WINDOWS.md) — installing on Windows and running it
+  as a service (NSSM / WinSW).
 - [`go/README.md`](go/README.md) — Go internals: layout and operational
   notes.
 
