@@ -1,11 +1,14 @@
 import { escapeHtml } from "../util/dom.js";
-import { api, createCamera, deleteCamera, probeCamera, invalidateCameras } from "../api.js";
+import {
+  api, createCamera, updateCamera, getCameraConfig, deleteCamera, probeCamera, invalidateCameras,
+} from "../api.js";
 import { getState } from "../state.js";
 import { confirmModal } from "../ui/dialog.js";
 import { closeUserMenu } from "../ui/user-menu.js";
 
 let camerasCache = null; // [Camera, ...] as returned by GET /api/cameras
 let wizardStep = 1;
+let editingId = null; // non-null when the wizard is editing an existing camera
 const LAST_STEP = 5;
 
 // --- view open/close ------------------------------------------------------
@@ -85,6 +88,7 @@ function renderCameras() {
       <div class="users-name" title="${escapeHtml(c.id)}">${escapeHtml(c.id)}</div>
       <div title="${escapeHtml(c.location || "—")}">${escapeHtml(c.location || "—")}</div>
       <div class="users-actions">
+        <button data-act="edit">Edit</button>
         <button data-act="delete" class="danger">Delete</button>
       </div>
     `;
@@ -95,7 +99,17 @@ function renderCameras() {
 
 async function onCameraActionClick(e, c) {
   const btn = e.target.closest("button[data-act]");
-  if (!btn || btn.dataset.act !== "delete") return;
+  if (!btn) return;
+  if (btn.dataset.act === "edit") {
+    try {
+      const config = await getCameraConfig(c.id);
+      openWizard(config);
+    } catch (err) {
+      setStatus(err.message || String(err));
+    }
+    return;
+  }
+  if (btn.dataset.act !== "delete") return;
   const label = c.name ? `${c.name} (${c.id})` : c.id;
   const ok = await confirmModal(
     `Delete camera ${label}? It stops recording and streaming immediately. ` +
@@ -116,18 +130,59 @@ async function onCameraActionClick(e, c) {
 
 // --- wizard ---------------------------------------------------------------
 
-function openWizard() {
+// openWizard opens the create wizard, or — when passed a camera config (the
+// full spec from GET .../config) — the edit wizard: fields prefilled, the id
+// locked (it is the recording path and cannot change), and submit doing a PUT.
+function openWizard(config = null) {
   wizardStep = 1;
+  editingId = config ? config.id : null;
   const form = document.getElementById("cam-wizard-form");
   form.reset();
   document.getElementById("cam-wizard-status").hidden = true;
   document.getElementById("cam-probe-result").textContent = "";
+  document.getElementById("cam-wizard-title").textContent = editingId ? "Edit camera" : "Add camera";
+  document.getElementById("cam-wizard-create").textContent = editingId ? "Save changes" : "Create camera";
+  const idInput = form.elements.id;
+  idInput.readOnly = !!editingId;
+  idInput.classList.toggle("readonly", !!editingId);
+  if (config) fillForm(config);
   document.getElementById("cam-wizard-modal").hidden = false;
   showStep(1);
-  form.elements.id.focus();
+  (editingId ? form.elements.name : form.elements.id).focus();
+}
+
+// fillForm prefills the wizard from a stored camera config (spec JSON). The
+// thingino coordinates use -1 as the "unset" sentinel; show those blank.
+function fillForm(c) {
+  const f = document.getElementById("cam-wizard-form").elements;
+  const text = (name, v) => { f[name].value = v == null ? "" : String(v); };
+  const check = (name, v) => { f[name].checked = !!v; };
+  const coord = (name, v) => { f[name].value = (v == null || v < 0) ? "" : String(v); };
+  text("id", c.id);
+  text("name", c.name);
+  text("location", c.location);
+  text("comment", c.comment);
+  text("source", c.source);
+  f.transport.value = c.transport || "";
+  text("backchannel", c.backchannel);
+  check("record", c.record);
+  check("mse", c.mse);
+  check("relay", c.relay);
+  check("privacy", c.privacy);
+  check("playback", c.playback);
+  text("width", c.width);
+  text("height", c.height);
+  text("thingino_url", c.thingino_url);
+  text("thingino_api_key", c.thingino_api_key);
+  check("ptz", c.ptz);
+  coord("home_x", c.home_x);
+  coord("home_y", c.home_y);
+  coord("privacy_x", c.privacy_x);
+  coord("privacy_y", c.privacy_y);
 }
 
 function closeWizard() {
+  editingId = null;
   const m = document.getElementById("cam-wizard-modal");
   if (m) m.hidden = true;
 }
@@ -278,22 +333,24 @@ function maskSource(url) {
   return url.replace(/(rtsp:\/\/[^:/@]+:)[^@/]*(@)/i, "$1••••$2");
 }
 
-async function onCreate(e) {
+async function onSubmit(e) {
   e.preventDefault();
-  const create = document.getElementById("cam-wizard-create");
+  const btn = document.getElementById("cam-wizard-create");
+  const wasEditing = editingId;
   wizardStatus("");
-  create.disabled = true;
+  btn.disabled = true;
   try {
-    const cam = await createCamera(collectForm());
+    const body = collectForm();
+    const cam = wasEditing ? await updateCamera(wasEditing, body) : await createCamera(body);
     invalidateCameras();
     closeWizard();
-    setStatus(`Camera created: ${cam.id}`, "ok");
+    setStatus(`Camera ${wasEditing ? "updated" : "created"}: ${cam.id}`, "ok");
     await loadCameras();
     refreshUnderlyingViews();
   } catch (err) {
     wizardStatus(err.message || String(err));
   } finally {
-    create.disabled = false;
+    btn.disabled = false;
   }
 }
 
@@ -321,7 +378,7 @@ export function initCameras() {
   document.getElementById("cam-wizard-next")?.addEventListener("click", onNext);
   document.getElementById("cam-wizard-back")?.addEventListener("click", onBack);
   document.getElementById("cam-probe-btn")?.addEventListener("click", onProbe);
-  document.getElementById("cam-wizard-form")?.addEventListener("submit", onCreate);
+  document.getElementById("cam-wizard-form")?.addEventListener("submit", onSubmit);
   const modal = document.getElementById("cam-wizard-modal");
   if (modal) {
     modal.addEventListener("click", (e) => { if (e.target === modal) closeWizard(); });

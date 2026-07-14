@@ -91,6 +91,20 @@ export async function createCamera(body) {
   return api("/api/cameras", { method: "POST", body: JSON.stringify(body) });
 }
 
+/** Update an existing camera. body is the same shape as createCamera. */
+export async function updateCamera(id, body) {
+  return api(`/api/camera/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+/**
+ * Fetch a camera's full stored config (admin only), including source and
+ * credentials, to prefill the edit form. Distinct from fetchCameras(), whose
+ * public model omits those fields.
+ */
+export async function getCameraConfig(id) {
+  return api(`/api/camera/${encodeURIComponent(id)}/config`);
+}
+
 /** Delete a camera by id. */
 export async function deleteCamera(id) {
   return api(`/api/camera/${encodeURIComponent(id)}`, { method: "DELETE" });

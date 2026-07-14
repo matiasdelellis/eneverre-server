@@ -156,6 +156,83 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, a.publicCamera(cam, r.Host))
 }
 
+// handleGetCameraConfig returns the full stored config of one camera (admin
+// only), INCLUDING the source/backchannel/thingino credentials, so the edit
+// form can prefill them. This is intentionally separate from GET /api/cameras,
+// whose public model strips those fields (json:"-") and must never leak them —
+// here the caller is an authenticated admin editing a camera they configured.
+func (a *App) handleGetCameraConfig(w http.ResponseWriter, r *http.Request) {
+	if a.requireAdmin(w, r) == nil {
+		return
+	}
+	s, ok, err := a.camStore.GetSpec(r.PathValue("cam_id"))
+	if err != nil {
+		slog.Error("get camera config failed", "id", r.PathValue("cam_id"), "err", err)
+		httpError(w, http.StatusInternalServerError, "could not read camera")
+		return
+	}
+	if !ok {
+		httpError(w, http.StatusNotFound, "camera not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+// handleUpdateCamera edits an existing camera (admin only): it validates the
+// body, overwrites the DB row, and reconfigures the media engine live by tearing
+// down the old pipeline and bringing the new config up (RemoveCamera +
+// AddCamera) — so source/transport/sink changes take effect without a restart.
+// The id is fixed by the URL and cannot be changed (it is the recording path).
+func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
+	if a.requireAdmin(w, r) == nil {
+		return
+	}
+	id := r.PathValue("cam_id")
+	var req createCameraReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	req.ID = id // the id is set by the path; any body id is ignored
+	s, msg := req.spec()
+	if msg != "" {
+		httpError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
+
+	switch err := a.camStore.Update(s); {
+	case errors.Is(err, camera.ErrNotFound):
+		httpError(w, http.StatusNotFound, "camera not found")
+		return
+	case err != nil:
+		slog.Error("update camera failed", "id", id, "err", err)
+		httpError(w, http.StatusInternalServerError, "could not update camera")
+		return
+	}
+
+	cam := s.Camera()
+	// Apply live: the engine has no in-place update, so tear the old pipeline
+	// down (finalizing its segment) and start fresh with the new config.
+	if a.engine != nil {
+		a.engine.RemoveCamera(id)
+		a.engine.AddCamera(cam)
+	}
+	a.updateCamera(cam)
+	// Reset runtime state and re-probe: the thingino/backchannel config may have
+	// changed, so the old privacy/talk-codec state no longer applies.
+	a.privacyMu.Lock()
+	delete(a.privacy, id)
+	a.privacyMu.Unlock()
+	a.talkCodecsMu.Lock()
+	delete(a.talkCodecs, id)
+	a.talkCodecsMu.Unlock()
+	a.seedPrivacyFor(cam)
+	a.seedTalkCodecsFor(cam)
+
+	slog.Info("camera updated", "id", id, "name", cam.Name)
+	writeJSON(w, http.StatusOK, a.publicCamera(cam, r.Host))
+}
+
 // handleDeleteCamera removes a camera (admin only): it deletes the DB row
 // (source of truth) first, then detaches the camera from the media engine and
 // the in-memory set and clears its runtime state. Recorded segments on disk are

@@ -196,6 +196,20 @@ func (a *App) addCamera(cam camera.Camera) {
 	a.cameras = append(a.cameras, cam)
 }
 
+// updateCamera replaces the in-memory entry for cam.ID in place (preserving its
+// position) under the write lock. Returns true when the camera was present.
+func (a *App) updateCamera(cam camera.Camera) bool {
+	a.camerasMu.Lock()
+	defer a.camerasMu.Unlock()
+	for i := range a.cameras {
+		if a.cameras[i].ID == cam.ID {
+			a.cameras[i] = cam
+			return true
+		}
+	}
+	return false
+}
+
 // removeCamera drops the camera with the given id from the in-memory set under
 // the write lock. Returns true when it was present.
 func (a *App) removeCamera(id string) bool {
@@ -364,6 +378,8 @@ func (a *App) Handler() http.Handler {
 	// per-camera operations below.
 	mux.HandleFunc("POST /api/cameras", a.handleCreateCamera)
 	mux.HandleFunc("POST /api/cameras/probe", a.handleProbeCamera)
+	mux.HandleFunc("GET /api/camera/{cam_id}/config", a.handleGetCameraConfig)
+	mux.HandleFunc("PUT /api/camera/{cam_id}", a.handleUpdateCamera)
 	mux.HandleFunc("DELETE /api/camera/{cam_id}", a.handleDeleteCamera)
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/move", a.handlePTZMove)
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/home", a.handlePTZHome)

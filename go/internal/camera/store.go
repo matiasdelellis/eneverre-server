@@ -149,6 +149,50 @@ func (st *Store) Create(s Spec, createdAt int64) (Camera, error) {
 	return s.Camera(), nil
 }
 
+// GetSpec returns the raw persisted spec (config, including credentials) for the
+// given id, or (Spec{}, false) when none exists. Used by the admin edit endpoint
+// to prefill the form; the public Camera model (from Get) never carries the
+// credential fields.
+func (st *Store) GetSpec(id string) (Spec, bool, error) {
+	row := st.db.QueryRow(`SELECT `+camColumns+` FROM cameras WHERE id = ?`, id)
+	s, err := scanSpec(row.Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Spec{}, false, nil
+	}
+	if err != nil {
+		return Spec{}, false, err
+	}
+	return s, true, nil
+}
+
+// Update overwrites every editable column of an existing camera (identified by
+// s.ID) from the spec; the id, sort_order and created_at are left unchanged.
+// Returns ErrNotFound when no camera has that id.
+func (st *Store) Update(s Spec) error {
+	res, err := st.db.Exec(
+		`UPDATE cameras SET
+			name = ?, comment = ?, location = ?, source = ?, backchannel = ?, transport = ?,
+			record = ?, mse = ?, relay = ?, privacy = ?, playback = ?, width = ?, height = ?,
+			thingino_url = ?, thingino_api_key = ?, ptz = ?, home_x = ?, home_y = ?, privacy_x = ?, privacy_y = ?
+		 WHERE id = ?`,
+		s.Name, s.Comment, s.Location, s.Source, s.Backchannel, s.Transport,
+		s.Record, s.MSE, s.Relay, s.Privacy, s.Playback, s.Width, s.Height,
+		s.ThinginoURL, s.ThinginoAPIKey, s.PTZ, s.HomeX, s.HomeY, s.PrivacyX, s.PrivacyY,
+		s.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Delete removes the camera with the given id, returning ErrNotFound when it
 // does not exist. Recorded segments on disk are not touched — retention prunes
 // them on its own schedule.

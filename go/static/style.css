@@ -1411,6 +1411,7 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .cam-step { display: flex; flex-direction: column; gap: 10px; }
 .cam-step small.muted { font-weight: 400; }
 .cam-step .req { color: var(--danger); }
+.cam-step input.readonly { opacity: 0.6; cursor: not-allowed; }
 .cam-check { flex-direction: row; align-items: center; gap: 8px; }
 .cam-check input { width: auto; }
 .cam-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

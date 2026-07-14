@@ -81,6 +81,44 @@ func TestStoreCreateGetDelete(t *testing.T) {
 	}
 }
 
+func TestStoreUpdate(t *testing.T) {
+	st := NewStore(testDB(t))
+	if _, err := st.Create(sampleSpec(), 1); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Update every editable field; id stays the key.
+	upd := sampleSpec()
+	upd.Name = "Renamed"
+	upd.Source = "rtsp://new:secret@10.0.0.9/ch1"
+	upd.Transport = "tcp"
+	upd.Record = false
+	upd.PTZ = true
+	upd.ThinginoURL = "http://10.0.0.9"
+	upd.ThinginoAPIKey = "k2"
+	upd.HomeX = 5
+	if err := st.Update(upd); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got, ok, err := st.GetSpec("frente")
+	if err != nil || !ok {
+		t.Fatalf("GetSpec = ok:%v err:%v", ok, err)
+	}
+	if got.Name != "Renamed" || got.Source != "rtsp://new:secret@10.0.0.9/ch1" ||
+		got.Transport != "tcp" || got.Record != false || !got.PTZ ||
+		got.ThinginoAPIKey != "k2" || got.HomeX != 5 {
+		t.Errorf("Update did not persist: %+v", got)
+	}
+
+	// Updating a missing camera is ErrNotFound.
+	miss := sampleSpec()
+	miss.ID = "ghost"
+	if err := st.Update(miss); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Update missing = %v; want ErrNotFound", err)
+	}
+}
+
 func TestStoreCreateDuplicate(t *testing.T) {
 	st := NewStore(testDB(t))
 	if _, err := st.Create(sampleSpec(), 1); err != nil {

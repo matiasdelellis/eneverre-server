@@ -118,32 +118,36 @@ type Camera struct {
 // privacy state — which Camera() computes. Both the INI seed importer
 // (loadOne) and the DB store map into a Spec, so the derivation of the public
 // Camera model lives in exactly one place.
+// The json tags let an admin-only endpoint (GET /api/camera/{id}/config) return
+// the full spec — including the source/backchannel/thingino credentials — so the
+// edit form can prefill. This is deliberately distinct from the public Camera
+// model, whose credential fields are json:"-" and never leave the server.
 type Spec struct {
-	ID       string
-	Name     string
-	Comment  string
-	Location string
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Comment  string `json:"comment"`
+	Location string `json:"location"`
 
-	Source      string
-	Backchannel string
-	Transport   string
+	Source      string `json:"source"`
+	Backchannel string `json:"backchannel"`
+	Transport   string `json:"transport"`
 
-	Record   bool
-	MSE      bool
-	Relay    bool
-	Privacy  bool // whether the privacy toggle is offered (INI `privacy`, default true)
-	Playback bool
+	Record   bool `json:"record"`
+	MSE      bool `json:"mse"`
+	Relay    bool `json:"relay"`
+	Privacy  bool `json:"privacy"` // whether the privacy toggle is offered (INI `privacy`, default true)
+	Playback bool `json:"playback"`
 
-	Width  int
-	Height int
+	Width  int `json:"width"`
+	Height int `json:"height"`
 
-	ThinginoURL    string
-	ThinginoAPIKey string
-	PTZ            bool
-	HomeX          float64
-	HomeY          float64
-	PrivacyX       float64
-	PrivacyY       float64
+	ThinginoURL    string  `json:"thingino_url"`
+	ThinginoAPIKey string  `json:"thingino_api_key"`
+	PTZ            bool    `json:"ptz"`
+	HomeX          float64 `json:"home_x"`
+	HomeY          float64 `json:"home_y"`
+	PrivacyX       float64 `json:"privacy_x"`
+	PrivacyY       float64 `json:"privacy_y"`
 }
 
 // Camera expands a Spec into the public Camera model, deriving capabilities
