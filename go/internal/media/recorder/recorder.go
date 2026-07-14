@@ -1,11 +1,11 @@
-// Package recorder connects to an RTSP source, extracts its H264 video track
-// (and, if present, its AAC or G711 audio track) and writes them to disk as
-// fragmented-MP4 segments compatible with the MediaMTX layout (including the
-// "mtxi" box for gapless concatenation on playback).
+// Package recorder connects to an RTSP source, extracts its video track (H264
+// or H265) — and, if present, its AAC or G711 audio track — and writes them to
+// disk as fragmented-MP4 segments compatible with the MediaMTX layout
+// (including the "mtxi" box for gapless concatenation on playback).
 //
-// It is a focused, multi-track port of MediaMTX's fMP4 recorder: video (H264) +
-// optional audio (MPEG-4 Audio / AAC, or G711 converted to LPCM). Segments
-// always start on a video keyframe.
+// It is a focused, multi-track port of MediaMTX's fMP4 recorder: video (H264 or
+// H265/HEVC) + optional audio (MPEG-4 Audio / AAC, or G711 converted to LPCM).
+// Segments always start on a video keyframe.
 //
 // The implementation is split across recorder.go (orchestration), track.go
 // (per-track state), segment.go (on-disk segment + part writing), init.go
@@ -26,9 +26,11 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph265"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/g711"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h265"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
 	mcodecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mp4/codecs"
@@ -47,11 +49,19 @@ const maxBasetime = 1 * time.Second
 const noVideoTimeout = 8 * time.Second
 
 // ErrNoSupportedVideo is returned by Start when the RTSP stream carries no video
-// codec the recorder can handle (currently H264 only; H265/AV1/etc. are not).
-// Callers can detect it with errors.Is to report a clear diagnostic and back off
-// (retrying fast won't help until the camera's codec changes). The wrapped
-// message lists the codecs the stream actually offered.
-var ErrNoSupportedVideo = errors.New("no supported video codec (recorder handles H264 only)")
+// codec the recorder can handle (H264 or H265; AV1/etc. are not). Callers can
+// detect it with errors.Is to report a clear diagnostic and back off (retrying
+// fast won't help until the camera's codec changes). The wrapped message lists
+// the codecs the stream actually offered.
+var ErrNoSupportedVideo = errors.New("no supported video codec (recorder handles H264/H265)")
+
+// videoDTS is the DTS-extraction contract shared by H264 and H265: both
+// *h264.DTSExtractor and *h265.DTSExtractor satisfy it, so the recorder holds
+// one field and the per-codec process function picks the concrete type.
+type videoDTS interface {
+	Initialize()
+	Extract(au [][]byte, pts int64) (int64, error)
+}
 
 // SegmentInfo is delivered when a segment is completely written.
 type SegmentInfo struct {
@@ -96,10 +106,14 @@ type Recorder struct {
 	pathFmt  string
 	streamID uuid.UUID
 
-	// video state
-	videoCodec   *mcodecs.H264
-	dtsExtractor *h264.DTSExtractor
-	videoStarted bool
+	// video state. Exactly one of videoCodec / videoCodecH265 is set per
+	// connection, depending on the codec the camera offered; both point at the
+	// same object stored in the video track's InitTrack, so mutating SPS/PPS(/VPS)
+	// here updates the fMP4 init too. dtsExtractor holds the matching extractor.
+	videoCodec     *mcodecs.H264
+	videoCodecH265 *mcodecs.H265
+	dtsExtractor   videoDTS
+	videoStarted   bool
 
 	// lastVideoNano is the UnixNano of the most recent video RTP packet. A media
 	// watchdog uses it to force a reconnect when a camera goes silent while
@@ -137,6 +151,8 @@ func (r *Recorder) Start() error {
 	r.tracks = nil
 	r.hasVideo = false
 	r.currentSegment = nil
+	r.videoCodec = nil
+	r.videoCodecH265 = nil
 	r.dtsExtractor = nil
 	r.videoStarted = false
 
@@ -200,9 +216,13 @@ func (r *Recorder) Start() error {
 	// the per-packet decode + sample assembly.
 	demux := r.OnLiveSample != nil || r.Record
 
-	// --- video (required) ---
-	var videoForma *format.H264
-	videoMedia := desc.FindFormat(&videoForma)
+	// --- video (required: H264 or H265) ---
+	var h264Forma *format.H264
+	var h265Forma *format.H265
+	videoMedia := desc.FindFormat(&h264Forma)
+	if videoMedia == nil {
+		videoMedia = desc.FindFormat(&h265Forma)
+	}
 	if videoMedia == nil {
 		// Return before publishing to the relay: without a decodable video track
 		// there is nothing useful to record or relay. Wrap the sentinel so the
@@ -220,19 +240,82 @@ func (r *Recorder) Start() error {
 			r.Logf("live relay disabled for this session: %v", err)
 		}
 	}
-	r.videoCodec = &mcodecs.H264{}
-	if videoForma.SPS != nil {
-		r.videoCodec.SPS = videoForma.SPS
-	}
-	if videoForma.PPS != nil {
-		r.videoCodec.PPS = videoForma.PPS
-	}
-	videoTrack := r.addTrack(uint32(videoForma.ClockRate()), r.videoCodec)
 
-	videoDec, err := videoForma.CreateDecoder()
-	if err != nil {
-		return err
+	// Build the video track, its RTP decoder and the per-packet assembly step
+	// for whichever codec the camera sent. `videoForma` is the codec format used
+	// to register the RTP callback; `assemble` decodes one packet into an access
+	// unit and feeds the appropriate processX. The two branches mirror each
+	// other; only the codec object, decoder type and process function differ.
+	var videoForma format.Format
+	var assemble func(pkt *rtp.Packet)
+	switch {
+	case h264Forma != nil:
+		r.videoCodec = &mcodecs.H264{}
+		if h264Forma.SPS != nil {
+			r.videoCodec.SPS = h264Forma.SPS
+		}
+		if h264Forma.PPS != nil {
+			r.videoCodec.PPS = h264Forma.PPS
+		}
+		videoTrack := r.addTrack(uint32(h264Forma.ClockRate()), r.videoCodec)
+		videoForma = h264Forma
+		dec, derr := h264Forma.CreateDecoder()
+		if derr != nil {
+			return derr
+		}
+		assemble = func(pkt *rtp.Packet) {
+			pts, ok := r.client.PacketPTS(videoMedia, pkt)
+			if !ok {
+				return
+			}
+			au, err2 := dec.Decode(pkt)
+			if err2 != nil {
+				if !errors.Is(err2, rtph264.ErrNonStartingPacketAndNoPrevious) &&
+					!errors.Is(err2, rtph264.ErrMorePacketsNeeded) {
+					r.Logf("h264 rtp decode: %v", err2)
+				}
+				return
+			}
+			r.mu.Lock()
+			r.processH264(videoTrack, au, pts, time.Now())
+			r.mu.Unlock()
+		}
+	case h265Forma != nil:
+		r.videoCodecH265 = &mcodecs.H265{}
+		if h265Forma.VPS != nil {
+			r.videoCodecH265.VPS = h265Forma.VPS
+		}
+		if h265Forma.SPS != nil {
+			r.videoCodecH265.SPS = h265Forma.SPS
+		}
+		if h265Forma.PPS != nil {
+			r.videoCodecH265.PPS = h265Forma.PPS
+		}
+		videoTrack := r.addTrack(uint32(h265Forma.ClockRate()), r.videoCodecH265)
+		videoForma = h265Forma
+		dec, derr := h265Forma.CreateDecoder()
+		if derr != nil {
+			return derr
+		}
+		assemble = func(pkt *rtp.Packet) {
+			pts, ok := r.client.PacketPTS(videoMedia, pkt)
+			if !ok {
+				return
+			}
+			au, err2 := dec.Decode(pkt)
+			if err2 != nil {
+				if !errors.Is(err2, rtph265.ErrNonStartingPacketAndNoPrevious) &&
+					!errors.Is(err2, rtph265.ErrMorePacketsNeeded) {
+					r.Logf("h265 rtp decode: %v", err2)
+				}
+				return
+			}
+			r.mu.Lock()
+			r.processH265(videoTrack, au, pts, time.Now())
+			r.mu.Unlock()
+		}
 	}
+
 	if _, err = r.client.Setup(desc.BaseURL, videoMedia, 0, 0); err != nil {
 		return err
 	}
@@ -249,23 +332,9 @@ func (r *Recorder) Start() error {
 			r.OnRTP(videoMedia, pkt)
 		}
 		if !demux {
-			return // relay-only: skip H264 decode + fMP4 assembly
+			return // relay-only: skip video decode + fMP4 assembly
 		}
-		pts, ok := r.client.PacketPTS(videoMedia, pkt)
-		if !ok {
-			return
-		}
-		au, err2 := videoDec.Decode(pkt)
-		if err2 != nil {
-			if !errors.Is(err2, rtph264.ErrNonStartingPacketAndNoPrevious) &&
-				!errors.Is(err2, rtph264.ErrMorePacketsNeeded) {
-				r.Logf("h264 rtp decode: %v", err2)
-			}
-			return
-		}
-		r.mu.Lock()
-		r.processH264(videoTrack, au, pts, time.Now())
-		r.mu.Unlock()
+		assemble(pkt)
 	})
 
 	// publish fMP4 track config to the live web broadcaster (if wired)
@@ -592,6 +661,93 @@ func (r *Recorder) processH264(t *recTrack, au [][]byte, pts int64, ntp time.Tim
 	var s fmp4.Sample
 	if err = s.FillH264(int32(pts-dts), au); err != nil {
 		r.Logf("fill h264: %v", err)
+		return
+	}
+	t.write(&sample{Sample: &s, dts: dts, ntp: ntp})
+}
+
+// processH265 turns an H265 access unit into a sample and feeds it to the video
+// track. Parallel to processH264: the differences are the NALU type encoding
+// (6-bit type in bits 1..6 of the first byte), the extra VPS parameter set, the
+// VCL type range (0..31), and the h265 DTS extractor / IsRandomAccess helpers.
+// Caller must hold r.mu.
+func (r *Recorder) processH265(t *recTrack, au [][]byte, pts int64, ntp time.Time) {
+	hasVPS, hasSPS, hasPPS, hasVCL := false, false, false, false
+	for _, nalu := range au {
+		if len(nalu) == 0 {
+			continue
+		}
+		typ := h265.NALUType((nalu[0] >> 1) & 0b111111)
+		switch typ {
+		case h265.NALUType_VPS_NUT:
+			hasVPS = true
+			if !bytes.Equal(r.videoCodecH265.VPS, nalu) {
+				r.videoCodecH265.VPS = nalu
+			}
+		case h265.NALUType_SPS_NUT:
+			hasSPS = true
+			if !bytes.Equal(r.videoCodecH265.SPS, nalu) {
+				r.videoCodecH265.SPS = nalu
+			}
+		case h265.NALUType_PPS_NUT:
+			hasPPS = true
+			if !bytes.Equal(r.videoCodecH265.PPS, nalu) {
+				r.videoCodecH265.PPS = nalu
+			}
+		}
+		if typ <= 31 { // VCL NAL unit types are 0..31
+			hasVCL = true
+		}
+	}
+
+	// IDR_W_RADL / IDR_N_LP / CRA_NUT — the AUs a decoder can seek to.
+	randomAccess := h265.IsRandomAccess(au)
+
+	// RTSP delivers VPS/SPS/PPS out-of-band (SDP); inject them into random-access
+	// AUs, same rationale as the H264 SPS/PPS injection.
+	if randomAccess {
+		var prefix [][]byte
+		if !hasVPS && r.videoCodecH265.VPS != nil {
+			prefix = append(prefix, r.videoCodecH265.VPS)
+		}
+		if !hasSPS && r.videoCodecH265.SPS != nil {
+			prefix = append(prefix, r.videoCodecH265.SPS)
+		}
+		if !hasPPS && r.videoCodecH265.PPS != nil {
+			prefix = append(prefix, r.videoCodecH265.PPS)
+		}
+		if prefix != nil {
+			au = append(prefix, au...)
+		}
+	}
+
+	// AUs without a coded slice (params/SEI/AUD only) carry no picture.
+	if !hasVCL {
+		return
+	}
+
+	if r.dtsExtractor == nil {
+		if !randomAccess {
+			return // wait for the first random-access AU
+		}
+		ex := &h265.DTSExtractor{}
+		ex.Initialize()
+		r.dtsExtractor = ex
+		r.videoStarted = true
+	}
+
+	dts, err := r.dtsExtractor.Extract(au, pts)
+	if err != nil {
+		// reset so the extractor recovers on the next keyframe instead of
+		// staying in a bad state (e.g. after packet loss / reordering).
+		r.Logf("dts extract: %v (resetting)", err)
+		r.dtsExtractor = nil
+		return
+	}
+
+	var s fmp4.Sample
+	if err = s.FillH265(int32(pts-dts), au); err != nil {
+		r.Logf("fill h265: %v", err)
 		return
 	}
 	t.write(&sample{Sample: &s, dts: dts, ntp: ntp})

@@ -129,11 +129,34 @@ export function attachMse(cam, video) {
       return;
     }
     if (destroyed) return;
-    if (!info.available) { scheduleReconnect(); return; } // camera reconnecting
+    if (!info.available) {
+      // The camera's video codec can't be played in a browser (e.g. H265/HEVC):
+      // recording and the RTSP relay still work, but MSE can't. This is
+      // permanent for this camera — show a clear message and stop retrying
+      // instead of spinning on "connecting" forever.
+      if (info.reason === "unsupported_codec") {
+        setCamStatus(cam.id, "offline");
+        const codec = info.codec || "This codec";
+        const msg = `${codec} can't play in the browser. Recording and the RTSP relay are active — open the RTSP stream in a compatible player (VLC, the mobile app).`;
+        video.replaceWith(makeMsg(msg));
+        return;
+      }
+      scheduleReconnect(); // camera reconnecting
+      return;
+    }
     if (!MediaSource.isTypeSupported(info.mime)) {
+      // The stream is advertised with its real codec string, but THIS browser
+      // can't decode it in MediaSource. For H265/HEVC that is browser/hardware
+      // dependent (Safari yes; Firefox/Chrome only with a system HEVC decoder),
+      // so give a clear message pointing at the RTSP relay rather than a generic
+      // "unsupported". Permanent for this browser — don't retry.
       setCamStatus(cam.id, "offline");
-      video.replaceWith(makeMsg("Live codec unsupported"));
-      return; // permanent: don't retry
+      const isHevc = /hvc1|hev1/i.test(info.mime || "");
+      const msg = isHevc
+        ? "This camera is H265/HEVC and this browser can't decode it. Recording and the RTSP relay are active — open the RTSP stream in a compatible player (VLC, the mobile app), or try Safari / a browser with hardware HEVC."
+        : "Live codec unsupported";
+      video.replaceWith(makeMsg(msg));
+      return;
     }
 
     const ms = new MediaSource();

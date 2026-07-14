@@ -58,7 +58,7 @@ Structured logs via `slog` (text handler on stderr). Level is `debug` /
 ```
 level=INFO msg="media/recorder[calle]: source connected" format=H264
 level=INFO msg="request" method=GET path=/api/cameras status=200 dur_ms=1 ip=127.0.0.1
-level=WARN msg="media/recorder[jardin]: camera codec not supported (recording/live disabled for it)" err="... stream offers: H265"
+level=WARN msg="media/recorder[jardin]: camera codec not supported (recording/live disabled for it)" err="... stream offers: MJPEG"
 ```
 
 ### Credential rotation (embedded RTSP relay)

@@ -43,8 +43,6 @@ response bodies on every data-bearing route).
   RTSP relay, browser (MSE) live, playback, codecs and configuration. Read
   this before touching anything under `internal/media/` or
   `handlers_live.go` / `handlers_playback.go`.
-- [`doc/PLANS/H265.md`](doc/PLANS/H265.md) — what's left to add H265/HEVC
-  support to the embedded engine and where the browser-wall sits.
 - [`doc/PLANS/GAPFILL-DYNAMIC.md`](doc/PLANS/GAPFILL-DYNAMIC.md) — the
   design for a date/time-stamped gap-fill caption (currently a static
   message).
@@ -159,12 +157,14 @@ All code lives under `go/` (module `eneverre`).
     broadcaster and retention cleaner per camera; `OptionsFromSection` maps
     `[media]` INI keys to a struct; `Close` finalizes every in-progress
     fMP4 segment and shuts everything down on `SIGTERM`/`SIGINT`.
-  - `recorder` — per-camera RTSP client (`gortsplib`) that demuxes H264/AAC,
-    writes fragmented-MP4 segments on disk and indexes them in SQLite
-    (with the `mtxi` box for gapless concatenation on playback). Includes a
-    media watchdog (silent-but-alive detection + reconnect) and a
-    graceful-segment-finalize on source loss / shutdown. Codecs: H264 + AAC
-    / G711. H265/HEVC is not supported (see `doc/PLANS/H265.md`).
+  - `recorder` — per-camera RTSP client (`gortsplib`) that demuxes video
+    (H264 or H265) + AAC/G711, writes fragmented-MP4 segments on disk and
+    indexes them in SQLite (with the `mtxi` box for gapless concatenation on
+    playback). Includes a media watchdog (silent-but-alive detection +
+    reconnect) and a graceful-segment-finalize on source loss / shutdown.
+    Codecs: H264/H265 video + AAC/G711 audio. H265 live/playback is advertised
+    with its `hvc1` codec string and gated client-side by browser HEVC support
+    (see `doc/MEDIA.md` → Codec support).
   - `recstore` — turns a `record_path` template (`%path`, strftime
     specifiers, `%f` for fractional seconds) into an on-disk path; given a
     list of files it computes the common root for retention pruning.

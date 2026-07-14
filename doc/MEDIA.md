@@ -83,8 +83,8 @@ Because MSE and relay default to on, the engine is fully useful with **no
 
 For every camera that has a `source` RTSP URL, the engine:
 
-1. **Records** the stream to fragmented-MP4 segments on disk (H264 video +
-   optional AAC/G711 audio), cataloging each segment in a shared SQLite index —
+1. **Records** the stream to fragmented-MP4 segments on disk (H264 or H265 video
+   + optional AAC/G711 audio), cataloging each segment in a shared SQLite index —
    the same layout MediaMTX wrote (including the `mtxi` box for gapless
    concatenation on playback).
 2. **Relays** the live stream over RTSP (`rtsp://…:8554/<id>`) as a raw RTP
@@ -103,16 +103,54 @@ install, configure or supervise.
 
 ## Codec support
 
-**H264 video + AAC or G711 audio only** (G711 is transcoded to LPCM for fMP4).
-The RTSP relay is a raw passthrough and carries whatever the camera sends, but
-recording and the browser (MSE) live view require H264 (+AAC for audio in the
-browser). H265/HEVC is **not** supported by the recorder or MSE view.
+**Video: H264 or H265/HEVC. Audio: AAC or G711** (G711 is transcoded to LPCM for
+fMP4). The RTSP relay is a raw passthrough and carries whatever the camera sends;
+recording and playback handle both H264 and H265.
 
-A camera that offers no supported video codec is detected and logged once
-(`camera codec not supported … stream offers: H265`), then retried slowly; it
-is neither recorded nor relayed. Adding H265 is scoped in
-[`doc/PLANS/H265.md`](PLANS/H265.md): record/relay/playback would be a modest
-addition, but universal web-live for H265 is limited by browser HEVC support.
+A camera that offers some *other* video codec (AV1, MJPEG, …) is detected and
+logged once (`no supported video codec … stream offers: …`), then retried
+slowly; it is neither recorded nor relayed.
+
+### H265/HEVC — browser live is client-gated
+
+H265 cameras are **fully recorded, relayed over RTSP and served for
+download/playback**, exactly like H264. Browser **live** (MSE) and streaming
+**playback** (HLS via hls.js) are *offered* for H265 too, but whether they play
+depends on the browser, because HEVC-in-MediaSource is not universal:
+
+| Browser | HEVC in MediaSource (live + hls.js playback) |
+|---|---|
+| Safari | yes |
+| Firefox / Chrome / Edge | only with a system/hardware HEVC decoder present |
+
+Eneverre does not decide this server-side. The live feed is advertised with its
+real `hvc1.*` codec string (built from the H265 SPS) and the **client** decides
+via `MediaSource.isTypeSupported` — the exact same mechanism `hls.js` uses for
+the recordings timeline. So a browser that plays the H265 recordings will also
+play H265 **live**; a browser without an HEVC decoder shows a clear message and
+falls back to RTSP. This is why there is no separate "HLS live" mode: in every
+browser except Safari, HLS is played by `hls.js`, which itself feeds MSE — the
+same decode path as the live broadcaster, adding no HEVC capability MSE lacks.
+
+Details for an H265 camera:
+
+- **Recording, retention, RTSP relay, HLS-VOD and clip download: always work.**
+  Any client that decodes HEVC plays them — VLC, ffmpeg-based tools, the mobile
+  apps (`RtspMediaSource` decodes HEVC natively), Safari.
+- **Web wall live tile / timeline: play iff the browser has an HEVC decoder.**
+  When it doesn't, `live/info`'s `mime` fails `isTypeSupported` and the tile
+  shows *"This camera is H265/HEVC and this browser can't decode it… use the RTSP
+  stream…"*. (`live/info` also returns
+  `{"available":false,"reason":"unsupported_codec","codec":"H265"}` in the rare
+  case the SPS can't be parsed to form a codec string.)
+- **Clip download gap-fill is H264-only** (see [Gap fill](#gap-fill-in-downloads-get)):
+  an H265 clip spanning a coverage gap is **truncated at the gap** rather than
+  filled with a black "NO RECORDING" frame (the black filler is generated as
+  H264). The recorded footage itself is unaffected.
+
+Making H265 live/playback work on browsers that *lack* an HEVC decoder would
+require transcoding H265→H264 (CPU-heavy, breaks the engine's zero-re-encode
+design) and is deliberately out of scope — those browsers use RTSP instead.
 
 ## Configuration
 
@@ -225,6 +263,8 @@ always spans the full requested window and it is obvious there was no recording
   engine falls back to the legacy behavior (truncate at the gap).
 - `fill_gaps=false` forces the legacy gapless output (avc1, truncated at the
   first gap).
+- **H265 recordings are always truncated at gaps** (the black filler is H264-only,
+  so it can't be spliced into an HEVC clip); the footage is otherwise unaffected.
 - Making the caption carry the gap's date/time (a running clock or the gap's
   time range) is scoped in [`doc/PLANS/GAPFILL-DYNAMIC.md`](PLANS/GAPFILL-DYNAMIC.md).
 - Audio: there are no audio samples during the gap; the last pre-gap audio
@@ -326,7 +366,9 @@ the live MSE feed and RTSP relay still run (live-only mode), and the
 exposed to clients; the relay `rtsp://…:8554/{id}` (rotating credentials) is
 served instead.
 
-Eneverre only streams H264 (+AAC/G711) itself. To serve a non-H264 codec,
-WebRTC or HLS, front the camera with an external streamer (go2rtc, lightNVR, a
-reverse proxy) and turn the built-in feeds off — set `mse = false` and
-`relay = false` per camera, or globally in `[media]`.
+Eneverre streams H264 or H265 (+AAC/G711) itself; H265 browser live plays only
+where the browser has an HEVC decoder (see [Codec support](#codec-support)). To
+serve H265 live on browsers **without** an HEVC decoder, another codec, or
+WebRTC, front the camera with an external streamer (go2rtc, lightNVR, a reverse
+proxy) and turn the built-in feeds off — set `mse = false` and `relay = false`
+per camera, or globally in `[media]`.
