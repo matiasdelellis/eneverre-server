@@ -53,6 +53,10 @@ type loginResponse struct {
 	LastName         *string `json:"last_name"`
 	Role             string  `json:"role"`
 	IsAdmin          bool    `json:"is_admin"`
+	// MustChangePassword tells the client to force the user through the
+	// change-password flow before using the app (set for the seeded admin and
+	// whenever an admin flags an account). Cleared by a successful self change.
+	MustChangePassword bool `json:"must_change_password"`
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -65,10 +69,11 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	var stored, role string
 	var firstName, lastName sql.NullString
+	var mustChange bool
 	err := a.db.QueryRow(
-		"SELECT password, role, first_name, last_name FROM users WHERE username = ?",
+		"SELECT password, role, first_name, last_name, must_change_password FROM users WHERE username = ?",
 		req.Username,
-	).Scan(&stored, &role, &firstName, &lastName)
+	).Scan(&stored, &role, &firstName, &lastName, &mustChange)
 	if err != nil || !auth.CheckPasswordHash(stored, req.Password) {
 		// Even out timing for unknown users by hashing a dummy.
 		auth.CheckPasswordHash("pbkdf2:sha256:600000$dummy$"+strings.Repeat("0", 64), req.Password)
@@ -101,6 +106,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		LastName:         nullStrPtr(lastName),
 		Role:             role,
 		IsAdmin:          role == "admin",
+		MustChangePassword: mustChange,
 	})
 }
 

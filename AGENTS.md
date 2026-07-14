@@ -98,13 +98,19 @@ All code lives under `go/` (module `eneverre`).
   module that imports and boots the ES modules under `go/static/js/`. Those are
   split into `js/api.js` (fetch wrapper + token), `js/state.js`, `js/util/*`
   (dom/format/storage helpers), `js/ui/*` (theme, password reveal, user menu,
-  dialog) and `js/views/*` (login, app-shell, sidebar, wall, ptz, playback,
-  hls, mse, users, device-auth). The browser resolves the imports directly.
+  dialog) and `js/views/*` (login, force-password, app-shell, sidebar, wall,
+  ptz, playback, hls, mse, users, device-auth). The browser resolves the
+  imports directly.
   This is the canonical copy; edit here.
 - `go/internal/config` — INI loading and path resolution. Searches
   `/etc/eneverre/...` then `./data/...`; env overrides
   `ENEVERRE_CONFIG_PATH` / `ENEVERRE_CAMERAS_DIR` / `ENEVERRE_DB_PATH`. Keys are
-  read case-insensitively (configparser parity, e.g. `home_Y` → `home_y`).
+  read case-insensitively (configparser parity, e.g. `home_Y` → `home_y`). The
+  main config file is **optional**: a missing default-searched `eneverre.ini`
+  yields an empty document (every key falls back to its default), but an
+  explicit path (`--config` / `ENEVERRE_CONFIG_PATH`) that doesn't exist is
+  fatal, as is a present-but-unparseable file. `Config.FileLoaded` records
+  whether a file was actually read (`main.go` logs "using defaults" when not).
   `Config` exposes optional section handles (`cfg.Media`, `cfg.Events`,
   `cfg.Auth`, `cfg.Updates`) — `nil` when the section is absent — so
   callers branch with a single nil check. `cfg.Media` specifically
@@ -118,8 +124,11 @@ All code lives under `go/` (module `eneverre`).
   and seeds an admin when the users table is empty: username from
   `ENEVERRE_ADMIN_USER` (default `admin`), password from
   `ENEVERRE_ADMIN_PASS` or, when unset, a random one logged once at `WARN`.
-  No credential is read from a config file. `Init` also runs the
-  `mediamtx_credentials` → `streamauth_credentials` rename migration
+  No credential is read from a config file. The seeded admin is inserted with
+  `must_change_password = 1` so the web UI forces a new password on first login
+  (the `users.must_change_password` column, default 0, added to the schema and
+  backfilled by an idempotent column migration for older DBs). `Init` also runs
+  the `mediamtx_credentials` → `streamauth_credentials` rename migration
   for upgrades from pre-rename installs.
 - `go/internal/auth` — `CheckPasswordHash`/`GeneratePasswordHash` (Werkzeug
   format) plus Basic/Bearer verification and `CurrentUser`. Bearer reads the
@@ -288,7 +297,13 @@ see request query strings and the more verbose media-engine traces
   (alongside `username`/`password`). When present it is stored on the issued
   token (same column the device-login flow uses), so `GET
   /api/users/me/sessions` can label the session; omit it and the column is
-  NULL (backward compatible). The expensive password hash runs once here.
+  NULL (backward compatible). The expensive password hash runs once here. The
+  login response carries `must_change_password`; the web client gates the app
+  on it and routes to a forced change-password screen until the user changes
+  it. `PUT /api/users/me/password` clears the flag (`must_change_password = 0`
+  in the same UPDATE); admins can set it when creating a user
+  (`POST /api/users`) or resetting a password (`PUT /api/users/{u}/password`).
+  The flag is UI-enforced only — a valid token still works for API calls.
 - **Token model.** A `tokens` row is one session. Password login issues a
   short-lived **access** token plus a long-lived **refresh** token stored on
   the same row. Both lifetimes are resolved once at startup with precedence
@@ -426,6 +441,13 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
 - `ENEVERRE_STATIC_DIR` (or an on-disk `./app/static` / `../app/static`) takes
   precedence over the embedded copy — handy for live edits without rebuilding.
 - The Bearer token lives in `localStorage`.
+- **Forced password change** (`js/views/force-password.js`): when the stored
+  user carries `must_change_password`, the app is gated behind a mandatory
+  change-password screen (no cancel). `login.js` routes to it after a flagged
+  login (prefilling the just-typed current password), and `app-shell.js`
+  `showApp()` re-gates on reload while the flag is still set. A successful
+  `PUT /api/users/me/password` clears the flag server-side and in the stored
+  user, then `showApp()` proceeds.
 - **Live view** (`js/views/wall.js` + `js/views/hls.js` + `js/views/mse.js`):
   the wall uses `camera.live_mse` (the embedded engine's MSE feed at
   `/api/camera/{id}/live/stream`, ~1-2s latency) when the camera exposes

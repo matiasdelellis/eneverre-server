@@ -185,9 +185,13 @@ async function onUserActionClick(e, u, isLastAdmin) {
         setUsersStatus("Password cannot be empty", "err");
         return;
       }
+      const force = await confirmModal(
+        `Require ${u.username} to change this password at their next login?`,
+        { title: "Force password change", okLabel: "Require change", cancelLabel: "No, keep it" }
+      );
       await api(`/api/users/${encodeURIComponent(u.username)}/password`, {
         method: "PUT",
-        body: JSON.stringify({ password: pw }),
+        body: JSON.stringify({ password: pw, must_change_password: force === true }),
       });
       setUsersStatus(`Password updated for ${u.username}`, "ok");
     } else if (act === "delete") {
@@ -247,6 +251,7 @@ async function submitNewUser(e) {
         first_name: blankToNull(fd.get("first_name")),
         last_name: blankToNull(fd.get("last_name")),
         role: fd.get("role"),
+        must_change_password: fd.get("must_change_password") === "on",
       }),
     });
     closeUserEditModal();

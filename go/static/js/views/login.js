@@ -40,7 +40,16 @@ export function initLogin() {
         last_name: data.last_name || null,
         role: data.role,
         is_admin: data.is_admin !== undefined ? data.is_admin : data.role === "admin",
+        must_change_password: !!data.must_change_password,
       });
+      // A flagged account (seeded admin, or one an admin required to reset)
+      // must change its password before reaching the app. Prefill the current
+      // password from what was just typed so the user only enters the new one.
+      if (data.must_change_password) {
+        const { showForcePasswordChange } = await import("./force-password.js");
+        showForcePasswordChange(fd.get("password"));
+        return;
+      }
       // Dynamic import avoids the showApp() <-> showLogin() cycle
       // (app-shell imports showLogin for logout).
       const { showApp } = await import("./app-shell.js");

@@ -57,16 +57,21 @@ cameras folder:
 
 ```
 C:\ProgramData\Eneverre\
-├─ eneverre.ini          ← required; copy from doc\example\eneverre.ini
+├─ eneverre.ini          ← copy from doc\example\eneverre.ini (see note below)
 ├─ cameras.d\            ← one .ini per camera (seeded into the DB on first run)
 ├─ eneverre.db           ← created automatically
 ├─ eneverre.log          ← service log (see §3)
 └─ recordings\           ← created automatically when [media] record = true
 ```
 
-Only `eneverre.ini` **must** exist before the first start — Eneverre exits
-with `missing eneverre.ini` if it can't find one. The database file,
-`cameras.d\` and the recordings/cache directories are created for you.
+The config file itself is optional — with none present Eneverre runs on
+built-in defaults. **But the service registration below passes an explicit
+`--config C:\ProgramData\Eneverre\eneverre.ini`, and an explicit path that
+doesn't exist is fatal** (`config file not found: ...`), so for the documented
+service layout `eneverre.ini` must be in place before the first start. (A bare
+`eneverre.exe` with no `--config` would instead fall back to defaults.) The
+database file, `cameras.d\` and the recordings/cache directories are created
+for you.
 
 Copy the sample config and edit it:
 
@@ -114,10 +119,12 @@ terminal).
 
 On the first start (empty users table) Eneverre creates an `admin` user with
 a **random** password and logs it once. Read it from `eneverre.log`, then log
-in at <http://localhost:8080/> and change it. To pick the password yourself,
-set `ENEVERRE_ADMIN_USER` / `ENEVERRE_ADMIN_PASS` before the first start
-(the install script's `-AdminPassword` does this); they're honored only while
-the users table is empty.
+in at <http://localhost:8080/>: the admin is required to set a new password on
+that first login before the app opens, so the logged password is used only
+once. To pick the bootstrap password yourself, set `ENEVERRE_ADMIN_USER` /
+`ENEVERRE_ADMIN_PASS` before the first start (the install script's
+`-AdminPassword` does this); they're honored only while the users table is
+empty, and that admin is still prompted to change it on first login.
 
 ## 4. Quick install with `install.ps1`
 

@@ -125,7 +125,11 @@ func main() {
 			setupLogging(lvl)
 		}
 	}
-	slog.Info("config loaded", "file", cfg.ConfigFile)
+	if cfg.FileLoaded {
+		slog.Info("config loaded", "file", cfg.ConfigFile)
+	} else {
+		slog.Info("no config file found, using defaults", "searched", cfg.ConfigFile)
+	}
 
 	db, err := store.Open(cfg.DBFile)
 	if err != nil {

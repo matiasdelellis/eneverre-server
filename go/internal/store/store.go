@@ -23,7 +23,8 @@ var schema = []string{
 		fullname TEXT,
 		first_name TEXT,
 		last_name TEXT,
-		role TEXT NOT NULL
+		role TEXT NOT NULL,
+		must_change_password INTEGER NOT NULL DEFAULT 0
 	)`,
 	`CREATE TABLE IF NOT EXISTS device_login (
 		device_code TEXT PRIMARY KEY,
@@ -183,6 +184,10 @@ func migrateColumns(db *sql.DB) error {
 	migrations := []struct{ table, column, typ string }{
 		{"users", "first_name", "TEXT"},
 		{"users", "last_name", "TEXT"},
+		// Forces the user to set a new password on next login (the UI gates on
+		// it; cleared by the self change-password endpoint). Defaults to 0 so
+		// existing accounts are unaffected.
+		{"users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"},
 		{"tokens", "device_name", "TEXT"},
 		{"device_login", "device_name", "TEXT"},
 		// Refresh-token columns: a renewable session (password login) carries a
@@ -273,8 +278,12 @@ func seedAdmin(db *sql.DB) error {
 			return err
 		}
 	}
+	// The initial admin is flagged to change its password on first login: the
+	// seed credential is either a random secret shown once in the log or a
+	// bootstrap value from ENEVERRE_ADMIN_PASS, neither of which should remain
+	// the account's permanent password.
 	if _, err := db.Exec(
-		"INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+		"INSERT INTO users (username, password, role, must_change_password) VALUES (?, ?, ?, 1)",
 		username, auth.GeneratePasswordHash(password), "admin",
 	); err != nil {
 		return err

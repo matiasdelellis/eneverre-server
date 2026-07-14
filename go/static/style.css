@@ -1414,6 +1414,8 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .cam-step input.readonly { opacity: 0.6; cursor: not-allowed; }
 .cam-check { flex-direction: row; align-items: center; gap: 8px; }
 .cam-check input { width: auto; }
+.checkbox-row { flex-direction: row; align-items: center; gap: 8px; }
+.checkbox-row input { width: auto; }
 .cam-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 .cam-probe { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

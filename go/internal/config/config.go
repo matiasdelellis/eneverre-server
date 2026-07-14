@@ -68,6 +68,10 @@ func (s Section) GetBool(key string, def bool) bool {
 // Config holds the resolved file locations and parsed sections.
 type Config struct {
 	ConfigFile string
+	// FileLoaded reports whether ConfigFile actually existed and was read. When
+	// false the config file was absent and every setting falls back to its
+	// built-in default (the file is optional, like the DB and cameras dir).
+	FileLoaded bool
 	CamerasDir string
 	DBFile     string
 
@@ -87,28 +91,29 @@ type LoadOptions struct {
 	DBPath     string
 }
 
-func firstExisting(paths []string, kind string) (string, error) {
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("missing %s: none of %v exist", kind, paths)
-}
-
 // Load reads the config file and resolves the cameras dir and DB path. The
 // optional opts struct lets a CLI flag beat the ENEVERRE_* env vars; with
 // opts zero-valued the behavior is the same as before (env vars, then
 // built-in search paths).
 func Load(opts LoadOptions) (*Config, error) {
+	// The config file is optional only when its path is left to the built-in
+	// search: a missing default file is not fatal — every setting falls back to
+	// its default. But an explicit path (--config flag or ENEVERRE_CONFIG_PATH)
+	// that does not exist is a mistake, not a "use defaults" signal, so it fails
+	// loudly (see the load step below). When no path is given, default to the
+	// last candidate (./data/eneverre.ini), picking an existing one if present.
 	cfgFile := opts.ConfigFile
 	if cfgFile == "" {
 		cfgFile = os.Getenv("ENEVERRE_CONFIG_PATH")
 	}
+	explicit := cfgFile != ""
 	if cfgFile == "" {
-		var err error
-		if cfgFile, err = firstExisting(configPaths, "eneverre.ini"); err != nil {
-			return nil, err
+		cfgFile = configPaths[len(configPaths)-1]
+		for _, p := range configPaths {
+			if _, err := os.Stat(p); err == nil {
+				cfgFile = p
+				break
+			}
 		}
 	}
 
@@ -147,13 +152,25 @@ func Load(opts LoadOptions) (*Config, error) {
 		}
 	}
 
-	// Insensitive lowercases section and key names, matching configparser.
-	f, err := ini.LoadSources(ini.LoadOptions{Insensitive: true}, cfgFile)
-	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", cfgFile, err)
+	// Insensitive lowercases section and key names, matching configparser. When
+	// a default-searched file is absent we start from an empty document so every
+	// key resolves to its default. A file that exists but fails to parse is
+	// always fatal (a genuine typo is not silently ignored), and an explicitly
+	// requested file that is missing is fatal too (the operator pointed at it
+	// on purpose).
+	loadOpts := ini.LoadOptions{Insensitive: true}
+	fileLoaded := false
+	f := ini.Empty(loadOpts)
+	if _, err := os.Stat(cfgFile); err == nil {
+		if f, err = ini.LoadSources(loadOpts, cfgFile); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", cfgFile, err)
+		}
+		fileLoaded = true
+	} else if explicit {
+		return nil, fmt.Errorf("config file not found: %s: %w", cfgFile, err)
 	}
 
-	c := &Config{ConfigFile: cfgFile, CamerasDir: camDir, DBFile: dbFile}
+	c := &Config{ConfigFile: cfgFile, FileLoaded: fileLoaded, CamerasDir: camDir, DBFile: dbFile}
 	c.Server = sectionMap(f, "server")
 	if f.HasSection("media") {
 		c.Media = sectionMap(f, "media")

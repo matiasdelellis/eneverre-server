@@ -4,6 +4,7 @@
 
 import { token } from "./js/api.js";
 import { initLogin, showLogin } from "./js/views/login.js";
+import { initForcePasswordChange } from "./js/views/force-password.js";
 import { initTheme } from "./js/ui/theme.js";
 import { initPasswordReveal } from "./js/ui/password.js";
 import { initUserMenu } from "./js/ui/user-menu.js";
@@ -31,6 +32,7 @@ initUsers();
 initCameras();
 initWall();
 initLogin();
+initForcePasswordChange();
 setupPlaybackBar();
 initPlaybackKeys();
 initHelp();

@@ -125,6 +125,13 @@ export async function showApp() {
   $("#login").hidden = true;
   $("#app").hidden = false;
   const u = loadJson(USER_KEY);
+  // A still-pending forced password change (e.g. the page was reloaded before
+  // it completed) gates the app until it is done.
+  if (u && u.must_change_password) {
+    const { showForcePasswordChange } = await import("./force-password.js");
+    showForcePasswordChange();
+    return;
+  }
   const menu = $("#user-menu");
   menu.hidden = !u;
   refreshUserMenu(u);

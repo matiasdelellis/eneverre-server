@@ -126,14 +126,19 @@ sudo bash install.sh --uninstall
   can't write.
 * **Config seeding.** On first `--install-service`, the script creates
   `/etc/eneverre/` with the example `eneverre.ini` and an empty
-  `cameras.d/` — both are required for the service to start. Add your
-  cameras under `/etc/eneverre/cameras.d/` and `systemctl restart eneverre`.
+  `cameras.d/`. Neither is required for the service to start — the unit runs
+  `eneverre` with no explicit `--config`, so a missing file just means
+  built-in defaults and a missing `cameras.d/` just means no seed — but the
+  script seeds them so you have a place to configure. Add your cameras under
+  `/etc/eneverre/cameras.d/` and `systemctl restart eneverre`.
 * **Admin password.** On a first install the service creates an `admin`
   user with a random password and logs it once; the script prints it
   after starting the service (or read it later with
-  `journalctl -u eneverre | grep 'generated password'`). Log in and change
-  it. To pick the password yourself, set `ENEVERRE_ADMIN_PASS` before the
-  first start (e.g. via `systemctl edit eneverre`).
+  `journalctl -u eneverre | grep 'generated password'`). Log in at the web
+  UI — the admin is required to set a new password on that first login before
+  the app opens. To pick the bootstrap password yourself, set
+  `ENEVERRE_ADMIN_PASS` before the first start (e.g. via
+  `systemctl edit eneverre`); that admin is still prompted to change it.
 * **Existing config is never overwritten.** Re-running `--install-service`
   keeps your `eneverre.ini` and `cameras.d/` as they are, and `--uninstall`
   leaves `/etc/eneverre/` (config) and `/var/lib/eneverre/` (state) in

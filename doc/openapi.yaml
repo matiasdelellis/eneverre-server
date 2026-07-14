@@ -100,6 +100,14 @@ paths:
                     type: string
                   is_admin:
                     type: boolean
+                  must_change_password:
+                    type: boolean
+                    description: >-
+                      When true the client must send the user through the
+                      change-password flow (PUT /api/users/me/password) before
+                      using the app. Set for the seeded initial admin and for
+                      any account an admin flagged; cleared by a successful
+                      self password change.
         '401':
           description: Invalid credentials
           content:
@@ -1041,6 +1049,12 @@ paths:
                 last_name:
                   type: string
                   nullable: true
+                must_change_password:
+                  type: boolean
+                  default: false
+                  description: >-
+                    When true the new user is forced through the
+                    change-password flow on their first login.
       responses:
         '201':
           description: User created
@@ -1186,6 +1200,12 @@ paths:
                 password:
                   type: string
                   maxLength: 1024
+                must_change_password:
+                  type: boolean
+                  default: false
+                  description: >-
+                    When true the target user must change this password on
+                    their next login. Omitted/false clears any pending flag.
       responses:
         '200':
           description: Password updated
@@ -1659,6 +1679,11 @@ components:
         last_name:
           type: string
           nullable: true
+        must_change_password:
+          type: boolean
+          description: >-
+            Whether the user must change their password at next login
+            (cleared by a successful self password change).
 
     NameUpdate:
       type: object

@@ -63,9 +63,14 @@ go -C go build -o ./eneverre .
 ./eneverre
 ```
 
+A config file is optional — with none present Eneverre runs on sensible
+defaults (`0.0.0.0:8080`), so `./eneverre` above just works. See
+[`doc/example/README.md`](doc/example/README.md) to add one.
+
 On first run, Eneverre creates an **`admin`** user with a random password
-and prints it once to the log. Open <http://localhost:8080/>, log in, and
-change it before exposing the port beyond `localhost`.
+and prints it once to the log. Open <http://localhost:8080/> and log in: the
+admin is required to set a new password on that first login before the app
+opens, so the printed bootstrap password is only used once.
 
 See [`doc/RELEASES.md`](doc/RELEASES.md) for install-script flags, the
 `systemd` service, and how to verify a download. On **Windows**,

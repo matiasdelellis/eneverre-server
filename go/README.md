@@ -31,6 +31,11 @@ Config resolution matches the Python app (`app/config.py`):
 | Config file | `/etc/eneverre/eneverre.ini`, `./data/eneverre.ini` | `ENEVERRE_CONFIG_PATH`  |
 | Cameras dir | `/etc/eneverre/cameras.d`, `./data/cameras.d`     | `ENEVERRE_CAMERAS_DIR`  |
 
+The config file is optional: when the search finds none, Eneverre starts on
+built-in defaults (`Config.FileLoaded` is false). An **explicit** path
+(`--config` / `ENEVERRE_CONFIG_PATH`) that doesn't exist is fatal, and a file
+that exists but fails to parse is fatal too.
+
 > **Cameras are DB-backed.** The `cameras.d/*.ini` files are only an *initial
 > seed*, imported into the database once on first start (when no cameras exist
 > yet). After that, add and remove cameras from the web UI (**user menu →
@@ -100,6 +105,10 @@ Admin seeding: when the users table is empty, an `admin` user is created with
 a random password logged once at `WARN` (`ENEVERRE_ADMIN_USER` /
 `ENEVERRE_ADMIN_PASS` override the username / password when set). No credential
 is read from a config file — user management lives entirely in the DB. The
+seeded admin is flagged `must_change_password`, so the web UI forces a new
+password on first login before the app opens (the flag is UI-enforced; it does
+not block Basic-auth API calls). Admins can require the same change when
+creating a user or resetting a password; a self password change clears it. The
 listen address comes from
 `[server] host`/`port` (the Python `__main__` hardcoded `0.0.0.0:8080`; this
 port honors the config, defaulting to the same values). The server runs with

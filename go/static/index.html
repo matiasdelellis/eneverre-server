@@ -49,6 +49,21 @@
     </form>
   </div>
 
+  <div id="force-pw" class="screen" hidden>
+    <form id="force-pw-form" class="card">
+      <div class="brand brand-login">
+        <img class="brand-icon" src="/eneverre.svg" alt="" />
+        <h1>Eneverre</h1>
+      </div>
+      <p class="muted">You must set a new password before continuing.</p>
+      <label>Current password <input name="current_password" type="password" autocomplete="current-password" required /></label>
+      <label>New password <input name="new_password" type="password" autocomplete="new-password" required /></label>
+      <label>Confirm new password <input name="confirm_password" type="password" autocomplete="new-password" required /></label>
+      <button type="submit">Update password</button>
+      <p id="force-pw-error" class="error" hidden></p>
+    </form>
+  </div>
+
   <div id="app" hidden>
     <aside class="viewer-side" id="viewer-side">
       <header class="viewer-side-header">
@@ -243,6 +258,10 @@
             <option value="user">user</option>
             <option value="admin">admin</option>
           </select>
+        </label>
+        <label class="checkbox-row">
+          <input name="must_change_password" type="checkbox" />
+          Require a password change at next login
         </label>
         <p id="user-edit-status" class="error" hidden></p>
         <div class="user-edit-actions">

@@ -19,7 +19,7 @@ func (a *App) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if a.requireAdmin(w, r) == nil {
 		return
 	}
-	rows, err := a.db.Query("SELECT username, role, first_name, last_name FROM users")
+	rows, err := a.db.Query("SELECT username, role, first_name, last_name, must_change_password FROM users")
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "Query failed")
 		return
@@ -29,15 +29,17 @@ func (a *App) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var username, role string
 		var firstName, lastName sql.NullString
-		if err := rows.Scan(&username, &role, &firstName, &lastName); err != nil {
+		var mustChange bool
+		if err := rows.Scan(&username, &role, &firstName, &lastName, &mustChange); err != nil {
 			httpError(w, http.StatusInternalServerError, "Scan failed")
 			return
 		}
 		out = append(out, map[string]any{
-			"username":   username,
-			"role":       role,
-			"first_name": nullStrPtr(firstName),
-			"last_name":  nullStrPtr(lastName),
+			"username":             username,
+			"role":                 role,
+			"first_name":           nullStrPtr(firstName),
+			"last_name":            nullStrPtr(lastName),
+			"must_change_password": mustChange,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -49,6 +51,9 @@ type createUserRequest struct {
 	Role      string  `json:"role"`
 	FirstName *string `json:"first_name"`
 	LastName  *string `json:"last_name"`
+	// MustChangePassword, when true, forces the new user through the
+	// change-password flow on their first login. Optional (defaults to false).
+	MustChangePassword bool `json:"must_change_password"`
 }
 
 func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -67,8 +72,8 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, err := a.db.Exec(
-		"INSERT INTO users (username, password, role, first_name, last_name) VALUES (?, ?, ?, ?, ?)",
-		req.Username, auth.GeneratePasswordHash(req.Password), req.Role, req.FirstName, req.LastName,
+		"INSERT INTO users (username, password, role, first_name, last_name, must_change_password) VALUES (?, ?, ?, ?, ?, ?)",
+		req.Username, auth.GeneratePasswordHash(req.Password), req.Role, req.FirstName, req.LastName, req.MustChangePassword,
 	)
 	if err != nil {
 		// UNIQUE/PRIMARY KEY violation on username.
@@ -76,11 +81,12 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"message":    "User created",
-		"username":   req.Username,
-		"role":       req.Role,
-		"first_name": req.FirstName,
-		"last_name":  req.LastName,
+		"message":              "User created",
+		"username":             req.Username,
+		"role":                 req.Role,
+		"first_name":           req.FirstName,
+		"last_name":            req.LastName,
+		"must_change_password": req.MustChangePassword,
 	})
 }
 
@@ -113,7 +119,8 @@ func (a *App) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "Current password is incorrect")
 		return
 	}
-	if _, err := a.db.Exec("UPDATE users SET password = ? WHERE username = ?",
+	// Changing your own password satisfies any pending force-change flag.
+	if _, err := a.db.Exec("UPDATE users SET password = ?, must_change_password = 0 WHERE username = ?",
 		auth.GeneratePasswordHash(req.NewPassword), me.Username); err != nil {
 		httpError(w, http.StatusInternalServerError, "Could not update password")
 		return
@@ -253,6 +260,9 @@ func (a *App) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 
 type updatePasswordRequest struct {
 	Password string `json:"password"`
+	// MustChangePassword forces the target user to change this password on
+	// their next login. Optional; omitted/false clears any pending flag.
+	MustChangePassword bool `json:"must_change_password"`
 }
 
 func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
@@ -270,8 +280,8 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if passwordTooLong(w, req.Password) {
 		return
 	}
-	res, err := a.db.Exec("UPDATE users SET password = ? WHERE username = ?",
-		auth.GeneratePasswordHash(req.Password), r.PathValue("username"))
+	res, err := a.db.Exec("UPDATE users SET password = ?, must_change_password = ? WHERE username = ?",
+		auth.GeneratePasswordHash(req.Password), req.MustChangePassword, r.PathValue("username"))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "Could not update password")
 		return

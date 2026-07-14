@@ -5,6 +5,14 @@ resolved from `/etc/eneverre/...` first, then `./data/...` (override with
 `ENEVERRE_CONFIG_PATH` / `ENEVERRE_CAMERAS_DIR`). Section and key names are
 case-insensitive.
 
+**The main config file is optional.** When neither `/etc/eneverre/eneverre.ini`
+nor `./data/eneverre.ini` exists, Eneverre starts with every setting at its
+built-in default (the same as an empty file). It only fails to start if the
+file *you pointed it at* is missing — i.e. an explicit `ENEVERRE_CONFIG_PATH`
+or `--config` path that does not exist — or if a file that *does* exist fails
+to parse. So a minimal install needs no `eneverre.ini` at all, but a typo in an
+explicit path is caught instead of silently falling back to defaults.
+
 ## eneverre.ini
 
 The main file holds the listen address and the optional embedded-media /
@@ -22,10 +30,15 @@ port = 8080
 > file — all user management lives in `data/eneverre.db`. The first time the
 > users table is empty, an `admin` user is created with a **random password
 > that is logged once** (`journalctl -u eneverre | grep 'generated password'`,
-> or straight to the terminal when run in the foreground). **Log in and change
-> it before any non-local use.** To choose the password yourself, set
-> `ENEVERRE_ADMIN_PASS` (and optionally `ENEVERRE_ADMIN_USER`) before the first
-> start. Manage further users through the `/api/users` endpoints or the web UI.
+> or straight to the terminal when run in the foreground). To choose the
+> password yourself, set `ENEVERRE_ADMIN_PASS` (and optionally
+> `ENEVERRE_ADMIN_USER`) before the first start. Either way the seeded admin is
+> flagged **must change password**: the web UI forces a new password on the
+> first login before the app opens, so the bootstrap credential never becomes
+> the permanent one. (The flag is UI-enforced; Basic-auth API calls such as
+> `curl -u admin:...` are not blocked by it.) Manage further users through the
+> `/api/users` endpoints or the web UI — where an admin can require the same
+> forced change when creating a user or resetting a password.
 
 Optional sections (all commented out by default). `[media]` is the embedded
 media engine. The engine is always built for cameras with a `source`
@@ -201,10 +214,12 @@ journalctl -u eneverre -f
 
 On its first start the service creates the admin user with a random password
 and logs it once — read it with `journalctl -u eneverre | grep 'generated
-password'`, then change it from the UI (or `PUT /api/users/me/password`). To
-set a known password instead, add `ENEVERRE_ADMIN_PASS` (and optionally
+password'`. The seeded admin is flagged **must change password**, so the first
+web login walks you through setting a new one before the app opens (the
+bootstrap password is only ever meant to get you in once). To set a known
+password instead, add `ENEVERRE_ADMIN_PASS` (and optionally
 `ENEVERRE_ADMIN_USER`) via a drop-in (`systemctl edit eneverre`) before the
-first start. Notes:
+first start — that admin is still prompted to change it on first login. Notes:
 
  * **Listen port.** The default is `8080`. To bind a privileged port (< 1024)
    add `AmbientCapabilities=CAP_NET_BIND_SERVICE` and
