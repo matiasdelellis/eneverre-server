@@ -80,6 +80,18 @@ All code lives under `go/` (module `eneverre`).
   in-progress fMP4 segment so a clean stop doesn't lose the tail of a
   recording (in live-only mode the segment has no disk backing — only
   the live relay/broadcaster state is torn down).
+- `go/lifecycle.go` — the platform-agnostic `serveAndShutdown` (serve
+  until `stop` fires, then `gracefulShutdown`) shared by the terminal
+  shutdown paths. `gracefulShutdown` drains the HTTP server with a 10s
+  timeout and runs the caller-supplied `cleanup` (engine + DB close).
+- `go/run_unix.go` / `go/run_windows.go` — the platform split for
+  `runServer` (signal-driven on Unix; SCM-`Execute` or `Ctrl+C` on
+  Windows) and `resolveLogWriter` (stderr everywhere, plus
+  `ENEVERRE_LOG_FILE` when running under the Windows Service Control
+  Manager so the first-run admin password isn't discarded). On Windows
+  the binary is service-aware: it reports `Running`/`StopPending` to
+  the SCM and turns a `Stop`/shutdown control into the same graceful
+  drain as `Ctrl+C`, so no NSSM/WinSW wrapper is needed.
 - `go/embed.go` — `//go:embed all:static` of the web UI.
 - `go/static/` — the vanilla-JS frontend (no build step). `index.html`,
   `style.css`, `timeline.js`, vendored `hls.min.js`, and `app.js` — the entry
@@ -97,7 +109,9 @@ All code lives under `go/` (module `eneverre`).
   `cfg.Auth`, `cfg.Updates`) — `nil` when the section is absent — so
   callers branch with a single nil check. `cfg.Media` specifically
   drives recording mode: when present, the engine records; when absent,
-  the engine runs in live-only mode.
+  the engine runs in live-only mode. The per-platform search paths
+  come from `config.go` (Unix) and `paths_windows.go` (Windows, which
+  rewrites the slices in `init()` to `%ProgramData%\Eneverre\...`).
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
   (`users`, `device_login`, `tokens`, `events`, `streamauth_credentials`),
   idempotent column migrations,
@@ -156,7 +170,10 @@ All code lives under `go/` (module `eneverre`).
   - `engine` — top-level orchestrator: owns the recorder, RTSP relay, live
     broadcaster and retention cleaner per camera; `OptionsFromSection` maps
     `[media]` INI keys to a struct; `Close` finalizes every in-progress
-    fMP4 segment and shuts everything down on `SIGTERM`/`SIGINT`.
+    fMP4 segment and shuts everything down on `SIGTERM`/`SIGINT`. The
+    default `record_dir` (used when the INI key is unset) is per-platform:
+    `paths_other.go` returns the FHS `/var/lib/eneverre/recordings`,
+    `paths_windows.go` returns `%ProgramData%\Eneverre\recordings`.
   - `recorder` — per-camera RTSP client (`gortsplib`) that demuxes video
     (H264 or H265) + AAC/G711, writes fragmented-MP4 segments on disk and
     indexes them in SQLite (with the `mtxi` box for gapless concatenation on

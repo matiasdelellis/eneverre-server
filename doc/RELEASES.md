@@ -65,8 +65,11 @@ below.
 ## Installing with `install.sh`
 
 [`scripts/install.sh`](../scripts/install.sh) automates the download →
-verify → install flow above for Linux and macOS (Windows is not
-supported). It fetches the correct tarball for the host's OS/arch from
+verify → install flow above for Linux and macOS. **Windows** has its own
+[`scripts/install.ps1`](../scripts/install.ps1) (download → verify → install
+plus an optional native Windows service) — see
+[`doc/WINDOWS.md`](WINDOWS.md). The rest of this section is the Linux/macOS
+script. It fetches the correct tarball for the host's OS/arch from
 the GitHub Releases of `matiasdelellis/eneverre-server`, checks its
 SHA-256, and installs the binary — replacing an existing one **atomically**
 (staged next to the target, then `rename(2)`d over it), so an update is

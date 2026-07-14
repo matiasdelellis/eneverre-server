@@ -90,7 +90,7 @@ func DefaultOptions() Options {
 // OptionsFromSection builds Options from a [media] config.Section, applying
 // defaults. server/relay credentials are supplied separately by the caller.
 func OptionsFromSection(sec config.Section) Options {
-	recordDir := sec.Get("record_dir", "/var/lib/eneverre/recordings")
+	recordDir := sec.Get("record_dir", defaultRecordDir)
 	o := DefaultOptions()
 	o.MSEEnabled = sec.GetBool("mse", true)
 	o.RelayEnabled = sec.GetBool("relay", true)

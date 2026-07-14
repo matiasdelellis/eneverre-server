@@ -5,17 +5,15 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"eneverre/internal/camera"
@@ -33,6 +31,12 @@ import (
 // fallback 0.1.0-dev).
 var version = "0.1.0-dev"
 
+// logWriter is where the logger sends its output. It defaults to stderr and is
+// overridden once at startup by resolveLogWriter — on Windows, a service
+// launched by the Service Control Manager has no console, so logs (including
+// the one-time first-run admin password) are redirected to a file there.
+var logWriter io.Writer = os.Stderr
+
 // setupLogging installs a leveled slog text handler as the default logger.
 // Recognized levels: debug, info (default), warn, error.
 func setupLogging(level string) {
@@ -45,7 +49,7 @@ func setupLogging(level string) {
 	case "error":
 		lvl = slog.LevelError
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: lvl})))
 }
 
 // fatal logs an error and exits non-zero.
@@ -92,6 +96,11 @@ func main() {
 		return
 	}
 
+	// Decide where logs go before the first line is written. On Windows under
+	// the Service Control Manager this redirects to a file (no console);
+	// everywhere else it stays on stderr.
+	logWriter = resolveLogWriter()
+
 	// Initial level from CLI > env, so even config-load errors are
 	// leveled correctly. The config-file value (if any) is applied once
 	// the config is loaded.
@@ -122,7 +131,6 @@ func main() {
 	if err != nil {
 		fatal("open database failed", "path", cfg.DBFile, "err", err)
 	}
-	defer db.Close()
 	if err := store.Init(db); err != nil {
 		fatal("init database failed", "err", err)
 	}
@@ -200,7 +208,6 @@ func main() {
 	if err != nil {
 		fatal("media engine init failed", "err", err)
 	}
-	defer engine.Close()
 	engine.Start(cams)
 
 	app := server.New(cfg, db, creds, camStore, cams, uiFS, opts.staticCacheControl,
@@ -273,36 +280,23 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// Serve in the background so main can wait for either a fatal server error
-	// or a shutdown signal.
-	srvErr := make(chan error, 1)
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			srvErr <- err
-		}
-	}()
+	// cleanup finalizes and indexes each camera's in-progress fMP4 segment (via
+	// engine.Close -> recorder.Close) and closes the DB. It runs on every clean
+	// shutdown so a stop doesn't drop the recording since the last segment
+	// rotation.
+	cleanup := func() {
+		engine.Close()
+		db.Close()
+	}
 
-	// Graceful shutdown on SIGINT/SIGTERM (e.g. systemctl stop): drain the HTTP
-	// server, then let the deferred engine.Close()/db.Close() run. engine.Close()
-	// finalizes and indexes each camera's in-progress fMP4 segment (via
-	// recorder.Close) so a clean stop doesn't drop the recording since the last
-	// segment rotation. A fatal serve error exits non-zero instead.
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	select {
-	case err := <-srvErr:
+	// runServer serves until a platform shutdown trigger fires — SIGINT/SIGTERM
+	// on Unix, and on Windows either Ctrl+C or the Service Control Manager's
+	// Stop/Shutdown control — then drains the HTTP server and runs cleanup. It
+	// is the single graceful-shutdown path for both the terminal and the
+	// Windows service. A fatal serve error returns non-nil and exits non-zero.
+	if err := runServer(srv, cleanup); err != nil {
 		fatal("server stopped", "err", err)
-	case s := <-sig:
-		slog.Info("shutting down", "signal", s.String())
 	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Warn("http shutdown incomplete", "err", err)
-	}
-	// Returning here runs the deferred engine.Close() (finalizes in-progress
-	// segments) and db.Close().
 }
 
 // cliOptions holds the parsed CLI flags. A zero value means "not set";

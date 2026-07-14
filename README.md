@@ -46,6 +46,14 @@ right one, verifies its checksum, and installs it:
 curl -fsSL https://raw.githubusercontent.com/matiasdelellis/eneverre-server/main/scripts/install.sh | sudo bash
 ```
 
+On **Windows** (PowerShell, elevated):
+
+```powershell
+iex (irm 'https://raw.githubusercontent.com/matiasdelellis/eneverre-server/main/scripts/install.ps1')
+# add `-InstallService` to register + start the native Windows service
+.\install.ps1 -InstallService
+```
+
 Or build it yourself with a recent Go toolchain (1.22+):
 
 ```bash
@@ -60,9 +68,9 @@ and prints it once to the log. Open <http://localhost:8080/>, log in, and
 change it before exposing the port beyond `localhost`.
 
 See [`doc/RELEASES.md`](doc/RELEASES.md) for install-script flags, the
-`systemd` service, and how to verify a download. On **Windows**, grab the
-binary from Releases and follow [`doc/WINDOWS.md`](doc/WINDOWS.md) to run it
-as a service.
+`systemd` service, and how to verify a download. On **Windows**,
+[`doc/WINDOWS.md`](doc/WINDOWS.md) covers the service-aware build, the
+`install.ps1` flags, and the manual `sc.exe` recipe.
 
 [releases]: https://github.com/matiasdelellis/eneverre-server/releases
 
@@ -114,7 +122,7 @@ This is the Android client. 😍
 - [`doc/RELEASES.md`](doc/RELEASES.md) — release process, supported
   platforms, and how to verify a download.
 - [`doc/WINDOWS.md`](doc/WINDOWS.md) — installing on Windows and running it
-  as a service (NSSM / WinSW).
+  as a native service (no wrapper).
 - [`go/README.md`](go/README.md) — Go internals: layout and operational
   notes.
 
