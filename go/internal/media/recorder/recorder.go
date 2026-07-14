@@ -210,10 +210,14 @@ func (r *Recorder) Start() error {
 		return fmt.Errorf("%w; stream offers: %s", ErrNoSupportedVideo, strings.Join(offered, ", "))
 	}
 
-	// publish the source to the live relay (if wired)
+	// publish the source to the live relay (if wired). A relay failure must not
+	// take the camera down: recording and the live MSE feed are independent
+	// sinks fed from the same RTP, so log the relay off for this session and
+	// keep going. (OnRTP below then no-ops harmlessly — the relay drops packets
+	// for a path with no source.)
 	if r.OnSource != nil {
 		if err = r.OnSource(desc); err != nil {
-			return err
+			r.Logf("live relay disabled for this session: %v", err)
 		}
 	}
 	r.videoCodec = &mcodecs.H264{}

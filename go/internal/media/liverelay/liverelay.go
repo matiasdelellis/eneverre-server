@@ -15,6 +15,7 @@ import (
 	"github.com/bluenviron/gortsplib/v5"
 	"github.com/bluenviron/gortsplib/v5/pkg/base"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/liberrors"
 	"github.com/pion/rtp"
 )
@@ -75,6 +76,7 @@ func (r *Relay) Close() {
 // description. Called by a recorder whenever it (re)connects to its camera.
 func (r *Relay) SetSource(path string, desc *description.Session) error {
 	path = normalize(path)
+	promoteH264PacketizationMode(desc)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if st := r.streams[path]; st != nil {
@@ -88,6 +90,32 @@ func (r *Relay) SetSource(path string, desc *description.Session) error {
 	r.streams[path] = st
 	r.Logf("live source ready: %s (%d media(s))", path, len(desc.Medias))
 	return nil
+}
+
+// promoteH264PacketizationMode rewrites any H264 format advertising
+// packetization-mode=0 to mode 1, in place, before the description reaches the
+// ServerStream. gortsplib's server refuses to serve mode 0
+// (ErrServerH264PacketizationMode0), which would fail SetSource and take the
+// whole camera down. Many cameras (notably Hikvision/Dahua) advertise mode 0 in
+// their SDP yet actually send fragmented FU-A packets — i.e. mode 1 behaviour.
+// Mode 1 is a strict superset of mode 0 (it also allows single NAL units and
+// STAP-A), so promoting it is always safe: the RTP is passed through untouched
+// and readers just see a more permissive SDP.
+//
+// The format is mutated in place rather than cloned on purpose: the ServerStream
+// routes writes by *description.Media pointer identity (st.medias is keyed by
+// the pointer), and the recorder forwards packets with the same Media pointer it
+// passed here via WritePacketRTP. Cloning the media would break that routing and
+// silently drop every packet. Changing only PacketizationMode is harmless to the
+// recorder, whose H264 decoder accepts FU-A/STAP-A/single-NAL regardless of mode.
+func promoteH264PacketizationMode(desc *description.Session) {
+	for _, medi := range desc.Medias {
+		for _, forma := range medi.Formats {
+			if h264, ok := forma.(*format.H264); ok && h264.PacketizationMode == 0 {
+				h264.PacketizationMode = 1
+			}
+		}
+	}
 }
 
 // ClearSource drops the stream for a path (camera disconnected). Readers get
