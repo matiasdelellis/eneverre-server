@@ -87,6 +87,12 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	expiresAt := now + a.accessTTL
 	refreshExpiresAt := now + a.refreshTTL
 	deviceName := cleanDeviceName(req.DeviceName)
+	// No client-supplied label: derive one from the User-Agent so browser
+	// logins ("Chrome · Linux") are distinguishable in the session list
+	// instead of showing blank. Best-effort and spoofable — not a security id.
+	if !deviceName.Valid {
+		deviceName = cleanDeviceName(deviceNameFromUA(r.UserAgent()))
+	}
 	a.cleanupExpiredTokens()
 	if _, err := a.db.Exec(
 		"INSERT INTO tokens (token, username, expires_at, created_at, device_name, refresh_token, refresh_expires_at) "+
