@@ -211,6 +211,24 @@ input {
 .card h1 { margin: 0; }
 .card label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
 
+/* Language picker at the foot of the login card. */
+.login-langs {
+  display: flex;
+  justify-content: center;
+  margin-top: 2px;
+}
+#login-lang-select {
+  width: auto;
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
 /* Brand mark: app icon + wordmark. Same SVG works in both themes
    because the icon is recolored per-theme via a CSS filter. */
 .brand { display: inline-flex; align-items: center; gap: 10px; }

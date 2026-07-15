@@ -1,7 +1,25 @@
 import { $ } from "../util/dom.js";
 import { set, saveJson, loadJson, USER_KEY, TOKEN_KEY } from "../util/storage.js";
 import { api } from "../api.js";
-import { t } from "../i18n.js";
+import { t, getSupportedLangs, getLang, setLang, langName } from "../i18n.js";
+
+// Language picker at the foot of the login card — the user menu (the other
+// place to switch language) only exists after signing in. A native <select>
+// so it stays compact as languages are added. setLang() re-runs the static
+// i18n pass, so the login text updates in place on change.
+function buildLoginLangs() {
+  const sel = document.getElementById("login-lang-select");
+  if (!sel || sel.dataset.built) return;
+  sel.dataset.built = "1";
+  for (const code of getSupportedLangs()) {
+    const opt = document.createElement("option");
+    opt.value = code;
+    opt.textContent = langName(code);
+    sel.appendChild(opt);
+  }
+  sel.value = getLang();
+  sel.addEventListener("change", () => setLang(sel.value));
+}
 
 export function finishBoot() {
   document.documentElement.classList.remove("booting");
@@ -19,6 +37,7 @@ export function showLogin() {
 }
 
 export function initLogin() {
+  buildLoginLangs();
   $("#login-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const err = $("#login-error");
