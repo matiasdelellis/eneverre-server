@@ -96,6 +96,9 @@
             </button>
             <ul id="user-menu-list" class="user-menu-list" role="menu" hidden>
               <li role="none">
+                <button id="account-btn" class="user-menu-item" role="menuitem">My account</button>
+              </li>
+              <li role="none">
                 <button id="users-btn" class="user-menu-item" role="menuitem" hidden>Manage users</button>
               </li>
               <li role="none">
@@ -171,7 +174,7 @@
   <section id="users-view" class="users-view" hidden>
     <header class="topbar">
       <button id="users-back" class="ghost" data-icon="arrow-left">Back to cameras</button>
-      <strong>Users</strong>
+      <strong id="users-view-title">Users</strong>
       <span class="grow"></span>
       <button id="users-new" class="primary" hidden>+ New user</button>
     </header>
@@ -191,7 +194,7 @@
         </div>
       </section>
 
-      <section class="users-card">
+      <section id="account-section" class="users-card">
         <h2>My account</h2>
         <p class="muted">Signed in as <span id="me-username"></span> (<span id="me-role"></span>)</p>
 

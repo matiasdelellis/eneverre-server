@@ -5,7 +5,7 @@ import {
 import { getState } from "../state.js";
 import { confirmModal } from "../ui/dialog.js";
 import { closeUserMenu } from "../ui/user-menu.js";
-import { moveGlobalControlsTo } from "./app-shell.js";
+import { moveGlobalControlsTo, closeOverlayViews } from "./app-shell.js";
 
 let camerasCache = null; // [Camera, ...] as returned by GET /api/cameras
 let wizardStep = 1;
@@ -21,6 +21,7 @@ function isCamerasViewOpen() {
 
 export function enterCamerasView() {
   if (isCamerasViewOpen()) return;
+  closeOverlayViews(); // never stack on top of the Users panel
   document.getElementById("app").hidden = true;
   document.getElementById("cameras-view").hidden = false;
   moveGlobalControlsTo(document.querySelector("#cameras-view header.topbar"));

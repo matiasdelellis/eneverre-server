@@ -5,7 +5,7 @@ import { api } from "../api.js";
 import { blankToNull, displayName } from "../util/format.js";
 import { alertModal, confirmModal, promptModal } from "../ui/dialog.js";
 import { refreshUserMenu, closeUserMenu } from "../ui/user-menu.js";
-import { moveGlobalControlsTo } from "./app-shell.js";
+import { moveGlobalControlsTo, closeOverlayViews } from "./app-shell.js";
 
 let usersCache = null;     // [{ username, role, first_name, last_name }, ...]
 let sessionsCache = null;  // { active: [...], expired: [...] }
@@ -23,29 +23,43 @@ export function me() {
   };
 }
 
-function isUsersViewOpen() {
-  const v = document.getElementById("users-view");
-  return v && !v.hidden;
-}
-
-export function enterUsersView() {
-  if (isUsersViewOpen()) return;
+// enterUsersView opens one of two distinct panels that share the same
+// <section id="users-view"> shell (topbar + body) but never show their cards
+// at the same time:
+//   "account" (default) — the signed-in user's own settings only (name,
+//      password, sessions). Reachable by every user via the "My account"
+//      menu item. The admin user-management section stays hidden.
+//   "manage" — the admin user-management section only (list + "New user").
+//      Personal settings are NOT shown here; the admin reaches their own
+//      account through the separate "My account" item. Only takes effect for
+//      admins; a non-admin who somehow requests it falls back to "account".
+export function enterUsersView(mode = "account") {
+  closeOverlayViews(); // never stack on top of the Cameras panel
   document.getElementById("app").hidden = true;
   const v = document.getElementById("users-view");
   v.hidden = false;
   moveGlobalControlsTo(v.querySelector("header.topbar"));
   const meData = me();
-  document.getElementById("me-username").textContent = meData ? meData.username : "";
-  document.getElementById("me-role").textContent = meData ? meData.role : "";
-  const nameForm = document.getElementById("my-name-form");
-  if (nameForm) {
-    nameForm.elements.first_name.value = meData && meData.first_name ? meData.first_name : "";
-    nameForm.elements.last_name.value = meData && meData.last_name ? meData.last_name : "";
+  const manage = mode === "manage" && !!meData && meData.is_admin;
+  const titleEl = document.getElementById("users-view-title");
+  if (titleEl) titleEl.textContent = manage ? "Users" : "My account";
+  document.getElementById("account-section").hidden = manage;
+  document.getElementById("users-new").hidden = !manage;
+  document.getElementById("users-list-section").hidden = !manage;
+  setUsersStatus(null);
+  const tasks = [];
+  if (manage) {
+    tasks.push(loadUsers());
+  } else {
+    document.getElementById("me-username").textContent = meData ? meData.username : "";
+    document.getElementById("me-role").textContent = meData ? meData.role : "";
+    const nameForm = document.getElementById("my-name-form");
+    if (nameForm) {
+      nameForm.elements.first_name.value = meData && meData.first_name ? meData.first_name : "";
+      nameForm.elements.last_name.value = meData && meData.last_name ? meData.last_name : "";
+    }
+    tasks.push(loadMySessions());
   }
-  document.getElementById("users-new").hidden = !meData || !meData.is_admin;
-  document.getElementById("users-list-section").hidden = !meData || !meData.is_admin;
-  const tasks = [loadMySessions()];
-  if (meData && meData.is_admin) tasks.push(loadUsers());
   Promise.allSettled(tasks);
 }
 
@@ -422,7 +436,8 @@ async function submitMyName(e) {
 }
 
 export function initUsers() {
-  document.getElementById("users-btn")?.addEventListener("click", () => { closeUserMenu(); enterUsersView(); });
+  document.getElementById("account-btn")?.addEventListener("click", () => { closeUserMenu(); enterUsersView("account"); });
+  document.getElementById("users-btn")?.addEventListener("click", () => { closeUserMenu(); enterUsersView("manage"); });
   document.getElementById("users-back")?.addEventListener("click", exitUsersView);
   document.getElementById("users-new")?.addEventListener("click", openUserEditModal);
   document.getElementById("user-edit-cancel")?.addEventListener("click", closeUserEditModal);

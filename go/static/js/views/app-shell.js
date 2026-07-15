@@ -211,6 +211,21 @@ export function moveGlobalControlsTo(targetTopbar) {
   targetTopbar.appendChild(controls);
 }
 
+// closeOverlayViews hides every full-screen overlay (the Users and Cameras
+// panels and their modals). They all use `position: fixed; inset: 0` with the
+// same z-index, so when two are open at once the later one in the DOM paints
+// on top — and closing it reveals the other stacked underneath instead of the
+// live app. The user menu lives in each overlay's topbar, so an admin can jump
+// straight from one overlay to another without the first ever closing. Calling
+// this when entering an overlay keeps exactly one open, so "Back to cameras"
+// always lands on the live wall rather than the previously-open panel.
+export function closeOverlayViews() {
+  for (const id of ["users-view", "user-edit-modal", "cameras-view", "cam-wizard-modal"]) {
+    const el = document.getElementById(id);
+    if (el) el.hidden = true;
+  }
+}
+
 function initTopbar() {
   $("#view-live").addEventListener("click", () => setViewMode("live"));
   $("#view-playback").addEventListener("click", () => setViewMode("playback"));
