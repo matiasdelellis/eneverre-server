@@ -5,6 +5,7 @@ import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js
 import { attachMse, captureVideoFrame } from "./mse.js";
 import { hidePtzModal } from "./ptz.js";
 import { toast } from "../ui/toast.js";
+import { t } from "../i18n.js";
 import { setCamStatus } from "../ui/cam-status.js";
 import { icon } from "../ui/icons.js";
 import { loadJson, USER_KEY } from "../util/storage.js";
@@ -17,7 +18,7 @@ const MAX_CLIP_SECONDS = 5 * 60;
 function setMuteButton(btn, muted) {
   if (!btn) return;
   btn.innerHTML = icon(muted ? "volume-x" : "volume-2");
-  btn.title = muted ? "Unmute" : "Mute";
+  btn.title = muted ? t("wall.unmute") : t("wall.mute");
 }
 
 // Mute every wall tile except `keep`, updating each mute button so the
@@ -105,7 +106,7 @@ export function gridLayout(count) {
 
 function snapshotTile(tile, video, cam) {
   if (!video.videoWidth || !video.videoHeight) {
-    toast("Snapshot unavailable: no video frame yet", { type: "error" });
+    toast(t("mse.snapshot_unavailable"), { type: "error" });
     return;
   }
   const canvas = document.createElement("canvas");
@@ -123,7 +124,7 @@ function snapshotTile(tile, video, cam) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  toast("Snapshot saved", { type: "success" });
+  toast(t("mse.snapshot_saved"), { type: "success" });
 }
 
 async function tryLoadThumbnail(tile, camId) {
@@ -163,15 +164,15 @@ function renderWallTile(cam) {
   tile.dataset.mode = "live";
   tile.innerHTML = `
     <video autoplay playsinline muted poster="/img/camera-banner.png"></video>
-    <span class="cam-status-dot connecting" data-cam="${escapeHtml(cam.id)}" title="Connecting…" aria-label="Connecting…"></span>
+    <span class="cam-status-dot connecting" data-cam="${escapeHtml(cam.id)}" title="${t("connecting")}" aria-label="${t("connecting")}"></span>
     <div class="wall-overlay">
       <div class="wall-bottom">
         <div class="wall-name">${escapeHtml(cam.name || cam.id)}</div>
         <div class="wall-actions">
-          <button data-act="clip" title="Download clip" aria-label="Download clip">${icon("save")}</button>
-          <button data-act="snap" title="Snapshot" aria-label="Snapshot">${icon("camera")}</button>
-          <button data-act="mute" title="Unmute" aria-label="Toggle audio">${icon("volume-x")}</button>
-          <button data-act="fs" title="Fullscreen" aria-label="Fullscreen">${icon("maximize")}</button>
+          <button data-act="clip" title="${t("wall.download_clip")}" aria-label="${t("wall.download_clip")}">${icon("save")}</button>
+          <button data-act="snap" title="${t("wall.snapshot")}" aria-label="${t("wall.snapshot")}">${icon("camera")}</button>
+          <button data-act="mute" title="${t("wall.unmute")}" aria-label="${t("wall.unmute")}">${icon("volume-x")}</button>
+          <button data-act="fs" title="${t("wall.fullscreen")}" aria-label="${t("wall.fullscreen")}">${icon("maximize")}</button>
         </div>
       </div>
     </div>
@@ -217,7 +218,7 @@ function renderWallTile(cam) {
           }
           if (durationSec > MAX_CLIP_SECONDS) {
             durationSec = MAX_CLIP_SECONDS;
-            toast(`Clip capped at ${MAX_CLIP_SECONDS / 60} min`, { type: "info" });
+            toast(t("wall.clip_capped", { minutes: MAX_CLIP_SECONDS / 60 }), { type: "info" });
           }
           btn.disabled = true;
           btn.innerHTML = icon("loader");
@@ -227,13 +228,13 @@ function renderWallTile(cam) {
           } catch (err) {
             console.warn("clip download failed", err);
             btn.innerHTML = icon("x-circle");
-            toast(`Clip download failed: ${err.message}`, { type: "error" });
+            toast(t("wall.clip_failed", { err: err.message }), { type: "error" });
             setTimeout(() => { btn.disabled = false; btn.innerHTML = icon("save"); }, 2000);
             return;
           }
           btn.disabled = false;
           btn.innerHTML = icon("save");
-          toast(`Clip saved (${fmtElapsed(durationSec)})`, { type: "success" });
+          toast(t("wall.clip_saved", { elapsed: fmtElapsed(durationSec) }), { type: "success" });
         } else {
           // First click: mark start time
           const mode = tile.dataset.mode;
@@ -248,7 +249,7 @@ function renderWallTile(cam) {
           tile._clipStart = true;
           tile._clipStartAt = startMsec;
           btn.classList.add("clipping");
-          btn.title = "Click again to end clip";
+          btn.title = t("wall.click_end_clip");
           btn.innerHTML = icon("circle-dot");
           // Live clips are wall-clock bound, so tick a visible counter.
           // Playback clips advance with the timeline, so leave the marker
@@ -308,7 +309,7 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
       setCamStatus(cam.id, "offline");
       if (video) {
         const p = makeMsg("");
-        p.innerHTML = `${icon("lock")} Privacy — not recording`;
+        p.innerHTML = `${icon("lock")} ${t("wall.privacy")}`;
         video.replaceWith(p);
       }
     } else if (cam.live_mse) {
@@ -316,7 +317,7 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
       if (m) wallInstances.set(cam.id, withThumbGrab(cam, video, m));
     } else if (video) {
       setCamStatus(cam.id, "offline");
-      video.replaceWith(makeMsg("No live stream"));
+      video.replaceWith(makeMsg(t("no_live_stream")));
     }
   }
 }
@@ -329,7 +330,7 @@ function resetClipButton(tile, btn) {
   const b = btn || tile.querySelector('.wall-actions button[data-act="clip"]');
   if (b) {
     b.classList.remove("clipping");
-    b.title = "Download clip";
+    b.title = t("wall.download_clip");
     // Don't clobber the in-flight loader glyph when the button is disabled
     // (a click that already started a download and is still mid-fetch).
     if (!b.disabled) b.innerHTML = icon("save");
@@ -416,13 +417,13 @@ function renderWallEmpty(wall) {
   empty.className = "wall-empty wall-status";
   empty.innerHTML = `
     <div class="wall-empty-icon" aria-hidden="true">${icon("camera")}</div>
-    <h2 class="wall-empty-title">No cameras yet</h2>
+    <h2 class="wall-empty-title">${t("wall.no_cameras")}</h2>
     <p class="wall-empty-text">${
       isAdmin
-        ? "Add your first camera to start watching live video and browsing recordings."
-        : "No cameras have been set up yet. Ask an administrator to add one."
+        ? t("wall.admin_empty")
+        : t("wall.user_empty")
     }</p>
-    ${isAdmin ? '<button class="primary wall-empty-cta" id="wall-add-camera">+ Add camera</button>' : ""}`;
+    ${isAdmin ? '<button class="primary wall-empty-cta" id="wall-add-camera">' + t("wall.add_camera") + '</button>' : ""}`;
   wall.replaceChildren(empty);
   if (isAdmin) {
     $("#wall-add-camera").addEventListener("click", async () => {
@@ -436,12 +437,12 @@ export async function loadWall(mode = "live") {
   const wall = $("#wall");
   destroyWall();
   await loadSidebar();
-  wall.innerHTML = "<p class='muted wall-status'>Loading…</p>";
+  wall.innerHTML = `<p class='muted wall-status'>${t("loading")}</p>`;
   let cams;
   try {
     cams = await fetchCameras();
   } catch (e) {
-    wall.innerHTML = `<p class="error wall-status">Failed to load cameras: ${escapeHtml(e.message)}</p>`;
+    wall.innerHTML = `<p class="error wall-status">${t("wall.failed_load", { msg: escapeHtml(e.message) })}</p>`;
     updateSidebarActive();
     return;
   }
@@ -469,10 +470,10 @@ export async function loadWall(mode = "live") {
   if (!filtered.length) {
     const filter = getState().wallFilter;
     let msg;
-    if (filter.type === "cam") msg = "Camera not found.";
-    else if (filter.type === "loc") msg = `No cameras in <strong>${escapeHtml(filter.value)}</strong>.`;
-    else msg = "No cameras match the current filter.";
-    wall.innerHTML = `<p class='muted wall-status'>${msg} <button class="ghost" id="wall-clear">Show all</button></p>`;
+    if (filter.type === "cam") msg = t("wall.camera_not_found");
+    else if (filter.type === "loc") msg = t("wall.no_cameras_in", { loc: escapeHtml(filter.value) });
+    else msg = t("wall.no_match");
+    wall.innerHTML = `<p class='muted wall-status'>${msg} <button class="ghost" id="wall-clear">${t("show_all")}</button></p>`;
     $("#wall-clear").addEventListener("click", () => setWallFilter({ type: "all" }));
     updateSidebarActive();
     return;
@@ -482,7 +483,7 @@ export async function loadWall(mode = "live") {
   wall.style.setProperty("--cols", cols);
   wall.style.setProperty("--tile-w", `${tilePct}%`);
   if (mode === "playback") {
-    wall.innerHTML = "<p class='muted wall-status'>Loading recordings…</p>";
+    wall.innerHTML = `<p class='muted wall-status'>${t("wall.loading_recordings")}</p>`;
     updateSidebarActive();
     await applyPlayback(filtered);
     updateSidebarActive();

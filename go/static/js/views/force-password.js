@@ -1,6 +1,7 @@
 import { $ } from "../util/dom.js";
 import { loadJson, saveJson, USER_KEY } from "../util/storage.js";
 import { api } from "../api.js";
+import { t } from "../i18n.js";
 
 // Mandatory password-change gate. Shown after login (or on reload) when the
 // account carries the server's `must_change_password` flag — set for the
@@ -35,7 +36,7 @@ export function initForcePasswordChange() {
     const fd = new FormData(form);
     const newPw = fd.get("new_password");
     if (newPw !== fd.get("confirm_password")) {
-      err.textContent = "New password and confirmation do not match.";
+      err.textContent = t("force-pw.mismatch");
       err.hidden = false;
       return;
     }
@@ -60,7 +61,7 @@ export function initForcePasswordChange() {
       const { showApp } = await import("./app-shell.js");
       showApp();
     } catch (e2) {
-      err.textContent = e2.message || "Could not update password";
+      err.textContent = e2.message || t("force-pw.error");
       err.hidden = false;
     } finally {
       submit.disabled = false;

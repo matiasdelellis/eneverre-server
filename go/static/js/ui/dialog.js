@@ -1,3 +1,5 @@
+import { t } from "../i18n.js";
+
 const dlg = {
   modal: null, card: null, titleEl: null, bodyEl: null,
   inputWrap: null, inputLabel: null, inputEl: null,
@@ -23,7 +25,7 @@ function onOk() {
   if (kind === "prompt") {
     const v = dlg.inputEl.value;
     if (mustMatch !== undefined && v !== mustMatch) {
-      dlg.errorEl.textContent = `Please type "${mustMatch}" exactly to confirm.`;
+      dlg.errorEl.textContent = t("dlg.must_match", { value: mustMatch });
       dlg.errorEl.hidden = false;
       dlg.inputEl.focus();
       dlg.inputEl.select();
@@ -44,10 +46,10 @@ function open({ title, body, kind, inputLabel, inputValue, input2Label, input2Va
     if (!dlg.modal) init();
     const hasSecond = input2Label !== undefined;
     dlg._active = { resolve: resolveP, kind, mustMatch, hasSecond, dismissOnBackdrop: dismissOnBackdrop !== false };
-    dlg.titleEl.textContent = title || "Confirm";
+    dlg.titleEl.textContent = title || t("dlg.confirm");
     dlg.bodyEl.textContent  = body || "";
-    dlg.okBtn.textContent     = okLabel || (kind === "prompt" ? "OK" : "OK");
-    dlg.cancelBtn.textContent = cancelLabel || "Cancel";
+    dlg.okBtn.textContent     = okLabel || t("dlg.ok");
+    dlg.cancelBtn.textContent = cancelLabel || t("dlg.cancel");
     if (kind === "prompt") {
       dlg.inputWrap.hidden = false;
       dlg.inputLabel.textContent = inputLabel || "";
@@ -107,22 +109,22 @@ function init() {
 }
 
 export function alertModal(message, opts = {}) {
-  return open({ title: opts.title || "Notice", body: message, kind: "alert", okLabel: opts.okLabel || "OK" });
+  return open({ title: opts.title || t("dlg.notice"), body: message, kind: "alert", okLabel: opts.okLabel || t("dlg.ok") });
 }
 
 export function confirmModal(message, opts = {}) {
   return open({
-    title: opts.title || "Confirm",
+    title: opts.title || t("dlg.confirm"),
     body: message,
     kind: "confirm",
-    okLabel: opts.okLabel || "OK",
-    cancelLabel: opts.cancelLabel || "Cancel",
+    okLabel: opts.okLabel || t("dlg.ok"),
+    cancelLabel: opts.cancelLabel || t("dlg.cancel"),
   });
 }
 
 export function promptModal(message, opts = {}) {
   return open({
-    title: opts.title || "Input",
+    title: opts.title || t("dlg.input"),
     body: message,
     kind: "prompt",
     inputLabel: opts.inputLabel || "",
@@ -130,8 +132,8 @@ export function promptModal(message, opts = {}) {
     input2Label: opts.input2Label,
     input2Value: opts.input2Value,
     mustMatch: opts.mustMatch,
-    okLabel: opts.okLabel || "OK",
-    cancelLabel: opts.cancelLabel || "Cancel",
+    okLabel: opts.okLabel || t("dlg.ok"),
+    cancelLabel: opts.cancelLabel || t("dlg.cancel"),
   });
 }
 

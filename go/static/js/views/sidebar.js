@@ -4,6 +4,7 @@ import { fetchCameras, token } from "../api.js";
 import { isMobileViewport, closeSidebarDrawer } from "./app-shell.js";
 import { loadJson, saveJson, LOCATION_ORDER_KEY } from "../util/storage.js";
 import { icon } from "../ui/icons.js";
+import { t } from "../i18n.js";
 
 function maybeCloseDrawer() {
   // Only auto-close the camera list on mobile, where it overlays the
@@ -63,8 +64,8 @@ function applyThumbPrivacy(tile, on) {
       lock = document.createElement("span");
       lock.className = "thumb-privacy";
       lock.innerHTML = icon("lock");
-      lock.title = "Privacy — not recording";
-      lock.setAttribute("aria-label", "Privacy — not recording");
+      lock.title = t("sidebar.privacy");
+      lock.setAttribute("aria-label", t("sidebar.privacy"));
       // Before the caption so the camera name stays readable on top.
       const caption = preview.querySelector(".thumb-caption");
       preview.insertBefore(lock, caption || null);
@@ -144,8 +145,8 @@ function renderViewerThumb(cam) {
   tile.innerHTML = `
     <div class="thumb-preview">
       <img alt="" src="/img/camera-banner.png" />
-      <span class="thumb-loading">Loading…</span>
-      <span class="cam-status-dot connecting" data-cam="${escapeHtml(cam.id)}" title="Connecting…" aria-label="Connecting…"></span>
+      <span class="thumb-loading">${t("sidebar.loading")}</span>
+      <span class="cam-status-dot connecting" data-cam="${escapeHtml(cam.id)}" title="${t("sidebar.connecting")}" aria-label="${t("sidebar.connecting")}"></span>
       <div class="thumb-caption">${escapeHtml(cam.name || cam.id)}</div>
     </div>
   `;
@@ -184,16 +185,16 @@ export function updateSidebarActive() {
 export async function loadSidebar() {
   const side = $("#viewer-side-scroll");
   if (side.dataset.loaded) return;
-  side.innerHTML = "<p class='muted viewer-status'>Loading…</p>";
+  side.innerHTML = `<p class='muted viewer-status'>${t("sidebar.loading")}</p>`;
   let cams;
   try {
     cams = await fetchCameras();
   } catch (e) {
-    side.innerHTML = `<p class="error viewer-status">Failed to load cameras: ${escapeHtml(e.message)}</p>`;
+    side.innerHTML = `<p class="error viewer-status">${t("sidebar.failed", { msg: escapeHtml(e.message) })}</p>`;
     return;
   }
   if (!cams.length) {
-    side.innerHTML = "<p class='muted viewer-status'>No cameras yet.</p>";
+    side.innerHTML = `<p class='muted viewer-status'>${t("sidebar.empty")}</p>`;
     return;
   }
   side.innerHTML = "";
@@ -206,7 +207,7 @@ export async function loadSidebar() {
     const header = document.createElement("div");
     header.className = "viewer-location-header";
     header.dataset.location = loc;
-    header.title = `Filter wall to ${loc} — drag to reorder`;
+    header.title = t("sidebar.filter_title", { loc });
     header.draggable = true;
     header.innerHTML = `<span class="loc-grip" aria-hidden="true">${icon("grip-vertical")}</span><span class="loc-icon" aria-hidden="true">${icon("layout-grid")}</span><span class="loc-text">${escapeHtml(loc)}</span>`;
     header.addEventListener("click", () => {

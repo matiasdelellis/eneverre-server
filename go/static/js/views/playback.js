@@ -2,6 +2,7 @@ import { $, $$, makeMsg } from "../util/dom.js";
 import { token } from "../api.js";
 import { icon } from "../ui/icons.js";
 import { Timeline } from "../../timeline.js";
+import { t } from "../i18n.js";
 
 export const PB_DEFAULT_INTERVAL = 6 * 60 * 60 * 1000; // timeline window: 6 hours
 const PB_START_OFFSET_MS = 5 * 60 * 1000;    // cursor lands 5 min in the past
@@ -151,7 +152,7 @@ export function setTilePlaybackLoading(tile) {
     if (firstEl) firstEl.remove();
   }
   tile.dataset.poster = video.poster || "/img/camera-banner.png";
-  const placeholder = makeMsg("Loading playback…");
+  const placeholder = makeMsg(t("wall.loading_playback"));
   placeholder.classList.add("wall-loading");
   video.replaceWith(placeholder);
   tile._loadingPlaceholder = placeholder;
@@ -363,7 +364,7 @@ export function setupPlaybackBar() {
       else v.pause();
     }
     playBtn.innerHTML = icon(paused ? "pause" : "play");
-    playBtn.setAttribute("aria-label", paused ? "Pause" : "Play");
+    playBtn.setAttribute("aria-label", paused ? t("pb.pause") : t("pb.play"));
     setVodPaused(!paused);
   });
 
@@ -373,7 +374,7 @@ export function setupPlaybackBar() {
     pbTimeline.setCurrent(Date.now());
     pbTimeline.draw();
     playBtn.innerHTML = icon("play");
-    playBtn.setAttribute("aria-label", "Play");
+    playBtn.setAttribute("aria-label", t("pb.play"));
   });
 
   // ----- Speed control -----
@@ -559,7 +560,7 @@ function showVodNoRecording(tile) {
   const v = tile.querySelector("video");
   const msg = document.createElement("div");
   msg.className = "wall-no-recording wall-status";
-  msg.innerHTML = `<div class='wall-no-recording-icon'>${icon("signal-off")}</div><div>No recording</div>`;
+  msg.innerHTML = `<div class='wall-no-recording-icon'>${icon("signal-off")}</div><div>${t("no_recording")}</div>`;
   if (v) v.replaceWith(msg); else tile.appendChild(msg);
   tile.dataset.mode = "playback-no-data";
 }
@@ -600,7 +601,7 @@ function showTileGapOverlay(tile) {
   if (!overlay) {
     overlay = document.createElement("div");
     overlay.className = "wall-no-recording wall-gap-overlay wall-status";
-    overlay.innerHTML = `<div class='wall-no-recording-icon'>${icon("signal-off")}</div><div>No recording</div>`;
+    overlay.innerHTML = `<div class='wall-no-recording-icon'>${icon("signal-off")}</div><div>${t("no_recording")}</div>`;
     tile.appendChild(overlay);
   }
   overlay.hidden = false;
@@ -652,7 +653,7 @@ export function startVodPlayback(cams, startMsec) {
     for (const cam of cams) {
       const tile = tileOf(cam.id);
       const ph = tile && tile._loadingPlaceholder;
-      if (ph) { ph.textContent = "HLS not supported in this browser"; tile._loadingPlaceholder = null; }
+      if (ph) { ph.textContent = t("wall.hls_unsupported"); tile._loadingPlaceholder = null; }
     }
     return;
   }
@@ -697,7 +698,7 @@ export function startVodPlayback(cams, startMsec) {
   }
   vodPaused = false;
   const pbPlay = $("#pb-play");
-  if (pbPlay) { pbPlay.innerHTML = icon("pause"); pbPlay.setAttribute("aria-label", "Pause"); }
+  if (pbPlay) { pbPlay.innerHTML = icon("pause"); pbPlay.setAttribute("aria-label", t("pb.pause")); }
   startVodCursor();
 }
 

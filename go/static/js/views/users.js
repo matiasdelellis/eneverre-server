@@ -5,7 +5,8 @@ import { api } from "../api.js";
 import { blankToNull, displayName } from "../util/format.js";
 import { alertModal, confirmModal, promptModal } from "../ui/dialog.js";
 import { refreshUserMenu, closeUserMenu } from "../ui/user-menu.js";
-import { moveGlobalControlsTo, closeOverlayViews } from "./app-shell.js";
+import { moveGlobalControlsTo, closeOverlayViews, backLabel } from "./app-shell.js";
+import { t } from "../i18n.js";
 
 let usersCache = null;     // [{ username, role, first_name, last_name }, ...]
 let sessionsCache = null;  // { active: [...], expired: [...] }
@@ -38,11 +39,13 @@ export function enterUsersView(mode = "account") {
   document.getElementById("app").hidden = true;
   const v = document.getElementById("users-view");
   v.hidden = false;
+  const backEl = v.querySelector("#users-back .back-label");
+  if (backEl) backEl.textContent = backLabel();
   moveGlobalControlsTo(v.querySelector("header.topbar"));
   const meData = me();
   const manage = mode === "manage" && !!meData && meData.is_admin;
   const titleEl = document.getElementById("users-view-title");
-  if (titleEl) titleEl.textContent = manage ? "Users" : "My account";
+  if (titleEl) titleEl.textContent = manage ? t("users.title") : t("users.my_account");
   document.getElementById("account-section").hidden = manage;
   document.getElementById("users-new").hidden = !manage;
   document.getElementById("users-list-section").hidden = !manage;
@@ -51,8 +54,10 @@ export function enterUsersView(mode = "account") {
   if (manage) {
     tasks.push(loadUsers());
   } else {
-    document.getElementById("me-username").textContent = meData ? meData.username : "";
-    document.getElementById("me-role").textContent = meData ? meData.role : "";
+    document.getElementById("me-signed-in-as").textContent = t("users.signed_in_as", {
+      username: meData ? meData.username : "",
+      role: meData ? meData.role : "",
+    });
     const nameForm = document.getElementById("my-name-form");
     if (nameForm) {
       nameForm.elements.first_name.value = meData && meData.first_name ? meData.first_name : "";
@@ -87,7 +92,7 @@ async function loadUsers() {
   try {
     usersCache = await api("/api/users");
   } catch (e) {
-    setUsersStatus(`Failed to load users: ${e.message}`);
+    setUsersStatus(t("users.failed_load", { msg: e.message }));
     usersCache = [];
   }
   renderUsers();
@@ -101,7 +106,7 @@ function renderUsers() {
   if (!list.length) {
     const empty = document.createElement("div");
     empty.className = "users-row users-empty muted";
-    empty.textContent = "No users yet.";
+    empty.textContent = t("users.no_users");
     wrap.appendChild(empty);
     return;
   }
@@ -116,15 +121,15 @@ function renderUsers() {
     const fullName = displayName(u);
     row.innerHTML = `
       <div class="users-fullname${fullName ? "" : " muted"}" title="${escapeHtml(fullName || "—")}">${escapeHtml(fullName || "—")}</div>
-      <div class="users-name" title="${escapeHtml(u.username)}">${escapeHtml(u.username)}${isMe ? ' <span class="muted">(you)</span>' : ""}</div>
+      <div class="users-name" title="${escapeHtml(u.username)}">${escapeHtml(u.username)}${isMe ? ' <span class="muted">' + t("users.you") + '</span>' : ""}</div>
       <div><span class="role-badge role-${escapeHtml(u.role)}">${escapeHtml(u.role)}</span></div>
       <div class="users-actions">
-        <button data-act="name" title="Edit first/last name">Name</button>
+        <button data-act="name" title="${t("users.edit_name_title", { username: u.username })}">${t("users.edit_name")}</button>
         <button data-act="role" data-role="${u.role === "admin" ? "user" : "admin"}">
-          ${u.role === "admin" ? "Demote" : "Promote"}
+          ${u.role === "admin" ? t("users.demote") : t("users.promote")}
         </button>
-        <button data-act="password">Password</button>
-        <button data-act="delete" class="danger" ${isMe || isLastAdmin ? "disabled title='Cannot delete the only admin or yourself'" : ""}>Delete</button>
+        <button data-act="password">${t("users.password_btn")}</button>
+        <button data-act="delete" class="danger" ${isMe || isLastAdmin ? "disabled title='" + t("users.delete_disabled") + "'" : ""}>${t("users.delete_btn")}</button>
       </div>
     `;
     row.addEventListener("click", (e) => onUserActionClick(e, u, isLastAdmin));
@@ -138,13 +143,13 @@ async function onUserActionClick(e, u, isLastAdmin) {
   const act = btn.dataset.act;
   try {
     if (act === "name") {
-      const result = await promptModal(`Edit display name for ${u.username}.`, {
-        title: `Edit name — ${u.username}`,
-        inputLabel: "First name (leave blank to clear)",
+      const result = await promptModal(t("users.edit_name_title", { username: u.username }), {
+        title: t("users.edit_name_modal_title", { username: u.username }),
+        inputLabel: t("users.first_name_label"),
         inputValue: u.first_name || "",
-        input2Label: "Last name (leave blank to clear)",
+        input2Label: t("users.last_name_label"),
         input2Value: u.last_name || "",
-        okLabel: "Save",
+        okLabel: t("users.save"),
       });
       if (result === null) return;
       const first = blankToNull(result.first);
@@ -160,31 +165,30 @@ async function onUserActionClick(e, u, isLastAdmin) {
         saveJson(USER_KEY, myData);
         refreshUserMenu(myData);
       }
-      setUsersStatus(`Name updated: ${u.username}`, "ok");
+      setUsersStatus(t("users.name_updated_status", { username: u.username }), "ok");
       await loadUsers();
     } else if (act === "role") {
       const newRole = btn.dataset.role;
       if (newRole === "admin") {
-        const ok = await confirmModal(`Promote ${u.username} to admin?`, {
-          title: "Promote to admin",
-          okLabel: "Promote",
+        const ok = await confirmModal(t("users.promote_confirm", { username: u.username }), {
+          title: t("users.promote_title"),
+          okLabel: t("users.promote_ok"),
         });
         if (!ok) return;
       } else {
         const typed = await promptModal(
-          `You are about to DEMOTE admin "${u.username}" to a regular user.\n` +
-          `Type the username exactly to confirm:`,
+          t("users.demote_confirm", { username: u.username }),
           {
-            title: "Demote admin",
-            inputLabel: "Username",
+            title: t("users.demote_title"),
+            inputLabel: t("users.col_username"),
             inputValue: "",
             mustMatch: u.username,
-            okLabel: "Demote",
+            okLabel: t("users.demote_ok"),
           }
         );
         if (typed === null) return;
         if (typed !== u.username) {
-          setUsersStatus("Confirmation did not match; role unchanged", "err");
+          setUsersStatus(t("users.demote_mismatch"), "err");
           return;
         }
       }
@@ -192,46 +196,46 @@ async function onUserActionClick(e, u, isLastAdmin) {
         method: "PUT",
         body: JSON.stringify({ role: newRole }),
       });
-      setUsersStatus(`Role updated: ${u.username} → ${newRole}`, "ok");
+      setUsersStatus(t("users.role_updated", { username: u.username, role: newRole }), "ok");
       await loadUsers();
     } else if (act === "password") {
-      const pw = await promptModal(`New password for ${u.username}`, {
-        title: `Set password — ${u.username}`,
-        inputLabel: "New password",
+      const pw = await promptModal(t("users.new_password_for", { username: u.username }), {
+        title: t("users.set_password_title", { username: u.username }),
+        inputLabel: t("users.password_input_label"),
       });
       if (pw === null) return;
       if (!pw) {
-        setUsersStatus("Password cannot be empty", "err");
+        setUsersStatus(t("users.password_empty"), "err");
         return;
       }
       const force = await confirmModal(
-        `Require ${u.username} to change this password at their next login?`,
-        { title: "Force password change", okLabel: "Require change", cancelLabel: "No, keep it" }
+        t("users.force_change_confirm", { username: u.username }),
+        { title: t("users.force_change_title"), okLabel: t("users.require_change"), cancelLabel: t("users.no_keep") }
       );
       await api(`/api/users/${encodeURIComponent(u.username)}/password`, {
         method: "PUT",
         body: JSON.stringify({ password: pw, must_change_password: force === true }),
       });
-      setUsersStatus(`Password updated for ${u.username}`, "ok");
+      setUsersStatus(t("users.password_updated_for", { username: u.username }), "ok");
     } else if (act === "delete") {
       const myData = me();
       if (myData && myData.username === u.username) {
-        setUsersStatus("You cannot delete your own account");
+        setUsersStatus(t("users.cannot_delete_self"));
         return;
       }
       if (isLastAdmin) {
-        setUsersStatus("Cannot delete the last admin");
+        setUsersStatus(t("users.cannot_delete_last_admin"));
         return;
       }
       const ok = await confirmModal(
-        `Delete user ${u.username}? This cannot be undone.`,
-        { title: "Delete user", okLabel: "Delete" }
+        t("users.delete_confirm", { username: u.username }),
+        { title: t("users.delete_title"), okLabel: t("users.delete_btn") }
       );
       if (!ok) return;
       await api(`/api/users/${encodeURIComponent(u.username)}`, {
         method: "DELETE",
       });
-      setUsersStatus(`User deleted: ${u.username}`, "ok");
+      setUsersStatus(t("users.deleted", { username: u.username }), "ok");
       await loadUsers();
     }
   } catch (err) {
@@ -243,7 +247,7 @@ function openUserEditModal() {
   const modal = document.getElementById("user-edit-modal");
   const form = document.getElementById("user-edit-form");
   form.reset();
-  document.getElementById("user-edit-title").textContent = "New user";
+  document.getElementById("user-edit-title").textContent = t("user-edit.title");
   document.getElementById("user-edit-status").hidden = true;
   modal.hidden = false;
   form.elements.username.focus();
@@ -274,7 +278,7 @@ async function submitNewUser(e) {
       }),
     });
     closeUserEditModal();
-    setUsersStatus("User created", "ok");
+    setUsersStatus(t("users.created"), "ok");
     await loadUsers();
   } catch (err) {
     status.textContent = err.message || String(err);
@@ -290,7 +294,7 @@ async function loadMySessions() {
   } catch (e) {
     sessionsCache = { active: [], expired: [] };
     const wrap = document.getElementById("sessions-list-active");
-    if (wrap) wrap.innerHTML = `<p class="error">Failed to load sessions: ${escapeHtml(e.message)}</p>`;
+    if (wrap) wrap.innerHTML = `<p class="error">${t("users.failed_sessions", { msg: escapeHtml(e.message) })}</p>`;
     document.getElementById("sessions-list-expired").innerHTML = "";
     return;
   }
@@ -307,7 +311,7 @@ function renderSessions() {
   const active = Array.isArray(cache.active) ? cache.active : [];
   const expired = Array.isArray(cache.expired) ? cache.expired : [];
   if (!active.length && !expired.length) {
-    activeWrap.innerHTML = "<p class='muted'>No active sessions.</p>";
+    activeWrap.innerHTML = `<p class='muted'>${t("users.no_active")}</p>`;
     expiredWrap.innerHTML = "";
     return;
   }
@@ -319,13 +323,13 @@ function renderSessions() {
     });
     for (const s of sortedActive) activeWrap.appendChild(renderSessionRow(s, false));
   } else {
-    activeWrap.innerHTML = "<p class='muted'>No valid sessions.</p>";
+    activeWrap.innerHTML = `<p class='muted'>${t("users.no_valid")}</p>`;
   }
   if (expired.length) {
     const sortedExpired = expired.slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
     for (const s of sortedExpired) expiredWrap.appendChild(renderSessionRow(s, true));
   } else {
-    expiredWrap.innerHTML = "<p class='muted'>No expired sessions.</p>";
+    expiredWrap.innerHTML = `<p class='muted'>${t("users.no_expired")}</p>`;
   }
 }
 
@@ -335,19 +339,19 @@ function renderSessionRow(s, isExpired) {
   const created = s.created_at ? new Date(s.created_at * 1000).toLocaleString() : "unknown";
   const expires = s.expires_at ? new Date(s.expires_at * 1000).toLocaleString() : "unknown";
   const badges = [];
-  if (s.is_current) badges.push('<span class="role-badge role-admin">this device</span>');
-  if (isExpired) badges.push('<span class="role-badge role-user">expired</span>');
+  if (s.is_current) badges.push(`<span class="role-badge role-admin">${t("users.this_device")}</span>`);
+  if (isExpired) badges.push(`<span class="role-badge role-user">${t("users.expired")}</span>`);
   const deviceName = s.device_name
     ? escapeHtml(s.device_name)
-    : "Browser session";
+    : t("users.browser_session");
   row.innerHTML = `
     <div>
       <div class="session-device">${deviceName}</div>
       ${badges.join(" ")}
       <div class="muted session-meta">created ${escapeHtml(created)} · expires ${escapeHtml(expires)}</div>
     </div>
-    <button data-id="${s.id}" ${s.is_current ? "disabled title='Sign out from the topbar to revoke this session'" : ""}>
-      Revoke
+    <button data-id="${s.id}" ${s.is_current ? "disabled title='" + t("users.revoke_title") + "'" : ""}>
+      ${t("users.revoke")}
     </button>
   `;
   row.addEventListener("click", async (e) => {
@@ -372,7 +376,7 @@ async function submitMyPassword(e) {
   const newPw = fd.get("new_password");
   const confirmPw = fd.get("confirm_password");
   if (newPw !== confirmPw) {
-    status.textContent = "New password and confirmation do not match.";
+    status.textContent = t("users.password_mismatch");
     status.className = "error users-inline-status";
     status.hidden = false;
     return;
@@ -388,7 +392,7 @@ async function submitMyPassword(e) {
       }),
     });
     form.reset();
-    status.textContent = "Password updated.";
+    status.textContent = t("users.password_updated");
     status.className = "ok users-inline-status";
     status.hidden = false;
   } catch (err) {
@@ -423,7 +427,7 @@ async function submitMyName(e) {
       saveJson(USER_KEY, u);
       refreshUserMenu({ ...u, displayName: displayName(u) || u.username });
     }
-    status.textContent = "Name updated.";
+    status.textContent = t("users.name_updated");
     status.className = "ok users-inline-status";
     status.hidden = false;
   } catch (err) {

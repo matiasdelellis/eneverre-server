@@ -11,6 +11,7 @@ import { makeMsg } from "../util/dom.js";
 import { token } from "../api.js";
 import { setCamStatus } from "../ui/cam-status.js";
 import { icon } from "../ui/icons.js";
+import { t } from "../i18n.js";
 
 const TARGET = 1.2;          // seconds of latency to hold at the live edge
 const RECONNECT_MS = 1500;   // wait before retrying after the source drops
@@ -24,7 +25,7 @@ function authHeaders() {
 // drops. Returns a handle { destroy() } (or null if MSE is unsupported).
 export function attachMse(cam, video) {
   if (typeof MediaSource === "undefined") {
-    video.replaceWith(makeMsg("Live requires MediaSource support"));
+    video.replaceWith(makeMsg(t("mse.unsupported")));
     return null;
   }
 
@@ -47,7 +48,7 @@ export function attachMse(cam, video) {
       bufferingEl.className = "wall-buffering";
       bufferingEl.setAttribute("role", "status");
       bufferingEl.setAttribute("aria-live", "polite");
-      bufferingEl.innerHTML = `<span class="wall-buffering-icon" aria-hidden="true">${icon("loader")}</span><span class="wall-buffering-text">Loading…</span>`;
+      bufferingEl.innerHTML = `<span class="wall-buffering-icon" aria-hidden="true">${icon("loader")}</span><span class="wall-buffering-text">${t("loading")}</span>`;
       const overlay = tile.querySelector(".wall-overlay");
       if (overlay) tile.insertBefore(bufferingEl, overlay);
       else tile.appendChild(bufferingEl);
@@ -90,14 +91,14 @@ export function attachMse(cam, video) {
       setCamStatus(cam.id, "offline");
       if (el) {
         el.classList.add("wall-connection-lost");
-        el.querySelector(".wall-buffering-text").textContent = "Connection lost";
+        el.querySelector(".wall-buffering-text").textContent = t("connection_lost");
         ensureRetryButton(el);
       }
     } else {
       setCamStatus(cam.id, "connecting");
       if (el) {
         el.classList.remove("wall-connection-lost");
-        el.querySelector(".wall-buffering-text").textContent = "Loading…";
+        el.querySelector(".wall-buffering-text").textContent = t("loading");
       }
     }
     retry = setTimeout(() => { retry = null; connect(); }, RECONNECT_MS);
@@ -109,7 +110,7 @@ export function attachMse(cam, video) {
     const btn = document.createElement("button");
     btn.className = "wall-retry-btn";
     btn.type = "button";
-    btn.textContent = "Retry";
+    btn.textContent = t("retry");
     btn.addEventListener("click", (e) => { e.stopPropagation(); retryNow(); });
     el.appendChild(btn);
   };
@@ -138,7 +139,7 @@ export function attachMse(cam, video) {
       if (info.reason === "unsupported_codec") {
         setCamStatus(cam.id, "offline");
         const codec = info.codec || "This codec";
-        const msg = `${codec} can't play in the browser. Recording and the RTSP relay are active — open the RTSP stream in a compatible player (VLC, the mobile app).`;
+        const msg = t("mse.unsupported_codec", { codec });
         video.replaceWith(makeMsg(msg));
         return;
       }
@@ -154,8 +155,8 @@ export function attachMse(cam, video) {
       setCamStatus(cam.id, "offline");
       const isHevc = /hvc1|hev1/i.test(info.mime || "");
       const msg = isHevc
-        ? "This camera is H265/HEVC and this browser can't decode it. Recording and the RTSP relay are active — open the RTSP stream in a compatible player (VLC, the mobile app), or try Safari / a browser with hardware HEVC."
-        : "Live codec unsupported";
+        ? t("mse.hevc_not_supported")
+        : t("mse.codec_unsupported");
       video.replaceWith(makeMsg(msg));
       return;
     }

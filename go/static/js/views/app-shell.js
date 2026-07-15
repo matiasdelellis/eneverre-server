@@ -5,6 +5,7 @@ import {
   TOKEN_KEY, USER_KEY, VIEW_KEY, USERCODE_KEY, USERCODE_NAME_KEY,
 } from "../util/storage.js";
 import { api, token, setOnUnauthorized } from "../api.js";
+import { t } from "../i18n.js";
 import {
   getState, setViewMode as setViewModeState, setWallFilter, setWallFilterBeforeCam,
   setSidebarCollapsed, resetOnLogout,
@@ -13,6 +14,14 @@ import { closeUserMenu, refreshUserMenu } from "../ui/user-menu.js";
 import { showLogin } from "./login.js";
 
 const PB_DEFAULT_INTERVAL = 6 * 60 * 60 * 1000; // timeline window: 6 hours
+
+// Label for the overlay "back" buttons (Users / Cameras). They reveal the
+// main app in whatever mode it was left in, so the label names that mode —
+// "Back to Live" or "Back to Playback". Set on each entry into an overlay.
+export function backLabel() {
+  const mode = getState().viewMode === "playback" ? "view.playback" : "view.live";
+  return t("nav.back", { view: t(mode) });
+}
 
 export function setViewMode(mode) {
   setViewModeState(mode);
@@ -233,7 +242,7 @@ function initTopbar() {
     const next = !getState().sidebarCollapsed;
     setSidebarCollapsed(next);
     $("#viewer-side").classList.toggle("collapsed", next);
-    $("#viewer-toggle").title = next ? "Expand sidebar" : "Collapse sidebar";
+    $("#viewer-toggle").title = next ? t("sidebar.expand") : t("sidebar.collapse");
     document.documentElement.style.setProperty(
       "--sidebar-w",
       next ? "52px" : "280px",
@@ -286,7 +295,7 @@ function applyViewportLayout() {
     // (drives width) and as a CSS variable (drives the PTZ FAB offset).
     const collapsed = getState().sidebarCollapsed;
     $("#viewer-side").classList.toggle("collapsed", collapsed);
-    $("#viewer-toggle").title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    $("#viewer-toggle").title = collapsed ? t("sidebar.expand") : t("sidebar.collapse");
     document.documentElement.style.setProperty(
       "--sidebar-w",
       collapsed ? "52px" : "280px",

@@ -3,6 +3,7 @@ import { getState, on } from "../state.js";
 import { alertModal } from "../ui/dialog.js";
 import { createTalkClient } from "../util/talk-client.js";
 import { icon } from "../ui/icons.js";
+import { t } from "../i18n.js";
 
 // Push-to-talk, split into two controls and kept separate from PTZ:
 //   1. A topbar button that ARMS the mic — it requests the microphone
@@ -38,7 +39,7 @@ function renderTopButton() {
   // Same mic glyph in both states; the .active class fills the stroke so
   // the user gets the standard "armed" visual without a second icon.
   btn.innerHTML = icon("mic");
-  btn.title = armed ? "Disable talk" : "Enable talk (allow microphone)";
+  btn.title = armed ? t("talk.disable") : t("talk.enable");
   btn.setAttribute("aria-label", btn.title);
   btn.setAttribute("aria-pressed", armed ? "true" : "false");
 }
@@ -53,7 +54,7 @@ async function arm() {
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
   } catch (err) {
-    alertModal(`Microphone access failed: ${err.message || err}`, { title: "Talk" });
+    alertModal(t("talk.mic_failed", { msg: err.message || err }), { title: t("talk.title") });
     return;
   }
   // The selection may have moved while the permission prompt was up.
@@ -90,7 +91,7 @@ function toggleTalk() {
       // backchannel dial failed — surface it instead of silently reverting.
       const failed = !becameReady && !c.userStopped;
       if (client === c) { client = null; sessionState = "idle"; applyOverlayState(); }
-      if (failed) alertModal("Couldn't connect talk audio to the camera.", { title: "Talk" });
+      if (failed) alertModal(t("talk.connect_failed"), { title: t("talk.title") });
     },
   });
   c.userStopped = false;
@@ -100,7 +101,7 @@ function toggleTalk() {
   } catch (err) {
     // Synchronous failure (e.g. AudioContext blocked): onEnd never fires here.
     if (client === c) { client = null; sessionState = "idle"; applyOverlayState(); }
-    alertModal(`Couldn't start talk audio: ${err.message || err}`, { title: "Talk" });
+    alertModal(t("talk.start_failed", { msg: err.message || err }), { title: t("talk.title") });
   }
 }
 
@@ -124,13 +125,13 @@ function applyOverlayState() {
     // The spinner is drawn by CSS (.wall-talk.connecting::before); leave the
     // button empty so we don't stack a second, non-spinning loader glyph.
     btn.innerHTML = "";
-    btn.title = "Connecting…";
+    btn.title = t("talk.connecting");
   } else if (sessionState === "talking") {
     btn.innerHTML = icon("mic-off");
-    btn.title = "Talking — click or Space to stop";
+    btn.title = t("talk.talking");
   } else {
     btn.innerHTML = icon("mic");
-    btn.title = "Click or Space to talk";
+    btn.title = t("talk.idle");
   }
   btn.setAttribute("aria-label", btn.title);
 }

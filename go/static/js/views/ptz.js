@@ -4,6 +4,7 @@ import { getState, setLastPtzCam, setCamerasCache, on } from "../state.js";
 import { api, fetchCameras } from "../api.js";
 import { alertModal } from "../ui/dialog.js";
 import { icon } from "../ui/icons.js";
+import { t } from "../i18n.js";
 
 const STEP = 50;
 const PTZ_MODAL_POS_KEY = "eneverre.ptzModalPos";
@@ -58,7 +59,7 @@ function applyPtzModalPos() {
 export function showPtzModal(cam) {
   const modal = $("#ptz-modal");
   if (!modal) return;
-  const kind = cam.capabilities?.ptz ? "PTZ" : "Control";
+  const kind = cam.capabilities?.ptz ? t("ptz.title") : t("ptz.control");
   $("#ptz-modal-title").textContent = `${kind} — ${cam.name || cam.id}`;
   const body = $("#ptz-modal-body");
   body.innerHTML = "";
@@ -152,7 +153,7 @@ function syncPrivacyButton() {
   btn.classList.toggle("active", on);
   btn.setAttribute("aria-pressed", on ? "true" : "false");
   btn.innerHTML = on ? icon("lock") : icon("lock-open");
-  btn.title = on ? "Privacy on — click to resume recording" : "Enable privacy";
+  btn.title = on ? t("privacy.on") : t("privacy.enable");
   btn.setAttribute("aria-label", btn.title);
 }
 
@@ -161,7 +162,7 @@ async function togglePrivacy(cam) {
   try {
     await api(`/api/camera/${encodeURIComponent(cam.id)}/privacy?enable=${next}`, { method: "POST" });
   } catch (e) {
-    alertModal(`Privacy failed: ${e.message}`, { title: "Privacy error" });
+    alertModal(t("privacy.failed", { msg: e.message }), { title: t("privacy.title") });
     return;
   }
   // Privacy pauses/resumes the media pipeline: invalidate the cached camera
@@ -185,19 +186,19 @@ async function togglePrivacy(cam) {
 function buildPtzPanel(cam) {
   const wrap = document.createElement("div");
   wrap.innerHTML = `
-    <h3>PTZ</h3>
+    <h3>${t("ptz.title")}</h3>
     <div class="ptz-pad">
       <span class="empty"></span>
-      <button data-dx="0" data-dy="-${STEP}" title="Up">${icon("arrow-up")}</button>
+      <button data-dx="0" data-dy="-${STEP}" title="${t("ptz.up")}">${icon("arrow-up")}</button>
       <span class="empty"></span>
-      <button data-dx="-${STEP}" data-dy="0" title="Left">${icon("arrow-left")}</button>
-      <button data-dx="0" data-dy="0" title="Center">${icon("circle")}</button>
-      <button data-dx="${STEP}" data-dy="0" title="Right">${icon("arrow-right")}</button>
+      <button data-dx="-${STEP}" data-dy="0" title="${t("ptz.left")}">${icon("arrow-left")}</button>
+      <button data-dx="0" data-dy="0" title="${t("ptz.center")}">${icon("circle")}</button>
+      <button data-dx="${STEP}" data-dy="0" title="${t("ptz.right")}">${icon("arrow-right")}</button>
       <span class="empty"></span>
-      <button data-dx="0" data-dy="${STEP}" title="Down">${icon("arrow-down")}</button>
+      <button data-dx="0" data-dy="${STEP}" title="${t("ptz.down")}">${icon("arrow-down")}</button>
       <span class="empty"></span>
     </div>
-    <div class="ptz-actions"><button data-go="home">Home</button></div>`;
+    <div class="ptz-actions"><button data-go="home">${t("ptz.home")}</button></div>`;
   wrap.addEventListener("click", async (e) => {
     const btn = e.target.closest("button");
     if (!btn) return;
@@ -211,7 +212,7 @@ function buildPtzPanel(cam) {
     try {
       await api(path, { method: "POST" });
     } catch (e) {
-      alertModal(`PTZ failed: ${e.message}`, { title: "PTZ error" });
+      alertModal(t("ptz.error", { msg: e.message }), { title: t("ptz.error_title") });
     }
   });
   return wrap;

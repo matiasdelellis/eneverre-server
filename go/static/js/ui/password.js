@@ -1,3 +1,5 @@
+import { t } from "../i18n.js";
+
 const EYE_OPEN =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
 const EYE_OFF =
@@ -15,18 +17,18 @@ function wrapPasswordInput(input) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "pw-toggle";
-  btn.setAttribute("aria-label", "Show password");
+  btn.setAttribute("aria-label", t("pw.show"));
   btn.setAttribute("aria-pressed", "false");
-  btn.title = "Show password";
+  btn.title = t("pw.show");
   btn.innerHTML = EYE_OFF;
 
   btn.addEventListener("click", () => {
     const showing = input.type === "text";
     input.type = showing ? "password" : "text";
     btn.innerHTML = showing ? EYE_OFF : EYE_OPEN;
-    btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+    btn.setAttribute("aria-label", showing ? t("pw.show") : t("pw.hide"));
     btn.setAttribute("aria-pressed", showing ? "false" : "true");
-    btn.title = showing ? "Show password" : "Hide password";
+    btn.title = showing ? t("pw.show") : t("pw.hide");
   });
 
   wrap.appendChild(btn);

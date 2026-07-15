@@ -5,7 +5,8 @@ import {
 import { getState } from "../state.js";
 import { confirmModal } from "../ui/dialog.js";
 import { closeUserMenu } from "../ui/user-menu.js";
-import { moveGlobalControlsTo, closeOverlayViews } from "./app-shell.js";
+import { moveGlobalControlsTo, closeOverlayViews, backLabel } from "./app-shell.js";
+import { t } from "../i18n.js";
 
 let camerasCache = null; // [Camera, ...] as returned by GET /api/cameras
 let wizardStep = 1;
@@ -24,6 +25,8 @@ export function enterCamerasView() {
   closeOverlayViews(); // never stack on top of the Users panel
   document.getElementById("app").hidden = true;
   document.getElementById("cameras-view").hidden = false;
+  const backEl = document.querySelector("#cameras-back .back-label");
+  if (backEl) backEl.textContent = backLabel();
   moveGlobalControlsTo(document.querySelector("#cameras-view header.topbar"));
   document.getElementById("cameras-new").hidden = false;
   document.getElementById("cameras-list-section").hidden = false;
@@ -55,7 +58,7 @@ async function loadCameras() {
   try {
     camerasCache = await api("/api/cameras");
   } catch (e) {
-    setStatus(`Failed to load cameras: ${e.message}`);
+    setStatus(t("cameras.failed_load", { msg: e.message }));
     camerasCache = [];
   }
   renderCameras();
@@ -80,7 +83,7 @@ function renderCameras() {
   if (!list.length) {
     const empty = document.createElement("div");
     empty.className = "users-row users-empty muted";
-    empty.textContent = "No cameras yet. Add one with “+ Add camera”.";
+    empty.textContent = t("cameras.empty");
     wrap.appendChild(empty);
     return;
   }
@@ -94,8 +97,8 @@ function renderCameras() {
       <div class="users-name" title="${escapeHtml(c.id)}">${escapeHtml(c.id)}</div>
       <div title="${escapeHtml(c.location || "—")}">${escapeHtml(c.location || "—")}</div>
       <div class="users-actions">
-        <button data-act="edit">Edit</button>
-        <button data-act="delete" class="danger">Delete</button>
+        <button data-act="edit">${t("cameras.edit")}</button>
+        <button data-act="delete" class="danger">${t("cameras.delete")}</button>
       </div>
     `;
     row.addEventListener("click", (e) => onCameraActionClick(e, c));
@@ -118,15 +121,14 @@ async function onCameraActionClick(e, c) {
   if (btn.dataset.act !== "delete") return;
   const label = c.name ? `${c.name} (${c.id})` : c.id;
   const ok = await confirmModal(
-    `Delete camera ${label}? It stops recording and streaming immediately. ` +
-    `Recorded footage already on disk is kept (retention prunes it later). This cannot be undone.`,
-    { title: "Delete camera", okLabel: "Delete" }
+    t("cameras.delete_confirm", { label }),
+    { title: t("cameras.delete_title"), okLabel: t("cameras.delete_ok") }
   );
   if (!ok) return;
   try {
     await deleteCamera(c.id);
     invalidateCameras();
-    setStatus(`Camera deleted: ${c.id}`, "ok");
+    setStatus(t("cameras.deleted", { id: c.id }), "ok");
     await loadCameras();
     refreshUnderlyingViews();
   } catch (err) {
@@ -146,8 +148,8 @@ function openWizard(config = null) {
   form.reset();
   document.getElementById("cam-wizard-status").hidden = true;
   document.getElementById("cam-probe-result").textContent = "";
-  document.getElementById("cam-wizard-title").textContent = editingId ? "Edit camera" : "Add camera";
-  document.getElementById("cam-wizard-create").textContent = editingId ? "Save changes" : "Create camera";
+  document.getElementById("cam-wizard-title").textContent = editingId ? t("cameras.edit_title") : t("cameras.add_title");
+  document.getElementById("cam-wizard-create").textContent = editingId ? t("cameras.save_changes") : t("cameras.create");
   const idInput = form.elements.id;
   idInput.readOnly = !!editingId;
   idInput.classList.toggle("readonly", !!editingId);
@@ -216,11 +218,11 @@ function validateStep(n) {
   if (n === 1) {
     const id = form.elements.id.value.trim();
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) {
-      return "ID must be 1–64 chars of letters, digits, '-' or '_', starting with a letter or digit.";
+      return t("cameras.id_error");
     }
   }
   if (n === 2 && !form.elements.source.value.trim()) {
-    return "The RTSP source URL is required.";
+    return t("cameras.source_required");
   }
   return "";
 }
@@ -251,27 +253,27 @@ async function onProbe() {
   const transport = form.elements.transport.value;
   const result = document.getElementById("cam-probe-result");
   const btn = document.getElementById("cam-probe-btn");
-  if (!source) { result.textContent = "Enter a source URL first."; result.className = "cam-probe-result error"; return; }
+  if (!source) { result.textContent = t("cameras.probe_empty"); result.className = "cam-probe-result error"; return; }
   btn.disabled = true;
   result.className = "cam-probe-result muted";
-  result.textContent = "Testing…";
+  result.textContent = t("cameras.probe_testing");
   try {
     const r = await probeCamera(source, transport);
     if (!r.ok) {
       result.className = "cam-probe-result error";
-      result.textContent = `Failed: ${r.error || "unreachable"}`;
+      result.textContent = t("cameras.probe_failed", { error: r.error || "unreachable" });
       return;
     }
     result.className = "cam-probe-result ok";
     const codecs = (r.codecs || []).join(", ") || "no codecs reported";
     const dims = r.width && r.height ? ` · ${r.width}×${r.height}` : "";
-    result.textContent = `Connected — ${codecs}${dims}`;
+    result.textContent = t("cameras.probe_connected", { codecs, dims });
     // Prefill resolution when the probe found it and the fields are empty.
     if (r.width && !form.elements.width.value) form.elements.width.value = r.width;
     if (r.height && !form.elements.height.value) form.elements.height.value = r.height;
   } catch (err) {
     result.className = "cam-probe-result error";
-    result.textContent = `Failed: ${err.message || err}`;
+    result.textContent = t("cameras.probe_error", { msg: err.message || err });
   } finally {
     btn.disabled = false;
   }
@@ -318,16 +320,16 @@ function buildReview() {
   const b = collectForm();
   const dl = document.getElementById("cam-review");
   const rows = [
-    ["ID", b.id],
-    ["Name", b.name || "—"],
-    ["Location", b.location || "—"],
-    ["Source", maskSource(b.source)],
-    ["Transport", b.transport || "auto"],
-    ["Sinks", [b.record && "record", b.mse && "MSE", b.relay && "relay"].filter(Boolean).join(", ") || "none"],
-    ["Resolution", b.width && b.height ? `${b.width}×${b.height}` : "default"],
-    ["Privacy toggle", b.privacy ? "yes" : "no"],
-    ["Two-way audio", b.backchannel ? "yes" : "no"],
-    ["Thingino", b.thingino_url ? `${b.thingino_url}${b.ptz ? " (PTZ)" : ""}` : "no"],
+    [t("cameras.review_id"), b.id],
+    [t("cameras.review_name"), b.name || "—"],
+    [t("cameras.review_location"), b.location || "—"],
+    [t("cameras.review_source"), maskSource(b.source)],
+    [t("cameras.review_transport"), b.transport || "auto"],
+    [t("cameras.review_sinks"), [b.record && "record", b.mse && "MSE", b.relay && "relay"].filter(Boolean).join(", ") || "none"],
+    [t("cameras.review_resolution"), b.width && b.height ? `${b.width}×${b.height}` : "default"],
+    [t("cameras.review_privacy"), b.privacy ? t("cameras.yes") : t("cameras.no")],
+    [t("cameras.review_talk"), b.backchannel ? t("cameras.yes") : t("cameras.no")],
+    [t("cameras.review_thingino"), b.thingino_url ? `${b.thingino_url}${b.ptz ? " (PTZ)" : ""}` : t("cameras.no")],
   ];
   dl.innerHTML = rows
     .map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v))}</dd></div>`)
@@ -350,7 +352,8 @@ async function onSubmit(e) {
     const cam = wasEditing ? await updateCamera(wasEditing, body) : await createCamera(body);
     invalidateCameras();
     closeWizard();
-    setStatus(`Camera ${wasEditing ? "updated" : "created"}: ${cam.id}`, "ok");
+    const action = wasEditing ? t("cameras.updated") : t("cameras.created_action");
+    setStatus(t("cameras.created", { action, id: cam.id }), "ok");
     await loadCameras();
     refreshUnderlyingViews();
   } catch (err) {

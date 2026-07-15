@@ -4,6 +4,7 @@ export const VIEW_KEY = "eneverre.view";
 export const SIDEBAR_KEY = "eneverre.sidebar";
 export const WALL_FILTER_KEY = "eneverre.wallFilter";
 export const THEME_KEY = "eneverre.theme";
+export const LANG_KEY = "eneverre.lang";
 export const USERCODE_KEY = "eneverre.pendingUsercode";
 export const USERCODE_NAME_KEY = "eneverre.pendingUsercodeName";
 export const PTZ_MODAL_POS_KEY = "eneverre.ptzModalPos";

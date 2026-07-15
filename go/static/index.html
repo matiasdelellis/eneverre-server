@@ -41,10 +41,10 @@
         <img class="brand-icon" src="/eneverre.svg" alt="" />
         <h1>Eneverre</h1>
       </div>
-      <p class="muted">Sign in to view your cameras.</p>
-      <label>Username <input name="username" autocomplete="username" required /></label>
-      <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
-      <button type="submit">Sign in</button>
+      <p class="muted" data-i18n="login.tagline">Sign in to view your cameras.</p>
+      <label><span data-i18n="login.username">Username</span> <input name="username" autocomplete="username" required /></label>
+      <label><span data-i18n="login.password">Password</span> <input name="password" type="password" autocomplete="current-password" required /></label>
+      <button type="submit" data-i18n="login.signin">Sign in</button>
       <p id="login-error" class="error" hidden></p>
     </form>
   </div>
@@ -55,11 +55,11 @@
         <img class="brand-icon" src="/eneverre.svg" alt="" />
         <h1>Eneverre</h1>
       </div>
-      <p class="muted">You must set a new password before continuing.</p>
-      <label>Current password <input name="current_password" type="password" autocomplete="current-password" required /></label>
-      <label>New password <input name="new_password" type="password" autocomplete="new-password" required /></label>
-      <label>Confirm new password <input name="confirm_password" type="password" autocomplete="new-password" required /></label>
-      <button type="submit">Update password</button>
+      <p class="muted" data-i18n="force-pw.instruction">You must set a new password before continuing.</p>
+      <label><span data-i18n="force-pw.current_password">Current password</span><input name="current_password" type="password" autocomplete="current-password" required /></label>
+      <label><span data-i18n="force-pw.new_password">New password</span><input name="new_password" type="password" autocomplete="new-password" required /></label>
+      <label><span data-i18n="force-pw.confirm_password">Confirm new password</span><input name="confirm_password" type="password" autocomplete="new-password" required /></label>
+      <button type="submit" data-i18n="force-pw.update">Update password</button>
       <p id="force-pw-error" class="error" hidden></p>
     </form>
   </div>
@@ -71,24 +71,24 @@
           <img class="brand-icon" src="/eneverre.svg" alt="" />
           <span class="brand-text"><strong>Eneverre</strong></span>
         </div>
-        <button class="viewer-toggle" id="viewer-toggle" title="Collapse sidebar" aria-label="Toggle sidebar" data-icon="chevron-left"></button>
-        <button class="sidebar-close" id="sidebar-close" title="Close camera list" aria-label="Close camera list" data-icon="x"></button>
+        <button class="viewer-toggle" id="viewer-toggle" data-i18n-title="sidebar.collapse" title="Collapse sidebar" aria-label="Toggle sidebar" data-icon="chevron-left"></button>
+        <button class="sidebar-close" id="sidebar-close" data-i18n-title="sidebar.close" title="Close camera list" aria-label="Close camera list" data-icon="x"></button>
       </header>
       <div class="viewer-side-scroll" id="viewer-side-scroll"></div>
     </aside>
     <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
     <div class="app-main">
       <header class="topbar">
-        <button id="sidebar-open" class="ghost icon-btn sidebar-open" title="Open camera list" aria-label="Open camera list" data-icon="menu"></button>
+        <button id="sidebar-open" class="ghost icon-btn sidebar-open" data-i18n-title="sidebar.open" title="Open camera list" aria-label="Open camera list" data-icon="menu"></button>
         <div class="view-toggle" role="tablist">
-          <button id="view-live" class="toggle" role="tab" title="All cameras as a grid">Live</button>
-          <button id="view-playback" class="toggle" role="tab" title="Synchronized playback with timeline">Playback</button>
+          <button id="view-live" class="toggle" role="tab" data-i18n-title="view.live_title" title="All cameras as a grid" data-i18n="view.live">Live</button>
+          <button id="view-playback" class="toggle" role="tab" data-i18n-title="view.playback_title" title="Synchronized playback with timeline" data-i18n="view.playback">Playback</button>
         </div>
         <span class="grow"></span>
-        <button id="talk-toggle" class="ghost icon-btn talk-toggle" hidden title="Enable talk (allow microphone)" aria-label="Enable talk (allow microphone)" aria-pressed="false" data-icon="mic"></button>
-        <button id="privacy-toggle" class="ghost icon-btn privacy-toggle" hidden title="Enable privacy" aria-label="Enable privacy" aria-pressed="false" data-icon="lock-open"></button>
+        <button id="talk-toggle" class="ghost icon-btn talk-toggle" hidden data-i18n-title="talk.enable" title="Enable talk (allow microphone)" aria-label="Enable talk (allow microphone)" aria-pressed="false" data-icon="mic"></button>
+        <button id="privacy-toggle" class="ghost icon-btn privacy-toggle" hidden data-i18n-title="privacy.enable" title="Enable privacy" aria-label="Enable privacy" aria-pressed="false" data-icon="lock-open"></button>
         <div class="global-topbar-controls" id="global-topbar-controls">
-          <button id="theme-toggle" class="ghost icon-btn topbar-hide-sm" title="Toggle theme" aria-label="Toggle theme"></button>
+          <button id="theme-toggle" class="ghost icon-btn topbar-hide-sm" data-i18n-title="theme.toggle" title="Toggle theme" aria-label="Toggle theme"></button>
           <div class="user-menu" id="user-menu" hidden>
             <button id="user-menu-trigger" class="ghost user-menu-trigger" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu-list">
               <span class="user-menu-name" id="user-menu-name"></span>
@@ -96,20 +96,23 @@
             </button>
             <ul id="user-menu-list" class="user-menu-list" role="menu" hidden>
               <li role="none">
-                <button id="account-btn" class="user-menu-item" role="menuitem">My account</button>
+                <button id="account-btn" class="user-menu-item" role="menuitem" data-i18n="menu.account">My account</button>
               </li>
               <li role="none">
-                <button id="users-btn" class="user-menu-item" role="menuitem" hidden>Manage users</button>
+                <button id="users-btn" class="user-menu-item" role="menuitem" hidden data-i18n="menu.manage_users">Manage users</button>
               </li>
               <li role="none">
-                <button id="cameras-btn" class="user-menu-item" role="menuitem" hidden>Manage cameras</button>
+                <button id="cameras-btn" class="user-menu-item" role="menuitem" hidden data-i18n="menu.manage_cameras">Manage cameras</button>
               </li>
               <li role="none" class="user-menu-item-sm" hidden>
-                <button id="theme-toggle-menu" class="user-menu-item" role="menuitem" hidden>Toggle theme</button>
+                <button id="theme-toggle-menu" class="user-menu-item" role="menuitem" hidden data-i18n="menu.theme">Toggle theme</button>
               </li>
               <li role="none" class="user-menu-separator" aria-hidden="true"></li>
+              <li role="none" class="user-menu-heading" id="user-menu-lang-heading" aria-hidden="true" data-i18n="menu.language">Language</li>
+              <!-- Language options are injected here by user-menu.js -->
+              <li role="none" class="user-menu-separator" aria-hidden="true"></li>
               <li role="none">
-                <button id="logout" class="user-menu-item" role="menuitem">Log out</button>
+                <button id="logout" class="user-menu-item" role="menuitem" data-i18n="menu.logout">Log out</button>
               </li>
             </ul>
           </div>
@@ -121,17 +124,17 @@
             <div id="wall" class="wall" hidden></div>
           </div>
           <div id="playback-bar" class="playback-bar" hidden>
-            <button id="pb-play" class="pb-btn" title="Play/Pause" aria-label="Play" data-icon="play"></button>
+            <button id="pb-play" class="pb-btn" data-i18n-title="pb.play_pause" title="Play/Pause" aria-label="Play" data-icon="play"></button>
             <canvas id="pb-canvas" class="pb-canvas"></canvas>
-            <button id="pb-goto" class="pb-btn" title="Jump to date/time" aria-label="Jump to date/time" data-icon="clock"></button>
-            <input id="pb-goto-input" class="pb-goto-input" type="datetime-local" step="1" aria-label="Jump to date/time" />
-            <div class="pb-speed" id="pb-speed" role="group" aria-label="Playback speed">
+            <button id="pb-goto" class="pb-btn" data-i18n-title="pb.jump" title="Jump to date/time" aria-label="Jump to date/time" data-icon="clock"></button>
+            <input id="pb-goto-input" class="pb-goto-input" type="datetime-local" step="1" data-i18n-aria-label="pb.jump" aria-label="Jump to date/time" />
+            <div class="pb-speed" id="pb-speed" role="group" data-i18n-aria-label="pb.speed" aria-label="Playback speed">
               <button data-speed="0.5" class="pb-btn pb-speed-btn" aria-pressed="false">0.5×</button>
               <button data-speed="1" class="pb-btn pb-speed-btn active" aria-pressed="true">1×</button>
               <button data-speed="1.5" class="pb-btn pb-speed-btn" aria-pressed="false">1.5×</button>
               <button data-speed="2" class="pb-btn pb-speed-btn" aria-pressed="false">2×</button>
             </div>
-            <button id="pb-live" class="pb-btn pb-live-btn">Live</button>
+            <button id="pb-live" class="pb-btn pb-live-btn" data-i18n="pb.live">Live</button>
           </div>
         </div>
       </main>
@@ -140,31 +143,31 @@
 
   <div id="ptz-modal" class="ptz-modal" hidden>
     <header class="ptz-modal-header" id="ptz-modal-handle">
-      <h2 id="ptz-modal-title">PTZ</h2>
-      <button id="ptz-modal-close" class="ghost" aria-label="Close" data-icon="x"></button>
+      <h2 id="ptz-modal-title" data-i18n="ptz.title">PTZ</h2>
+      <button id="ptz-modal-close" class="ghost" data-i18n-aria-label="ptz.close" aria-label="Close" data-icon="x"></button>
     </header>
     <div class="ptz-modal-body" id="ptz-modal-body"></div>
   </div>
 
   <button id="ptz-fab" class="ptz-fab" hidden type="button"
-    aria-label="Open PTZ panel" title="Open PTZ panel">PTZ</button>
+    data-i18n-aria-label="ptz.open" aria-label="Open PTZ panel" data-i18n-title="ptz.open" title="Open PTZ panel">PTZ</button>
 
   <section id="device-auth-view" class="users-view" hidden>
     <header class="topbar">
-      <strong>Authorize device</strong>
+      <strong data-i18n="dev-auth.title">Authorize device</strong>
       <span class="grow"></span>
     </header>
     <div class="users-body">
-      <p id="device-auth-status" class="muted">A device is asking for access. Confirm the code matches the one shown on the device screen.</p>
+      <p id="device-auth-status" class="muted" data-i18n="dev-auth.instruction">A device is asking for access. Confirm the code matches the one shown on the device screen.</p>
       <div class="users-card">
-        <h2 id="device-auth-name-heading">Device</h2>
-        <p class="device-auth-name" id="device-auth-name">Unknown device</p>
-        <h2>Device code</h2>
+        <h2 data-i18n="dev-auth.device_heading">Device</h2>
+        <p class="device-auth-name" id="device-auth-name" data-i18n="dev-auth.unknown">Unknown device</p>
+        <h2 data-i18n="dev-auth.code_heading">Device code</h2>
         <p class="device-auth-code" id="device-auth-code">&mdash;</p>
-        <p class="muted">Expires in <span id="device-auth-expires">5:00</span>.</p>
+        <p class="muted"><span data-i18n="dev-auth.expires_label">Expires in</span> <span id="device-auth-expires">5:00</span>.</p>
         <div class="user-edit-actions">
-          <button type="button" id="device-auth-deny" class="ghost">Deny</button>
-          <button type="button" id="device-auth-allow" class="primary">Allow</button>
+          <button type="button" id="device-auth-deny" class="ghost" data-i18n="dev-auth.deny">Deny</button>
+          <button type="button" id="device-auth-allow" class="primary" data-i18n="dev-auth.allow">Allow</button>
         </div>
         <p id="device-auth-result" class="error" hidden></p>
       </div>
@@ -173,66 +176,66 @@
 
   <section id="users-view" class="users-view" hidden>
     <header class="topbar">
-      <button id="users-back" class="ghost" data-icon="arrow-left">Back to cameras</button>
-      <strong id="users-view-title">Users</strong>
+      <button id="users-back" class="ghost" data-icon="arrow-left"><span class="back-label">Back to Live</span></button>
+      <strong id="users-view-title" data-i18n="users.title">Users</strong>
       <span class="grow"></span>
-      <button id="users-new" class="primary" hidden>+ New user</button>
+      <button id="users-new" class="primary" hidden data-i18n="users.new">+ New user</button>
     </header>
     <div class="users-body">
       <p id="users-status" class="error" hidden></p>
 
       <section id="users-list-section" class="users-card" hidden>
-        <h2>All users</h2>
+        <h2 data-i18n="users.all">All users</h2>
         <div class="users-table">
           <div class="users-row users-header">
-            <div>Name</div>
-            <div>Username</div>
-            <div>Role</div>
-            <div class="users-actions-col">Actions</div>
+            <div data-i18n="users.col_name">Name</div>
+            <div data-i18n="users.col_username">Username</div>
+            <div data-i18n="users.col_role">Role</div>
+            <div class="users-actions-col" data-i18n="users.col_actions">Actions</div>
           </div>
           <div id="users-rows"></div>
         </div>
       </section>
 
       <section id="account-section" class="users-card">
-        <h2>My account</h2>
-        <p class="muted">Signed in as <span id="me-username"></span> (<span id="me-role"></span>)</p>
+        <h2 data-i18n="users.my_account">My account</h2>
+        <p class="muted" id="me-signed-in-as"></p>
 
-        <h3>My name</h3>
+        <h3 data-i18n="users.my_name">My name</h3>
         <form id="my-name-form" class="users-form">
-          <label>First name
+          <label><span data-i18n="users.first_name">First name</span>
             <input name="first_name" autocomplete="given-name" />
           </label>
-          <label>Last name
+          <label><span data-i18n="users.last_name">Last name</span>
             <input name="last_name" autocomplete="family-name" />
           </label>
-          <button type="submit">Update name</button>
+          <button type="submit" data-i18n="users.update_name">Update name</button>
           <p id="my-name-status" class="muted users-inline-status" hidden></p>
         </form>
 
-        <h3>Change my password</h3>
+        <h3 data-i18n="users.change_password">Change my password</h3>
         <form id="my-pass-form" class="users-form">
-          <label>Current password
+          <label><span data-i18n="users.current_password">Current password</span>
             <input name="current_password" type="password" autocomplete="current-password" required />
           </label>
-          <label>New password
+          <label><span data-i18n="users.new_password">New password</span>
             <input name="new_password" type="password" autocomplete="new-password" required />
           </label>
-          <label>Confirm new password
+          <label><span data-i18n="users.confirm_password">Confirm new password</span>
             <input name="confirm_password" type="password" autocomplete="new-password" required />
           </label>
-          <button type="submit">Update password</button>
+          <button type="submit" data-i18n="users.update_password">Update password</button>
           <p id="my-pass-status" class="muted users-inline-status" hidden></p>
         </form>
 
-        <h3>Active sessions</h3>
-        <p class="muted">Revoke a session to immediately invalidate its token.</p>
+        <h3 data-i18n="users.active_sessions">Active sessions</h3>
+        <p class="muted" data-i18n="users.sessions_hint">Revoke a session to immediately invalidate its token.</p>
 
-        <h4 class="sessions-group-title">Valid</h4>
+        <h4 class="sessions-group-title" data-i18n="users.valid">Valid</h4>
         <div id="sessions-list-active" class="sessions-list"></div>
 
-        <h4 class="sessions-group-title">Expired</h4>
-        <p class="muted sessions-group-hint">Expired tokens can no longer authenticate; they are kept here for reference and can be removed individually.</p>
+        <h4 class="sessions-group-title" data-i18n="users.expired">Expired</h4>
+        <p class="muted sessions-group-hint" data-i18n="users.expired_hint">Expired tokens can no longer authenticate; they are kept here for reference and can be removed individually.</p>
         <div id="sessions-list-expired" class="sessions-list"></div>
       </section>
     </div>
@@ -240,35 +243,35 @@
 
   <div id="user-edit-modal" class="user-edit-modal" hidden>
     <div class="user-edit-card">
-      <h2 id="user-edit-title">New user</h2>
+      <h2 id="user-edit-title" data-i18n="user-edit.title">New user</h2>
       <form id="user-edit-form" class="users-form">
-        <label>Username
+        <label><span data-i18n="user-edit.username">Username</span>
           <input name="username" autocomplete="username" required />
         </label>
-        <label>Password
+        <label><span data-i18n="user-edit.password">Password</span>
           <input name="password" type="password" autocomplete="new-password" required />
         </label>
-        <label>First name
+        <label><span data-i18n="user-edit.first_name">First name</span>
           <input name="first_name" autocomplete="given-name" />
         </label>
-        <label>Last name
+        <label><span data-i18n="user-edit.last_name">Last name</span>
           <input name="last_name" autocomplete="family-name" />
         </label>
-        <label>Role
+        <label><span data-i18n="user-edit.role">Role</span>
           <select name="role">
-            <option value="user">user</option>
-            <option value="admin">admin</option>
+            <option value="user" data-i18n="user-edit.role_user">user</option>
+            <option value="admin" data-i18n="user-edit.role_admin">admin</option>
           </select>
         </label>
         <label class="switch">
           <input name="must_change_password" type="checkbox" />
           <span class="switch-track" aria-hidden="true"></span>
-          <span class="switch-text">Require a password change at next login</span>
+          <span class="switch-text" data-i18n="user-edit.force_change">Require a password change at next login</span>
         </label>
         <p id="user-edit-status" class="error" hidden></p>
         <div class="user-edit-actions">
-          <button type="button" id="user-edit-cancel" class="ghost">Cancel</button>
-          <button type="submit" class="primary">Save</button>
+          <button type="button" id="user-edit-cancel" class="ghost" data-i18n="user-edit.cancel">Cancel</button>
+          <button type="submit" class="primary" data-i18n="user-edit.save">Save</button>
         </div>
       </form>
     </div>
@@ -276,22 +279,22 @@
 
   <section id="cameras-view" class="users-view" hidden>
     <header class="topbar">
-      <button id="cameras-back" class="ghost" data-icon="arrow-left">Back to cameras</button>
-      <strong>Cameras</strong>
+      <button id="cameras-back" class="ghost" data-icon="arrow-left"><span class="back-label">Back to Live</span></button>
+      <strong data-i18n="cameras.title">Cameras</strong>
       <span class="grow"></span>
-      <button id="cameras-new" class="primary" hidden>+ Add camera</button>
+      <button id="cameras-new" class="primary" hidden data-i18n="cameras.add">+ Add camera</button>
     </header>
     <div class="users-body">
       <p id="cameras-status" class="error" hidden></p>
 
       <section id="cameras-list-section" class="users-card" hidden>
-        <h2>All cameras</h2>
+        <h2 data-i18n="cameras.all">All cameras</h2>
         <div class="users-table cameras-table">
           <div class="users-row cameras-row users-header">
-            <div>Name</div>
-            <div>ID</div>
-            <div>Location</div>
-            <div class="users-actions-col">Actions</div>
+            <div data-i18n="cameras.col_name">Name</div>
+            <div data-i18n="cameras.col_id">ID</div>
+            <div data-i18n="cameras.col_location">Location</div>
+            <div class="users-actions-col" data-i18n="cameras.col_actions">Actions</div>
           </div>
           <div id="cameras-rows"></div>
         </div>
@@ -301,100 +304,100 @@
 
   <div id="cam-wizard-modal" class="user-edit-modal cam-wizard-modal" hidden>
     <div class="user-edit-card cam-wizard-card">
-      <h2 id="cam-wizard-title">Add camera</h2>
+      <h2 id="cam-wizard-title" data-i18n="cameras.add_title">Add camera</h2>
       <ol class="cam-wizard-steps" id="cam-wizard-steps">
-        <li data-step="1">Basics</li>
-        <li data-step="2">Source</li>
-        <li data-step="3">Options</li>
-        <li data-step="4">Thingino</li>
-        <li data-step="5">Review</li>
+        <li data-step="1" data-i18n="wizard.step_basics">Basics</li>
+        <li data-step="2" data-i18n="wizard.step_source">Source</li>
+        <li data-step="3" data-i18n="wizard.step_options">Options</li>
+        <li data-step="4" data-i18n="wizard.step_thingino">Thingino</li>
+        <li data-step="5" data-i18n="wizard.step_review">Review</li>
       </ol>
       <form id="cam-wizard-form" class="users-form" autocomplete="off">
         <!-- Step 1: basics -->
         <div class="cam-step" data-step="1">
-          <label>ID <span class="req">*</span>
-            <input name="id" required placeholder="e.g. frente" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" />
-            <small class="muted">Letters, digits, "-" or "_". Used in URLs and the recording path — cannot be changed later.</small>
+          <label><span data-i18n="wizard.id">ID</span><span class="req">*</span>
+            <input name="id" required data-i18n-placeholder="wizard.id_placeholder" placeholder="e.g. frente" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" />
+            <small class="muted" data-i18n="wizard.id_hint">Letters, digits, "-" or "_". Used in URLs and the recording path — cannot be changed later.</small>
           </label>
-          <label>Name
-            <input name="name" placeholder="e.g. Front door" />
+          <label><span data-i18n="wizard.name">Name</span>
+            <input name="name" data-i18n-placeholder="wizard.name_placeholder" placeholder="e.g. Front door" />
           </label>
-          <label>Location
-            <input name="location" placeholder="e.g. Exterior" />
+          <label><span data-i18n="wizard.location">Location</span>
+            <input name="location" data-i18n-placeholder="wizard.location_placeholder" placeholder="e.g. Exterior" />
           </label>
-          <label>Comment
-            <input name="comment" placeholder="Optional note" />
+          <label><span data-i18n="wizard.comment">Comment</span>
+            <input name="comment" data-i18n-placeholder="wizard.comment_placeholder" placeholder="Optional note" />
           </label>
         </div>
 
         <!-- Step 2: source -->
         <div class="cam-step" data-step="2" hidden>
-          <label>RTSP source URL <span class="req">*</span>
-            <input name="source" placeholder="rtsp://user:pass@192.168.1.50/ch0" />
-            <small class="muted">The camera's own RTSP URL, with credentials. Never exposed to clients.</small>
+          <label><span data-i18n="wizard.source_url">RTSP source URL</span><span class="req">*</span>
+            <input name="source" data-i18n-placeholder="wizard.source_placeholder" placeholder="rtsp://user:pass@192.168.1.50/ch0" />
+            <small class="muted" data-i18n="wizard.source_hint">The camera's own RTSP URL, with credentials. Never exposed to clients.</small>
           </label>
-          <label>Transport
+          <label><span data-i18n="wizard.transport">Transport</span>
             <select name="transport">
-              <option value="">auto (UDP, fall back to TCP)</option>
-              <option value="tcp">tcp (reliable; best for lossy links)</option>
-              <option value="udp">udp</option>
+              <option value="" data-i18n="wizard.transport_auto">auto (UDP, fall back to TCP)</option>
+              <option value="tcp" data-i18n="wizard.transport_tcp">tcp (reliable; best for lossy links)</option>
+              <option value="udp" data-i18n="wizard.transport_udp">udp</option>
             </select>
           </label>
           <div class="cam-probe">
-            <button type="button" id="cam-probe-btn" class="ghost">Test connection</button>
+            <button type="button" id="cam-probe-btn" class="ghost" data-i18n="wizard.test">Test connection</button>
             <span id="cam-probe-result" class="cam-probe-result muted"></span>
           </div>
         </div>
 
         <!-- Step 3: media options -->
         <div class="cam-step" data-step="3" hidden>
-          <label class="switch"><input type="checkbox" name="record" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">Record to disk <small class="muted">(needs [media] record = true globally)</small></span></label>
-          <label class="switch"><input type="checkbox" name="mse" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">Live MSE feed (browser)</span></label>
-          <label class="switch"><input type="checkbox" name="relay" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">RTSP relay</span></label>
-          <label class="switch"><input type="checkbox" name="privacy" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">Offer privacy toggle</span></label>
-          <label class="switch"><input type="checkbox" name="playback" /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">Advertise playback capability</span></label>
+          <label class="switch"><input type="checkbox" name="record" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text"><span data-i18n="wizard.record">Record to disk</span> <small class="muted" data-i18n="wizard.record_hint">(needs [media] record = true globally)</small></span></label>
+          <label class="switch"><input type="checkbox" name="mse" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.mse">Live MSE feed (browser)</span></label>
+          <label class="switch"><input type="checkbox" name="relay" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.relay">RTSP relay</span></label>
+          <label class="switch"><input type="checkbox" name="privacy" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.privacy_toggle">Offer privacy toggle</span></label>
+          <label class="switch"><input type="checkbox" name="playback" /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.playback">Advertise playback capability</span></label>
           <div class="cam-row-2">
-            <label>Width <input name="width" type="number" min="0" placeholder="1920" /></label>
-            <label>Height <input name="height" type="number" min="0" placeholder="1080" /></label>
+            <label><span data-i18n="wizard.width">Width</span><input name="width" type="number" min="0" data-i18n-placeholder="wizard.width_placeholder" placeholder="1920" /></label>
+            <label><span data-i18n="wizard.height">Height</span><input name="height" type="number" min="0" data-i18n-placeholder="wizard.height_placeholder" placeholder="1080" /></label>
           </div>
-          <label>Backchannel URL (two-way audio)
-            <input name="backchannel" placeholder="rtsp://user:pass@192.168.1.50:554/ch0" />
+          <label><span data-i18n="wizard.backchannel">Backchannel URL (two-way audio)</span>
+            <input name="backchannel" data-i18n-placeholder="wizard.backchannel_placeholder" placeholder="rtsp://user:pass@192.168.1.50:554/ch0" />
           </label>
         </div>
 
         <!-- Step 4: thingino (optional) -->
         <div class="cam-step" data-step="4" hidden>
-          <p class="muted">Optional — only for <a href="https://thingino.com/" target="_blank" rel="noopener">Thingino</a> cameras. Enables thumbnails, firmware privacy blackout and PTZ.</p>
-          <label>Thingino URL
-            <input name="thingino_url" placeholder="http://192.168.1.50" />
+          <p class="muted" data-i18n-html="wizard.thingino_intro">Optional — only for <a href="https://thingino.com/" target="_blank" rel="noopener">Thingino</a> cameras. Enables thumbnails, firmware privacy blackout and PTZ.</p>
+          <label><span data-i18n="wizard.thingino_url">Thingino URL</span>
+            <input name="thingino_url" data-i18n-placeholder="wizard.thingino_url_placeholder" placeholder="http://192.168.1.50" />
           </label>
-          <label>Thingino API key
-            <input name="thingino_api_key" placeholder="API key" />
+          <label><span data-i18n="wizard.thingino_api_key">Thingino API key</span>
+            <input name="thingino_api_key" data-i18n-placeholder="wizard.api_key_placeholder" placeholder="API key" />
           </label>
-          <label class="switch"><input type="checkbox" name="ptz" /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">PTZ camera</span></label>
+          <label class="switch"><input type="checkbox" name="ptz" /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.ptz">PTZ camera</span></label>
           <div class="cam-row-2">
-            <label>Home X <input name="home_x" type="number" step="any" placeholder="unset" /></label>
-            <label>Home Y <input name="home_y" type="number" step="any" placeholder="unset" /></label>
+            <label><span data-i18n="wizard.home_x">Home X</span><input name="home_x" type="number" step="any" placeholder="unset" /></label>
+            <label><span data-i18n="wizard.home_y">Home Y</span><input name="home_y" type="number" step="any" placeholder="unset" /></label>
           </div>
           <div class="cam-row-2">
-            <label>Privacy X <input name="privacy_x" type="number" step="any" placeholder="unset" /></label>
-            <label>Privacy Y <input name="privacy_y" type="number" step="any" placeholder="unset" /></label>
+            <label><span data-i18n="wizard.privacy_x">Privacy X</span><input name="privacy_x" type="number" step="any" placeholder="unset" /></label>
+            <label><span data-i18n="wizard.privacy_y">Privacy Y</span><input name="privacy_y" type="number" step="any" placeholder="unset" /></label>
           </div>
         </div>
 
         <!-- Step 5: review -->
         <div class="cam-step" data-step="5" hidden>
-          <p class="muted">Review and create. The camera comes online immediately — no restart.</p>
+          <p class="muted" data-i18n="wizard.review_intro">Review and create. The camera comes online immediately — no restart.</p>
           <dl class="cam-review" id="cam-review"></dl>
         </div>
 
         <p id="cam-wizard-status" class="error" hidden></p>
         <div class="user-edit-actions cam-wizard-actions">
-          <button type="button" id="cam-wizard-cancel" class="ghost">Cancel</button>
+          <button type="button" id="cam-wizard-cancel" class="ghost" data-i18n="wizard.cancel">Cancel</button>
           <span class="grow"></span>
-          <button type="button" id="cam-wizard-back" class="ghost" hidden>Back</button>
-          <button type="button" id="cam-wizard-next" class="primary">Next</button>
-          <button type="submit" id="cam-wizard-create" class="primary" hidden>Create camera</button>
+          <button type="button" id="cam-wizard-back" class="ghost" hidden data-i18n="wizard.back">Back</button>
+          <button type="button" id="cam-wizard-next" class="primary" data-i18n="wizard.next">Next</button>
+          <button type="submit" id="cam-wizard-create" class="primary" hidden data-i18n="wizard.create">Create camera</button>
         </div>
       </form>
     </div>
@@ -403,35 +406,35 @@
   <div id="help-overlay" class="help-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="help-title">
     <div class="help-card">
       <header class="help-header">
-        <h2 id="help-title">Keyboard shortcuts</h2>
-        <button id="help-close" class="ghost" aria-label="Close" data-icon="x"></button>
+        <h2 id="help-title" data-i18n="help.title">Keyboard shortcuts</h2>
+        <button id="help-close" class="ghost" data-i18n-aria-label="help.close" aria-label="Close" data-icon="x"></button>
       </header>
       <div class="help-body">
         <section>
-          <h3>Playback</h3>
+          <h3 data-i18n="help.playback">Playback</h3>
           <dl class="help-list">
-            <div><dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play / pause</dd></div>
-            <div><dt><kbd>j</kbd></dt><dd>Jump to previous recording</dd></div>
-            <div><dt><kbd>l</kbd></dt><dd>Jump to next recording</dd></div>
-            <div><dt><kbd>p</kbd></dt><dd>Jump to previous event</dd></div>
-            <div><dt><kbd>n</kbd></dt><dd>Jump to next event</dd></div>
-            <div><dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>Frame-step back / forward (while paused)</dd></div>
-            <div><dt><kbd>+</kbd></dt><dd>Zoom timeline out (wider window)</dd></div>
-            <div><dt><kbd>&minus;</kbd></dt><dd>Zoom timeline in (narrower window)</dd></div>
+            <div><dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd data-i18n="help.play_pause">Play / pause</dd></div>
+            <div><dt><kbd>j</kbd></dt><dd data-i18n="help.prev_recording">Jump to previous recording</dd></div>
+            <div><dt><kbd>l</kbd></dt><dd data-i18n="help.next_recording">Jump to next recording</dd></div>
+            <div><dt><kbd>p</kbd></dt><dd data-i18n="help.prev_event">Jump to previous event</dd></div>
+            <div><dt><kbd>n</kbd></dt><dd data-i18n="help.next_event">Jump to next event</dd></div>
+            <div><dt><kbd>,</kbd> <kbd>.</kbd></dt><dd data-i18n="help.frame_step">Frame-step back / forward (while paused)</dd></div>
+            <div><dt><kbd>+</kbd></dt><dd data-i18n="help.zoom_out">Zoom timeline out (wider window)</dd></div>
+            <div><dt><kbd>&minus;</kbd></dt><dd data-i18n="help.zoom_in">Zoom timeline in (narrower window)</dd></div>
           </dl>
         </section>
         <section>
-          <h3>Live (single PTZ camera)</h3>
+          <h3 data-i18n="help.live_ptz">Live (single PTZ camera)</h3>
           <dl class="help-list">
-            <div><dt><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></dt><dd>Pan / tilt the camera</dd></div>
+            <div><dt><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></dt><dd data-i18n="help.pan_tilt">Pan / tilt the camera</dd></div>
           </dl>
         </section>
         <section>
-          <h3>General</h3>
+          <h3 data-i18n="help.general">General</h3>
           <dl class="help-list">
-            <div><dt><kbd>f</kbd></dt><dd>Fullscreen the focused camera</dd></div>
-            <div><dt><kbd>?</kbd></dt><dd>Show this help</dd></div>
-            <div><dt><kbd>Esc</kbd></dt><dd>Close dialogs, or step back: camera → location → all</dd></div>
+            <div><dt><kbd>f</kbd></dt><dd data-i18n="help.fullscreen">Fullscreen the focused camera</dd></div>
+            <div><dt><kbd>?</kbd></dt><dd data-i18n="help.show_help">Show this help</dd></div>
+            <div><dt><kbd>Esc</kbd></dt><dd data-i18n="help.esc">Close dialogs, or step back: camera → location → all</dd></div>
           </dl>
         </section>
       </div>
@@ -440,7 +443,7 @@
 
   <div id="dlg-modal" class="dlg-modal" hidden role="dialog" aria-modal="true" aria-labelledby="dlg-title">
     <div class="dlg-card">
-      <h2 id="dlg-title" class="dlg-title">Confirm</h2>
+      <h2 id="dlg-title" class="dlg-title" data-i18n="dlg.confirm">Confirm</h2>
       <p id="dlg-body" class="dlg-body"></p>
       <label id="dlg-input-wrap" class="dlg-input-wrap" hidden>
         <span id="dlg-input-label"></span>
@@ -452,8 +455,8 @@
       </label>
       <p id="dlg-error" class="dlg-error" hidden></p>
       <div class="dlg-actions">
-        <button type="button" id="dlg-cancel" class="ghost">Cancel</button>
-        <button type="button" id="dlg-ok" class="primary">OK</button>
+        <button type="button" id="dlg-cancel" class="ghost" data-i18n="dlg.cancel">Cancel</button>
+        <button type="button" id="dlg-ok" class="primary" data-i18n="dlg.ok">OK</button>
       </div>
     </div>
   </div>

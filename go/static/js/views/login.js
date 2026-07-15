@@ -1,6 +1,7 @@
 import { $ } from "../util/dom.js";
 import { set, saveJson, loadJson, USER_KEY, TOKEN_KEY } from "../util/storage.js";
 import { api } from "../api.js";
+import { t } from "../i18n.js";
 
 export function finishBoot() {
   document.documentElement.classList.remove("booting");
@@ -55,7 +56,7 @@ export function initLogin() {
       const { showApp } = await import("./app-shell.js");
       showApp();
     } catch (e) {
-      err.textContent = e.message || "Login failed";
+      err.textContent = e.message || t("login.failed");
       err.hidden = false;
     } finally {
       submit.disabled = false;

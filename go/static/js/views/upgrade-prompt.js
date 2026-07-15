@@ -15,6 +15,7 @@
 import { sessionGet, sessionSet } from "../util/storage.js";
 import { escapeHtml } from "../util/dom.js";
 import { icon } from "../ui/icons.js";
+import { t } from "../i18n.js";
 
 const DISMISS_KEY = "eneverre.upgradePrompt.dismissedVersionCode";
 
@@ -78,7 +79,7 @@ function buildBanner(manifest, kind) {
   el.setAttribute("aria-live", "polite");
 
   const iconName = kind === "tv" ? "tv" : "smartphone";
-  const label = kind === "tv" ? "Android TV" : "phone";
+  const label = kind === "tv" ? t("upgrade.android_tv") : t("upgrade.phone");
 
   const text = document.createElement("div");
   text.className = "upgrade-prompt-text";
@@ -89,10 +90,10 @@ function buildBanner(manifest, kind) {
   const main = document.createElement("span");
   main.className = "upgrade-prompt-main";
   const title = document.createElement("strong");
-  title.textContent = `Eneverre for ${label}`;
+  title.textContent = t("upgrade.for", { label });
   const ver = document.createElement("span");
   ver.className = "upgrade-prompt-version";
-  ver.textContent = `v${manifest.versionName}`;
+  ver.textContent = t("upgrade.version", { version: manifest.versionName });
   main.append(title, ver);
   text.append(iconEl, main);
 
@@ -105,11 +106,11 @@ function buildBanner(manifest, kind) {
   // it triggers the system download manager which then offers the package
   // installer for .apk files.
   dl.setAttribute("download", manifest.apkFilename || "");
-  dl.textContent = "Download";
+  dl.textContent = t("upgrade.download");
   const dismiss = document.createElement("button");
   dismiss.type = "button";
   dismiss.className = "upgrade-prompt-dismiss ghost";
-  dismiss.setAttribute("aria-label", "Dismiss");
+  dismiss.setAttribute("aria-label", t("upgrade.dismiss"));
   dismiss.innerHTML = icon("x");
   actions.append(dl, dismiss);
 

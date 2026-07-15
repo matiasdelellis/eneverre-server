@@ -1,6 +1,7 @@
 import { $ } from "../util/dom.js";
 import { sessionGet, sessionRemove, VIEW_KEY } from "../util/storage.js";
 import { api } from "../api.js";
+import { t } from "../i18n.js";
 
 let deviceAuthTimer = null;
 
@@ -26,7 +27,7 @@ export function showDeviceAuth(code, deviceName) {
   $("#device-auth-code").textContent = code;
   const nameEl = $("#device-auth-name");
   if (nameEl) {
-    nameEl.textContent = deviceName || "Unknown device";
+    nameEl.textContent = deviceName || t("dev-auth.unknown");
     nameEl.hidden = false;
   }
   const result = $("#device-auth-result");
@@ -44,7 +45,7 @@ export function showDeviceAuth(code, deviceName) {
     if (el) el.textContent = `${mm}:${String(ss).padStart(2, "0")}`;
     if (left <= 0) {
       clearDeviceAuthTimer();
-      finishDeviceAuth("This code has expired. Generate a new one on the device.");
+      finishDeviceAuth(t("dev-auth.expired"));
     }
   };
   tick();
@@ -93,14 +94,14 @@ async function verifyDevice(code) {
       body: JSON.stringify({ user_code: code }),
     });
     if (data.status === "approved") {
-      finishDeviceAuth("Device authorized. You can close this window.", "ok");
+      finishDeviceAuth(t("dev-auth.authorized"), "ok");
     } else if (data.status === "expired") {
-      finishDeviceAuth("This code has expired. Generate a new one on the device.", "error");
+      finishDeviceAuth(t("dev-auth.expired"), "error");
     } else {
-      finishDeviceAuth(`Unexpected response: ${data.status}`, "error");
+      finishDeviceAuth(t("dev-auth.unexpected", { status: data.status }), "error");
     }
   } catch (e) {
-    finishDeviceAuth(e.message || "Authorization failed.", "error");
+    finishDeviceAuth(e.message || t("dev-auth.failed"), "error");
   }
 }
 

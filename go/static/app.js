@@ -3,6 +3,7 @@
 // The boot order below mirrors the original top-down init in app.js.
 
 import { token } from "./js/api.js";
+import { applyI18n, getLang } from "./js/i18n.js";
 import { hydrateIcons } from "./js/ui/icons.js";
 import { initLogin, showLogin } from "./js/views/login.js";
 import { initForcePasswordChange } from "./js/views/force-password.js";
@@ -24,6 +25,10 @@ import { initUpgradePrompt } from "./js/views/upgrade-prompt.js";
 // Fill static [data-icon] buttons/spans from the icon set before wiring up
 // handlers, so the markup carries no duplicated SVG path data.
 hydrateIcons();
+// Fill static [data-i18n*] markup for the detected/saved language before any
+// view renders, and reflect the language on <html lang>.
+document.documentElement.lang = getLang();
+applyI18n();
 initTheme();
 initPasswordReveal();
 initUserMenu();
