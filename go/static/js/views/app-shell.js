@@ -65,7 +65,11 @@ export async function logout(silent = false) {
   exitCamerasView();
   hideDeviceAuth();
   $("#wall").innerHTML = "";
-  $("#viewer-side-scroll").innerHTML = "";
+  const sideScroll = $("#viewer-side-scroll");
+  sideScroll.innerHTML = "";
+  // Clear the "already populated" flag too, or loadSidebar() short-circuits
+  // on the next login and the sidebar stays empty until a full page reload.
+  delete sideScroll.dataset.loaded;
   stopSidebarThumbRefresh();
   // Drop cached sidebar thumbnails so the next login captures them
   // fresh under the new session. `thumb_*` keys are the only ones
