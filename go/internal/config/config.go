@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -83,12 +84,20 @@ type Config struct {
 }
 
 // LoadOptions are the path overrides a caller can pass to Load. Precedence:
-// explicit option > matching ENEVERRE_* env var > built-in default search
-// paths. Empty fields fall through to the next layer.
+// explicit option > matching ENEVERRE_* env var > DataDir-derived default >
+// built-in default search paths. Empty fields fall through to the next layer.
 type LoadOptions struct {
 	ConfigFile string
 	CamerasDir string
 	DBPath     string
+	// DataDir, when set, relocates the whole configuration bundle: the config
+	// file, cameras dir, and DB default to <DataDir>/eneverre.ini,
+	// <DataDir>/cameras.d, and <DataDir>/eneverre.db instead of the ./data
+	// built-ins. It lets an operator keep several self-contained folders
+	// (e.g. ./data-quincho, ./data-open) and switch between them with one
+	// flag. A per-path override (--config, --cameras-dir, --db, or the
+	// matching env var) still beats the DataDir-derived value.
+	DataDir string
 }
 
 // Load reads the config file and resolves the cameras dir and DB path. The
@@ -96,23 +105,39 @@ type LoadOptions struct {
 // opts zero-valued the behavior is the same as before (env vars, then
 // built-in search paths).
 func Load(opts LoadOptions) (*Config, error) {
+	// A data dir (--data-dir or ENEVERRE_DATA_DIR) relocates the whole bundle:
+	// when set, each path below defaults to <dataDir>/<basename-of-last-candidate>
+	// instead of running the ./data-anchored built-in search. Per-path overrides
+	// still win. The base filenames are taken from the last search candidate so
+	// there's a single source of truth for "eneverre.ini", "cameras.d", etc.
+	dataDir := opts.DataDir
+	if dataDir == "" {
+		dataDir = os.Getenv("ENEVERRE_DATA_DIR")
+	}
+
 	// The config file is optional only when its path is left to the built-in
 	// search: a missing default file is not fatal — every setting falls back to
 	// its default. But an explicit path (--config flag or ENEVERRE_CONFIG_PATH)
 	// that does not exist is a mistake, not a "use defaults" signal, so it fails
-	// loudly (see the load step below). When no path is given, default to the
-	// last candidate (./data/eneverre.ini), picking an existing one if present.
+	// loudly (see the load step below). A DataDir-derived path is treated as a
+	// default (may be absent), not as explicit. When no path is given, default
+	// to the last candidate (./data/eneverre.ini), picking an existing one if
+	// present.
 	cfgFile := opts.ConfigFile
 	if cfgFile == "" {
 		cfgFile = os.Getenv("ENEVERRE_CONFIG_PATH")
 	}
 	explicit := cfgFile != ""
 	if cfgFile == "" {
-		cfgFile = configPaths[len(configPaths)-1]
-		for _, p := range configPaths {
-			if _, err := os.Stat(p); err == nil {
-				cfgFile = p
-				break
+		if dataDir != "" {
+			cfgFile = filepath.Join(dataDir, filepath.Base(configPaths[len(configPaths)-1]))
+		} else {
+			cfgFile = configPaths[len(configPaths)-1]
+			for _, p := range configPaths {
+				if _, err := os.Stat(p); err == nil {
+					cfgFile = p
+					break
+				}
 			}
 		}
 	}
@@ -127,11 +152,15 @@ func Load(opts LoadOptions) (*Config, error) {
 		camDir = os.Getenv("ENEVERRE_CAMERAS_DIR")
 	}
 	if camDir == "" {
-		camDir = camerasDirs[len(camerasDirs)-1]
-		for _, p := range camerasDirs {
-			if _, err := os.Stat(p); err == nil {
-				camDir = p
-				break
+		if dataDir != "" {
+			camDir = filepath.Join(dataDir, filepath.Base(camerasDirs[len(camerasDirs)-1]))
+		} else {
+			camDir = camerasDirs[len(camerasDirs)-1]
+			for _, p := range camerasDirs {
+				if _, err := os.Stat(p); err == nil {
+					camDir = p
+					break
+				}
 			}
 		}
 	}
@@ -143,11 +172,15 @@ func Load(opts LoadOptions) (*Config, error) {
 		dbFile = os.Getenv("ENEVERRE_DB_PATH")
 	}
 	if dbFile == "" {
-		dbFile = dbPaths[len(dbPaths)-1]
-		for _, p := range dbPaths {
-			if _, err := os.Stat(p); err == nil {
-				dbFile = p
-				break
+		if dataDir != "" {
+			dbFile = filepath.Join(dataDir, filepath.Base(dbPaths[len(dbPaths)-1]))
+		} else {
+			dbFile = dbPaths[len(dbPaths)-1]
+			for _, p := range dbPaths {
+				if _, err := os.Stat(p); err == nil {
+					dbFile = p
+					break
+				}
 			}
 		}
 	}

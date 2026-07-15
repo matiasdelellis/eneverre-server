@@ -114,6 +114,7 @@ func main() {
 		ConfigFile: opts.configFile,
 		CamerasDir: opts.camerasDir,
 		DBPath:     opts.dbPath,
+		DataDir:    opts.dataDir,
 	})
 	if err != nil {
 		fatal("config load failed", "err", err)
@@ -309,6 +310,7 @@ func main() {
 type cliOptions struct {
 	showHelp           bool
 	showVersion        bool
+	dataDir            string
 	configFile         string
 	camerasDir         string
 	dbPath             string
@@ -335,6 +337,7 @@ func parseFlags() (cliOptions, func()) {
 		fmt.Fprintf(fs.Output(), "\nPath-resolution precedence (highest first):\n")
 		fmt.Fprintf(fs.Output(), "  CLI flag  >  ENEVERRE_* env var  >  built-in defaults\n")
 		fmt.Fprintf(fs.Output(), "\nFile-path env vars (also overridable as flags):\n")
+		fmt.Fprintf(fs.Output(), "  ENEVERRE_DATA_DIR      -> --data-dir\n")
 		fmt.Fprintf(fs.Output(), "  ENEVERRE_CONFIG_PATH   -> --config, -c\n")
 		fmt.Fprintf(fs.Output(), "  ENEVERRE_CAMERAS_DIR   -> --cameras-dir\n")
 		fmt.Fprintf(fs.Output(), "  ENEVERRE_DB_PATH       -> --db\n")
@@ -347,6 +350,7 @@ func parseFlags() (cliOptions, func()) {
 
 	var opts cliOptions
 	// Files
+	fs.StringVar(&opts.dataDir, "data-dir", "", "config folder: config, cameras dir and DB default to <dir>/eneverre.ini, <dir>/cameras.d, <dir>/eneverre.db (e.g. --data-dir ./data-quincho)")
 	fs.StringVar(&opts.configFile, "config", "", "path to eneverre.ini")
 	fs.StringVar(&opts.configFile, "c", "", "alias for --config")
 	fs.StringVar(&opts.camerasDir, "cameras-dir", "", "directory with camera .ini files")
