@@ -10,6 +10,7 @@
 import { makeMsg } from "../util/dom.js";
 import { token } from "../api.js";
 import { setCamStatus } from "../ui/cam-status.js";
+import { icon } from "../ui/icons.js";
 
 const TARGET = 1.2;          // seconds of latency to hold at the live edge
 const RECONNECT_MS = 1500;   // wait before retrying after the source drops
@@ -46,7 +47,7 @@ export function attachMse(cam, video) {
       bufferingEl.className = "wall-buffering";
       bufferingEl.setAttribute("role", "status");
       bufferingEl.setAttribute("aria-live", "polite");
-      bufferingEl.innerHTML = '<span class="wall-buffering-icon" aria-hidden="true">⟳</span><span class="wall-buffering-text">Loading…</span>';
+      bufferingEl.innerHTML = `<span class="wall-buffering-icon" aria-hidden="true">${icon("loader")}</span><span class="wall-buffering-text">Loading…</span>`;
       const overlay = tile.querySelector(".wall-overlay");
       if (overlay) tile.insertBefore(bufferingEl, overlay);
       else tile.appendChild(bufferingEl);

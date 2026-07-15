@@ -1,23 +1,12 @@
 import { $ } from "../util/dom.js";
-import { toggleTheme } from "./theme.js";
-
-function syncAudioMenuLabel() {
-  // The menu item reuses the same audio-toggle handler as the topbar
-  // button, so the label just needs to reflect the current state. The
-  // topbar button shows a glyph (🔇/🔊); the menu shows a text label.
-  const topbar = document.getElementById("audio-toggle");
-  const menu = document.getElementById("audio-toggle-menu");
-  if (!topbar || !menu) return;
-  const muted = topbar.textContent.trim() === "🔇";
-  menu.textContent = muted ? "Unmute all" : "Mute all";
-}
+import { currentTheme, toggleTheme } from "./theme.js";
 
 function syncThemeMenuLabel() {
-  const topbar = document.getElementById("theme-toggle");
   const menu = document.getElementById("theme-toggle-menu");
-  if (!topbar || !menu) return;
-  // The topbar shows ☀ in light mode, 🌓 in dark/auto.
-  const isLight = topbar.textContent.trim() === "🌙";
+  if (!menu) return;
+  // The topbar shows the moon in light mode (so clicking goes to dark)
+  // and the sun in dark/auto (so clicking goes to light).
+  const isLight = currentTheme() === "light";
   menu.textContent = isLight ? "Switch to dark" : "Switch to light";
 }
 
@@ -32,7 +21,6 @@ function close() {
 function toggle() {
   const list = document.getElementById("user-menu-list");
   if (!list) return;
-  syncAudioMenuLabel();
   syncThemeMenuLabel();
   const willOpen = list.hidden;
   list.hidden = !willOpen;
@@ -57,13 +45,9 @@ export function initUserMenu() {
     e.stopPropagation();
     toggle();
   });
-  // The audio/theme menu items are duplicates of the topbar buttons
-  // (visible only on mobile, where the topbar runs out of room). They
-  // forward the same actions and close the menu after the click.
-  document.getElementById("audio-toggle-menu")?.addEventListener("click", () => {
-    document.getElementById("audio-toggle")?.click();
-    close();
-  });
+  // The theme menu item duplicates the topbar button (visible only on
+  // mobile, where the topbar runs out of room). It forwards the same
+  // action and closes the menu after the click.
   document.getElementById("theme-toggle-menu")?.addEventListener("click", () => {
     toggleTheme();
     close();

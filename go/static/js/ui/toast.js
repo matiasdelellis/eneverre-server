@@ -2,6 +2,8 @@
 // lazily created and appended to <body>; each toast auto-dismisses. Used for
 // non-blocking feedback (clip saved, snapshot downloaded, PTZ errors, …).
 
+import { icon as svgIcon } from "./icons.js";
+
 let container = null;
 
 function ensureContainer() {
@@ -20,8 +22,8 @@ export function toast(message, { type = "info", duration = 3000 } = {}) {
   const root = ensureContainer();
   const el = document.createElement("div");
   el.className = `toast toast-${type}`;
-  const icon = type === "success" ? "✓" : type === "error" ? "✕" : "ℹ";
-  el.innerHTML = `<span class="toast-icon" aria-hidden="true">${icon}</span><span class="toast-text"></span>`;
+  const iconName = type === "success" ? "check" : type === "error" ? "x" : "info";
+  el.innerHTML = `<span class="toast-icon" aria-hidden="true">${svgIcon(iconName)}</span><span class="toast-text"></span>`;
   el.querySelector(".toast-text").textContent = message;
   root.appendChild(el);
   // Force a reflow so the entry transition runs from the initial state.

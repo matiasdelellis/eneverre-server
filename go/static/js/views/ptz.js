@@ -3,6 +3,7 @@ import { get, set } from "../util/storage.js";
 import { getState, setLastPtzCam, setCamerasCache, on } from "../state.js";
 import { api, fetchCameras } from "../api.js";
 import { alertModal } from "../ui/dialog.js";
+import { icon } from "../ui/icons.js";
 
 const STEP = 50;
 const PTZ_MODAL_POS_KEY = "eneverre.ptzModalPos";
@@ -150,7 +151,7 @@ function syncPrivacyButton() {
   const on = cam.privacy === true;
   btn.classList.toggle("active", on);
   btn.setAttribute("aria-pressed", on ? "true" : "false");
-  btn.textContent = on ? "🔒" : "🔓";
+  btn.innerHTML = on ? icon("lock") : icon("lock-open");
   btn.title = on ? "Privacy on — click to resume recording" : "Enable privacy";
   btn.setAttribute("aria-label", btn.title);
 }
@@ -187,13 +188,13 @@ function buildPtzPanel(cam) {
     <h3>PTZ</h3>
     <div class="ptz-pad">
       <span class="empty"></span>
-      <button data-dx="0" data-dy="-${STEP}" title="Up">↑</button>
+      <button data-dx="0" data-dy="-${STEP}" title="Up">${icon("arrow-up")}</button>
       <span class="empty"></span>
-      <button data-dx="-${STEP}" data-dy="0" title="Left">←</button>
-      <button data-dx="0" data-dy="0" title="Center">•</button>
-      <button data-dx="${STEP}" data-dy="0" title="Right">→</button>
+      <button data-dx="-${STEP}" data-dy="0" title="Left">${icon("arrow-left")}</button>
+      <button data-dx="0" data-dy="0" title="Center">${icon("circle")}</button>
+      <button data-dx="${STEP}" data-dy="0" title="Right">${icon("arrow-right")}</button>
       <span class="empty"></span>
-      <button data-dx="0" data-dy="${STEP}" title="Down">↓</button>
+      <button data-dx="0" data-dy="${STEP}" title="Down">${icon("arrow-down")}</button>
       <span class="empty"></span>
     </div>
     <div class="ptz-actions"><button data-go="home">Home</button></div>`;

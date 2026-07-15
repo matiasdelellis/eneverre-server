@@ -1,4 +1,4 @@
-import { $, $$ } from "../util/dom.js";
+import { $ } from "../util/dom.js";
 import {
   get, set, remove, sessionGet, sessionSet, sessionRemove,
   loadJson, saveJson,
@@ -188,15 +188,30 @@ export function toggleSidebarDrawer(force) {
   else openSidebarDrawer();
 }
 
+// moveGlobalControlsTo re-parents the global topbar controls (theme
+// toggle + signed-in user menu) into the active view's topbar. All
+// three topbars (main app, Users, Cameras) share a single instance of
+// these controls — the container is moved (not cloned) on view switch,
+// so there is no ID duplication and the dropdown positions naturally
+// under whichever trigger is clicked. The dropdown is closed first so a
+// stale open popup doesn't get carried across views.
+export function moveGlobalControlsTo(targetTopbar) {
+  if (!targetTopbar) return;
+  const controls = document.getElementById("global-topbar-controls");
+  if (!controls) return;
+  if (controls.parentElement === targetTopbar) return;
+  // Close any open user menu before moving so its open state and
+  // aria-expanded don't get carried to a topbar the user can't see.
+  const list = document.getElementById("user-menu-list");
+  if (list && !list.hidden) {
+    list.hidden = true;
+    const trigger = document.getElementById("user-menu-trigger");
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+  }
+  targetTopbar.appendChild(controls);
+}
+
 function initTopbar() {
-  $("#audio-toggle").addEventListener("click", () => {
-    const videos = $$("#wall video");
-    if (!videos.length) return;
-    const newMuted = !videos[0].muted;
-    for (const v of videos) v.muted = newMuted;
-    $("#audio-toggle").textContent = newMuted ? "🔇" : "🔊";
-    $("#audio-toggle").title = newMuted ? "Unmute audio" : "Mute audio";
-  });
   $("#view-live").addEventListener("click", () => setViewMode("live"));
   $("#view-playback").addEventListener("click", () => setViewMode("playback"));
   $("#viewer-toggle").addEventListener("click", () => {

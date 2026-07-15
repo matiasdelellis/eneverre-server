@@ -1,4 +1,5 @@
 import { get, set, remove, THEME_KEY } from "../util/storage.js";
+import { icon } from "./icons.js";
 
 export function currentTheme() {
   return get(THEME_KEY);
@@ -11,7 +12,12 @@ export function applyTheme(theme) {
     delete document.documentElement.dataset.theme;
   }
   const btn = document.getElementById("theme-toggle");
-  if (btn) btn.textContent = theme === "light" ? "🌙" : "☀";
+  if (btn) btn.innerHTML = theme === "light" ? icon("moon") : icon("sun");
+  // Components that render theme-dependent colors directly to a canvas
+  // (or any non-CSS surface) can't pick up the change via a stylesheet
+  // re-render — they have to re-read the custom properties and redraw.
+  // The playback timeline is the main consumer.
+  document.dispatchEvent(new CustomEvent("eneverre:themechange"));
 }
 
 export function setTheme(theme) {

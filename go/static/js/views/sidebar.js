@@ -3,6 +3,7 @@ import { setWallFilter, setWallFilterBeforeCam, getState, on } from "../state.js
 import { fetchCameras, token } from "../api.js";
 import { isMobileViewport, closeSidebarDrawer } from "./app-shell.js";
 import { loadJson, saveJson, LOCATION_ORDER_KEY } from "../util/storage.js";
+import { icon } from "../ui/icons.js";
 
 function maybeCloseDrawer() {
   // Only auto-close the camera list on mobile, where it overlays the
@@ -49,7 +50,7 @@ export function publishLiveThumb(camId, dataUrl) {
 
 // Show or clear the privacy lock on a sidebar tile. In privacy the engine
 // stops recording and streaming, so the last cached frame must not linger —
-// we hide it behind a 🔒 placeholder mirroring the wall tile.
+// we hide it behind a lock placeholder mirroring the wall tile.
 function applyThumbPrivacy(tile, on) {
   const preview = tile.querySelector(".thumb-preview");
   if (!preview) return;
@@ -61,7 +62,7 @@ function applyThumbPrivacy(tile, on) {
     if (!lock) {
       lock = document.createElement("span");
       lock.className = "thumb-privacy";
-      lock.textContent = "🔒";
+      lock.innerHTML = icon("lock");
       lock.title = "Privacy — not recording";
       lock.setAttribute("aria-label", "Privacy — not recording");
       // Before the caption so the camera name stays readable on top.
@@ -192,7 +193,7 @@ export async function loadSidebar() {
     return;
   }
   if (!cams.length) {
-    side.innerHTML = "<p class='muted viewer-status'>No cameras configured.</p>";
+    side.innerHTML = "<p class='muted viewer-status'>No cameras yet.</p>";
     return;
   }
   side.innerHTML = "";
@@ -207,7 +208,7 @@ export async function loadSidebar() {
     header.dataset.location = loc;
     header.title = `Filter wall to ${loc} — drag to reorder`;
     header.draggable = true;
-    header.innerHTML = `<span class="loc-grip" aria-hidden="true">⠿</span><span class="loc-icon" aria-hidden="true">▤</span><span class="loc-text">${escapeHtml(loc)}</span>`;
+    header.innerHTML = `<span class="loc-grip" aria-hidden="true">${icon("grip-vertical")}</span><span class="loc-icon" aria-hidden="true">${icon("layout-grid")}</span><span class="loc-text">${escapeHtml(loc)}</span>`;
     header.addEventListener("click", () => {
       if (isWallLike()) {
         toggleLocFilter(loc);

@@ -71,47 +71,45 @@
           <img class="brand-icon" src="/eneverre.svg" alt="" />
           <span class="brand-text"><strong>Eneverre</strong></span>
         </div>
-        <button class="viewer-toggle" id="viewer-toggle" title="Collapse sidebar" aria-label="Toggle sidebar">‹</button>
-        <button class="sidebar-close" id="sidebar-close" title="Close camera list" aria-label="Close camera list">✕</button>
+        <button class="viewer-toggle" id="viewer-toggle" title="Collapse sidebar" aria-label="Toggle sidebar" data-icon="chevron-left"></button>
+        <button class="sidebar-close" id="sidebar-close" title="Close camera list" aria-label="Close camera list" data-icon="x"></button>
       </header>
       <div class="viewer-side-scroll" id="viewer-side-scroll"></div>
     </aside>
     <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
     <div class="app-main">
       <header class="topbar">
-        <button id="sidebar-open" class="ghost icon-btn sidebar-open" title="Open camera list" aria-label="Open camera list">☰</button>
+        <button id="sidebar-open" class="ghost icon-btn sidebar-open" title="Open camera list" aria-label="Open camera list" data-icon="menu"></button>
         <div class="view-toggle" role="tablist">
           <button id="view-live" class="toggle" role="tab" title="All cameras as a grid">Live</button>
           <button id="view-playback" class="toggle" role="tab" title="Synchronized playback with timeline">Playback</button>
         </div>
         <span class="grow"></span>
-        <button id="talk-toggle" class="ghost icon-btn talk-toggle" hidden title="Enable talk (allow microphone)" aria-label="Enable talk (allow microphone)" aria-pressed="false">🎤</button>
-        <button id="privacy-toggle" class="ghost icon-btn privacy-toggle" hidden title="Enable privacy" aria-label="Enable privacy" aria-pressed="false">🔓</button>
-        <button id="audio-toggle" class="ghost icon-btn topbar-hide-sm" title="Toggle audio" aria-label="Toggle audio">🔇</button>
-        <button id="theme-toggle" class="ghost icon-btn topbar-hide-sm" title="Toggle theme" aria-label="Toggle theme">🌓</button>
-        <div class="user-menu" id="user-menu" hidden>
-          <button id="user-menu-trigger" class="ghost user-menu-trigger" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu-list">
-            <span class="user-menu-name" id="user-menu-name"></span>
-            <span class="user-menu-caret" aria-hidden="true">▾</span>
-          </button>
-          <ul id="user-menu-list" class="user-menu-list" role="menu" hidden>
-            <li role="none">
-              <button id="users-btn" class="user-menu-item" role="menuitem" hidden>Manage users</button>
-            </li>
-            <li role="none">
-              <button id="cameras-btn" class="user-menu-item" role="menuitem" hidden>Manage cameras</button>
-            </li>
-            <li role="none" class="user-menu-item-sm" hidden>
-              <button id="audio-toggle-menu" class="user-menu-item" role="menuitem" hidden>Toggle audio</button>
-            </li>
-            <li role="none" class="user-menu-item-sm" hidden>
-              <button id="theme-toggle-menu" class="user-menu-item" role="menuitem" hidden>Toggle theme</button>
-            </li>
-            <li role="none" class="user-menu-separator" aria-hidden="true"></li>
-            <li role="none">
-              <button id="logout" class="user-menu-item" role="menuitem">Log out</button>
-            </li>
-          </ul>
+        <button id="talk-toggle" class="ghost icon-btn talk-toggle" hidden title="Enable talk (allow microphone)" aria-label="Enable talk (allow microphone)" aria-pressed="false" data-icon="mic"></button>
+        <button id="privacy-toggle" class="ghost icon-btn privacy-toggle" hidden title="Enable privacy" aria-label="Enable privacy" aria-pressed="false" data-icon="lock-open"></button>
+        <div class="global-topbar-controls" id="global-topbar-controls">
+          <button id="theme-toggle" class="ghost icon-btn topbar-hide-sm" title="Toggle theme" aria-label="Toggle theme"></button>
+          <div class="user-menu" id="user-menu" hidden>
+            <button id="user-menu-trigger" class="ghost user-menu-trigger" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu-list">
+              <span class="user-menu-name" id="user-menu-name"></span>
+              <span class="user-menu-caret" aria-hidden="true" data-icon="chevron-down"></span>
+            </button>
+            <ul id="user-menu-list" class="user-menu-list" role="menu" hidden>
+              <li role="none">
+                <button id="users-btn" class="user-menu-item" role="menuitem" hidden>Manage users</button>
+              </li>
+              <li role="none">
+                <button id="cameras-btn" class="user-menu-item" role="menuitem" hidden>Manage cameras</button>
+              </li>
+              <li role="none" class="user-menu-item-sm" hidden>
+                <button id="theme-toggle-menu" class="user-menu-item" role="menuitem" hidden>Toggle theme</button>
+              </li>
+              <li role="none" class="user-menu-separator" aria-hidden="true"></li>
+              <li role="none">
+                <button id="logout" class="user-menu-item" role="menuitem">Log out</button>
+              </li>
+            </ul>
+          </div>
         </div>
       </header>
       <main>
@@ -120,9 +118,9 @@
             <div id="wall" class="wall" hidden></div>
           </div>
           <div id="playback-bar" class="playback-bar" hidden>
-            <button id="pb-play" class="pb-btn" title="Play/Pause" aria-label="Play">▶</button>
+            <button id="pb-play" class="pb-btn" title="Play/Pause" aria-label="Play" data-icon="play"></button>
             <canvas id="pb-canvas" class="pb-canvas"></canvas>
-            <button id="pb-goto" class="pb-btn" title="Jump to date/time" aria-label="Jump to date/time">🕐</button>
+            <button id="pb-goto" class="pb-btn" title="Jump to date/time" aria-label="Jump to date/time" data-icon="clock"></button>
             <input id="pb-goto-input" class="pb-goto-input" type="datetime-local" step="1" aria-label="Jump to date/time" />
             <div class="pb-speed" id="pb-speed" role="group" aria-label="Playback speed">
               <button data-speed="0.5" class="pb-btn pb-speed-btn" aria-pressed="false">0.5×</button>
@@ -140,7 +138,7 @@
   <div id="ptz-modal" class="ptz-modal" hidden>
     <header class="ptz-modal-header" id="ptz-modal-handle">
       <h2 id="ptz-modal-title">PTZ</h2>
-      <button id="ptz-modal-close" class="ghost" aria-label="Close">&times;</button>
+      <button id="ptz-modal-close" class="ghost" aria-label="Close" data-icon="x"></button>
     </header>
     <div class="ptz-modal-body" id="ptz-modal-body"></div>
   </div>
@@ -149,7 +147,7 @@
     aria-label="Open PTZ panel" title="Open PTZ panel">PTZ</button>
 
   <section id="device-auth-view" class="users-view" hidden>
-    <header class="users-topbar">
+    <header class="topbar">
       <strong>Authorize device</strong>
       <span class="grow"></span>
     </header>
@@ -171,8 +169,8 @@
   </section>
 
   <section id="users-view" class="users-view" hidden>
-    <header class="users-topbar">
-      <button id="users-back" class="ghost">&larr; Back to cameras</button>
+    <header class="topbar">
+      <button id="users-back" class="ghost" data-icon="arrow-left">Back to cameras</button>
       <strong>Users</strong>
       <span class="grow"></span>
       <button id="users-new" class="primary" hidden>+ New user</button>
@@ -259,9 +257,10 @@
             <option value="admin">admin</option>
           </select>
         </label>
-        <label class="checkbox-row">
+        <label class="switch">
           <input name="must_change_password" type="checkbox" />
-          Require a password change at next login
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="switch-text">Require a password change at next login</span>
         </label>
         <p id="user-edit-status" class="error" hidden></p>
         <div class="user-edit-actions">
@@ -273,8 +272,8 @@
   </div>
 
   <section id="cameras-view" class="users-view" hidden>
-    <header class="users-topbar">
-      <button id="cameras-back" class="ghost">&larr; Back to cameras</button>
+    <header class="topbar">
+      <button id="cameras-back" class="ghost" data-icon="arrow-left">Back to cameras</button>
       <strong>Cameras</strong>
       <span class="grow"></span>
       <button id="cameras-new" class="primary" hidden>+ Add camera</button>
@@ -346,11 +345,11 @@
 
         <!-- Step 3: media options -->
         <div class="cam-step" data-step="3" hidden>
-          <label class="cam-check"><input type="checkbox" name="record" checked /> Record to disk <small class="muted">(needs [media] record = true globally)</small></label>
-          <label class="cam-check"><input type="checkbox" name="mse" checked /> Live MSE feed (browser)</label>
-          <label class="cam-check"><input type="checkbox" name="relay" checked /> RTSP relay</label>
-          <label class="cam-check"><input type="checkbox" name="privacy" checked /> Offer privacy toggle</label>
-          <label class="cam-check"><input type="checkbox" name="playback" /> Advertise playback capability</label>
+          <label class="switch"><input type="checkbox" name="record" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">Record to disk <small class="muted">(needs [media] record = true globally)</small></span></label>
+          <label class="switch"><input type="checkbox" name="mse" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">Live MSE feed (browser)</span></label>
+          <label class="switch"><input type="checkbox" name="relay" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">RTSP relay</span></label>
+          <label class="switch"><input type="checkbox" name="privacy" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">Offer privacy toggle</span></label>
+          <label class="switch"><input type="checkbox" name="playback" /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">Advertise playback capability</span></label>
           <div class="cam-row-2">
             <label>Width <input name="width" type="number" min="0" placeholder="1920" /></label>
             <label>Height <input name="height" type="number" min="0" placeholder="1080" /></label>
@@ -369,7 +368,7 @@
           <label>Thingino API key
             <input name="thingino_api_key" placeholder="API key" />
           </label>
-          <label class="cam-check"><input type="checkbox" name="ptz" /> PTZ camera</label>
+          <label class="switch"><input type="checkbox" name="ptz" /><span class="switch-track" aria-hidden="true"></span><span class="switch-text">PTZ camera</span></label>
           <div class="cam-row-2">
             <label>Home X <input name="home_x" type="number" step="any" placeholder="unset" /></label>
             <label>Home Y <input name="home_y" type="number" step="any" placeholder="unset" /></label>
@@ -402,7 +401,7 @@
     <div class="help-card">
       <header class="help-header">
         <h2 id="help-title">Keyboard shortcuts</h2>
-        <button id="help-close" class="ghost" aria-label="Close">&times;</button>
+        <button id="help-close" class="ghost" aria-label="Close" data-icon="x"></button>
       </header>
       <div class="help-body">
         <section>

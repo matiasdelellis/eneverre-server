@@ -2,6 +2,7 @@ import { $ } from "../util/dom.js";
 import { getState, on } from "../state.js";
 import { alertModal } from "../ui/dialog.js";
 import { createTalkClient } from "../util/talk-client.js";
+import { icon } from "../ui/icons.js";
 
 // Push-to-talk, split into two controls and kept separate from PTZ:
 //   1. A topbar button that ARMS the mic — it requests the microphone
@@ -25,9 +26,6 @@ let stream = null;          // the armed mic MediaStream (this module owns it)
 let client = null;          // active talk client during a session
 let sessionState = "idle";  // "idle" | "connecting" | "talking"
 
-const ARM_IDLE = "🎤";
-const ARM_ON = "🎙️";
-
 function topBtn() { return $("#talk-toggle"); }
 
 // --- topbar button (arm / disarm) ----------------------------------------
@@ -37,7 +35,9 @@ function renderTopButton() {
   if (!btn) return;
   btn.hidden = !currentCam;
   btn.classList.toggle("active", armed);
-  btn.textContent = armed ? ARM_ON : ARM_IDLE;
+  // Same mic glyph in both states; the .active class fills the stroke so
+  // the user gets the standard "armed" visual without a second icon.
+  btn.innerHTML = icon("mic");
   btn.title = armed ? "Disable talk" : "Enable talk (allow microphone)";
   btn.setAttribute("aria-label", btn.title);
   btn.setAttribute("aria-pressed", armed ? "true" : "false");
@@ -121,13 +121,15 @@ function applyOverlayState() {
   btn.classList.toggle("connecting", sessionState === "connecting");
   btn.classList.toggle("talking", sessionState === "talking");
   if (sessionState === "connecting") {
-    btn.textContent = "";
+    // The spinner is drawn by CSS (.wall-talk.connecting::before); leave the
+    // button empty so we don't stack a second, non-spinning loader glyph.
+    btn.innerHTML = "";
     btn.title = "Connecting…";
   } else if (sessionState === "talking") {
-    btn.textContent = "🔴";
+    btn.innerHTML = icon("mic-off");
     btn.title = "Talking — click or Space to stop";
   } else {
-    btn.textContent = "🎤";
+    btn.innerHTML = icon("mic");
     btn.title = "Click or Space to talk";
   }
   btn.setAttribute("aria-label", btn.title);

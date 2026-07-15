@@ -6,10 +6,32 @@ import { attachMse, captureVideoFrame } from "./mse.js";
 import { hidePtzModal } from "./ptz.js";
 import { toast } from "../ui/toast.js";
 import { setCamStatus } from "../ui/cam-status.js";
+import { icon } from "../ui/icons.js";
+import { loadJson, USER_KEY } from "../util/storage.js";
 
-// Longest clip the 💾 button will request. Guards against a forgotten
+// Longest clip the save button will request. Guards against a forgotten
 // "recording" marker producing a multi-hour download.
 const MAX_CLIP_SECONDS = 5 * 60;
+
+// Reflect a video's muted state on its mute button (glyph + tooltip).
+function setMuteButton(btn, muted) {
+  if (!btn) return;
+  btn.innerHTML = icon(muted ? "volume-x" : "volume-2");
+  btn.title = muted ? "Unmute" : "Mute";
+}
+
+// Mute every wall tile except `keep`, updating each mute button so the
+// wall never has more than one camera playing audio at once.
+function muteAllTiles(keep) {
+  for (const t of $$("#wall .wall-tile")) {
+    if (t === keep) continue;
+    const video = t.querySelector("video");
+    if (video && !video.muted) {
+      video.muted = true;
+      setMuteButton(t.querySelector('button[data-act="mute"]'), true);
+    }
+  }
+}
 
 // mm:ss for the live clip counter.
 function fmtElapsed(sec) {
@@ -22,6 +44,11 @@ function fmtElapsed(sec) {
 // .destroy() also stops the thumbnail grabber). destroyWall() calls .destroy()
 // on every entry.
 const wallInstances = new Map();
+
+// The single camera currently playing audio (only one at a time). Remembered
+// across wall re-renders — selecting a camera or location rebuilds the tiles,
+// and the previously unmuted camera keeps its audio if it's still shown.
+let audioCamId = null;
 
 // While a tile plays live, grab a frame every THUMB_GRAB_MS and push it to the
 // sidebar thumbnail — reusing the video the browser is already decoding rather
@@ -141,10 +168,10 @@ function renderWallTile(cam) {
       <div class="wall-bottom">
         <div class="wall-name">${escapeHtml(cam.name || cam.id)}</div>
         <div class="wall-actions">
-          <button data-act="clip" title="Download clip" aria-label="Download clip">💾</button>
-          <button data-act="snap" title="Snapshot" aria-label="Snapshot">📷</button>
-          <button data-act="mute" title="Unmute" aria-label="Toggle audio">🔇</button>
-          <button data-act="fs" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+          <button data-act="clip" title="Download clip" aria-label="Download clip">${icon("save")}</button>
+          <button data-act="snap" title="Snapshot" aria-label="Snapshot">${icon("camera")}</button>
+          <button data-act="mute" title="Unmute" aria-label="Toggle audio">${icon("volume-x")}</button>
+          <button data-act="fs" title="Fullscreen" aria-label="Fullscreen">${icon("maximize")}</button>
         </div>
       </div>
     </div>
@@ -155,9 +182,13 @@ function renderWallTile(cam) {
     if (btn) {
       e.stopPropagation();
       if (btn.dataset.act === "mute") {
-        v.muted = !v.muted;
-        btn.textContent = v.muted ? "🔇" : "🔊";
-        btn.title = v.muted ? "Unmute" : "Mute";
+        const unmuting = v.muted;
+        // Only one camera plays audio at a time: mute every other tile
+        // before unmuting this one.
+        if (unmuting) muteAllTiles(tile);
+        v.muted = !unmuting;
+        audioCamId = unmuting ? cam.id : null;
+        setMuteButton(btn, v.muted);
       } else if (btn.dataset.act === "fs") {
         if (document.fullscreenElement === tile) document.exitFullscreen();
         else tile.requestFullscreen?.();
@@ -189,19 +220,19 @@ function renderWallTile(cam) {
             toast(`Clip capped at ${MAX_CLIP_SECONDS / 60} min`, { type: "info" });
           }
           btn.disabled = true;
-          btn.textContent = "⏳";
+          btn.innerHTML = icon("loader");
           try {
             const { downloadClip } = await import("./playback.js");
             await downloadClip(cam.id, tile._clipStartAt, durationSec);
           } catch (err) {
             console.warn("clip download failed", err);
-            btn.textContent = "❌";
+            btn.innerHTML = icon("x-circle");
             toast(`Clip download failed: ${err.message}`, { type: "error" });
-            setTimeout(() => { btn.disabled = false; btn.textContent = "💾"; }, 2000);
+            setTimeout(() => { btn.disabled = false; btn.innerHTML = icon("save"); }, 2000);
             return;
           }
           btn.disabled = false;
-          btn.textContent = "💾";
+          btn.innerHTML = icon("save");
           toast(`Clip saved (${fmtElapsed(durationSec)})`, { type: "success" });
         } else {
           // First click: mark start time
@@ -218,14 +249,14 @@ function renderWallTile(cam) {
           tile._clipStartAt = startMsec;
           btn.classList.add("clipping");
           btn.title = "Click again to end clip";
-          btn.textContent = "🔴";
+          btn.innerHTML = icon("circle-dot");
           // Live clips are wall-clock bound, so tick a visible counter.
           // Playback clips advance with the timeline, so leave the marker
           // static (the elapsed time isn't real seconds).
           if (mode === "live") {
             tile._clipTimer = setInterval(() => {
               const sec = (Date.now() - tile._clipStartAt) / 1000;
-              btn.textContent = `🔴 ${fmtElapsed(Math.min(sec, MAX_CLIP_SECONDS))}`;
+              btn.innerHTML = `${icon("circle-dot")} ${fmtElapsed(Math.min(sec, MAX_CLIP_SECONDS))}`;
             }, 500);
           }
         }
@@ -275,7 +306,11 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
       // so there is no live feed to attach. Show a placeholder instead of
       // hammering a dead MSE endpoint.
       setCamStatus(cam.id, "offline");
-      if (video) video.replaceWith(makeMsg("🔒 Privacy — not recording"));
+      if (video) {
+        const p = makeMsg("");
+        p.innerHTML = `${icon("lock")} Privacy — not recording`;
+        video.replaceWith(p);
+      }
     } else if (cam.live_mse) {
       const m = attachMse(cam, video);
       if (m) wallInstances.set(cam.id, withThumbGrab(cam, video, m));
@@ -286,7 +321,7 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
   }
 }
 
-// Stops any running live clip counter and restores the 💾 button to its
+// Stops any running live clip counter and restores the save button to its
 // idle look. `btn` is optional; when omitted it is looked up in the tile.
 function resetClipButton(tile, btn) {
   if (tile._clipTimer) { clearInterval(tile._clipTimer); tile._clipTimer = null; }
@@ -295,7 +330,9 @@ function resetClipButton(tile, btn) {
   if (b) {
     b.classList.remove("clipping");
     b.title = "Download clip";
-    if (b.textContent !== "⏳") b.textContent = "💾";
+    // Don't clobber the in-flight loader glyph when the button is disabled
+    // (a click that already started a download and is still mid-fetch).
+    if (!b.disabled) b.innerHTML = icon("save");
   }
 }
 
@@ -369,6 +406,32 @@ async function applyPlayback(filtered) {
   }
 }
 
+// Full-area empty state shown when no cameras exist at all (a fresh install
+// or after the last camera is removed). Admins get a call-to-action that
+// jumps straight into the add-camera wizard; everyone else gets a hint to
+// ask an admin, since they can't add cameras themselves.
+function renderWallEmpty(wall) {
+  const isAdmin = !!loadJson(USER_KEY)?.is_admin;
+  const empty = document.createElement("div");
+  empty.className = "wall-empty wall-status";
+  empty.innerHTML = `
+    <div class="wall-empty-icon" aria-hidden="true">${icon("camera")}</div>
+    <h2 class="wall-empty-title">No cameras yet</h2>
+    <p class="wall-empty-text">${
+      isAdmin
+        ? "Add your first camera to start watching live video and browsing recordings."
+        : "No cameras have been set up yet. Ask an administrator to add one."
+    }</p>
+    ${isAdmin ? '<button class="primary wall-empty-cta" id="wall-add-camera">+ Add camera</button>' : ""}`;
+  wall.replaceChildren(empty);
+  if (isAdmin) {
+    $("#wall-add-camera").addEventListener("click", async () => {
+      const { enterCamerasView } = await import("./cameras.js");
+      enterCamerasView();
+    });
+  }
+}
+
 export async function loadWall(mode = "live") {
   const wall = $("#wall");
   destroyWall();
@@ -382,9 +445,24 @@ export async function loadWall(mode = "live") {
     updateSidebarActive();
     return;
   }
+  // Playback only makes sense when some camera advertises it (recording is
+  // off by default, so a fresh install has none). Hide the whole Live/Playback
+  // switch otherwise — a lone "Live" button toggles nothing — and fall back to
+  // live if we were asked for playback with nothing to play back.
+  const anyPlayback = cams.some((c) => c.capabilities?.playback);
+  $(".view-toggle").hidden = !anyPlayback;
+  if (mode === "playback" && !anyPlayback) {
+    const { setViewMode } = await import("./app-shell.js");
+    setViewMode("live"); // re-enters loadWall("live"); this invocation stops here
+    return;
+  }
   const filtered = filterWallCams(cams, getState().wallFilter);
+  // With no cameras at all the camera list is dead weight, so collapse the
+  // whole sidebar (and its mobile opener) and let the empty state own the
+  // full width. Cleared again as soon as a camera exists.
+  $("#app").classList.toggle("no-cameras", !cams.length);
   if (!cams.length) {
-    wall.innerHTML = "<p class='muted wall-status'>No cameras configured.</p>";
+    renderWallEmpty(wall);
     updateSidebarActive();
     return;
   }
@@ -414,6 +492,14 @@ export async function loadWall(mode = "live") {
     for (const cam of filtered) {
       const tile = renderWallTile(cam);
       setTileMode(tile, cam, "live");
+      // Keep audio on the camera that was playing before this re-render.
+      if (cam.id === audioCamId) {
+        const v = tile.querySelector("video");
+        if (v) {
+          v.muted = false;
+          setMuteButton(tile.querySelector('button[data-act="mute"]'), false);
+        }
+      }
       wall.appendChild(tile);
       tryLoadThumbnail(tile, cam.id);
     }

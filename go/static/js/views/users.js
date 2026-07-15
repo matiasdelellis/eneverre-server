@@ -5,6 +5,7 @@ import { api } from "../api.js";
 import { blankToNull, displayName } from "../util/format.js";
 import { alertModal, confirmModal, promptModal } from "../ui/dialog.js";
 import { refreshUserMenu, closeUserMenu } from "../ui/user-menu.js";
+import { moveGlobalControlsTo } from "./app-shell.js";
 
 let usersCache = null;     // [{ username, role, first_name, last_name }, ...]
 let sessionsCache = null;  // { active: [...], expired: [...] }
@@ -32,6 +33,7 @@ export function enterUsersView() {
   document.getElementById("app").hidden = true;
   const v = document.getElementById("users-view");
   v.hidden = false;
+  moveGlobalControlsTo(v.querySelector("header.topbar"));
   const meData = me();
   document.getElementById("me-username").textContent = meData ? meData.username : "";
   document.getElementById("me-role").textContent = meData ? meData.role : "";
@@ -50,6 +52,9 @@ export function enterUsersView() {
 export function exitUsersView() {
   const v = document.getElementById("users-view");
   if (v) v.hidden = true;
+  // Hand the global topbar controls (theme + user menu) back to the
+  // main app's topbar before showing it, so the user can reach them.
+  moveGlobalControlsTo(document.querySelector("#app .app-main header.topbar"));
   document.getElementById("app").hidden = false;
   const modal = document.getElementById("user-edit-modal");
   if (modal) modal.hidden = true;

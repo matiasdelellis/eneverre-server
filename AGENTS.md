@@ -98,9 +98,9 @@ All code lives under `go/` (module `eneverre`).
   module that imports and boots the ES modules under `go/static/js/`. Those are
   split into `js/api.js` (fetch wrapper + token), `js/state.js`, `js/util/*`
   (dom/format/storage helpers), `js/ui/*` (theme, password reveal, user menu,
-  dialog) and `js/views/*` (login, force-password, app-shell, sidebar, wall,
-  ptz, playback, hls, mse, users, device-auth). The browser resolves the
-  imports directly.
+  dialog, **icons** — see below) and `js/views/*` (login, force-password,
+  app-shell, sidebar, wall, ptz, playback, hls, mse, users, device-auth). The
+  browser resolves the imports directly.
   This is the canonical copy; edit here.
 - `go/internal/config` — INI loading and path resolution. Searches
   `/etc/eneverre/...` then `./data/...`; env overrides
@@ -486,3 +486,20 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
   (with Android in the UA), `SmartTV`, `BRAVIA` and `; CrKey`; anything
   else matching `Android` is treated as a phone/tablet. iOS, desktop and
   non-Android TVs are not detected.
+- **Icons** (`js/ui/icons.js`): a small set of inline Lucide/Feather-style
+  SVG icons (24×24, 2px stroke, `currentColor` for theming). `icon(name)`
+  returns an SVG string — drop it into a template literal or assign with
+  `el.innerHTML = icon("mic")` to swap a glyph. Static buttons in
+  `index.html` carry a `data-icon="name"` attribute instead of inline SVG;
+  `hydrateIcons()` (called first at boot in `app.js`) fills them from the
+  same `PATHS` table, so path data lives in exactly one place. It *prepends*
+  the SVG, so buttons with a text label (e.g. "← Back to cameras") keep
+  their text. Dynamic state (play↔pause, audio on/off, theme sun/moon,
+  privacy lock/lock-open, talk idle/armed, clip states) is swapped in JS
+  with `el.innerHTML = icon(...)`. The loader glyph is the radial spokes
+  icon, animated by `.wall-buffering-icon` for the live-tile spinner (the
+  talk "connecting" spinner is a separate CSS ring, so that button is left
+  empty). Adding a new icon: append an entry to the `PATHS` table in
+  `icons.js`; the helper applies the standard stroke and `aria-hidden` so
+  screen readers skip the icon (the surrounding button's `title` /
+  `aria-label` carries the meaning).

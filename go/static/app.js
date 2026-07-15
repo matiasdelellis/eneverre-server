@@ -3,6 +3,7 @@
 // The boot order below mirrors the original top-down init in app.js.
 
 import { token } from "./js/api.js";
+import { hydrateIcons } from "./js/ui/icons.js";
 import { initLogin, showLogin } from "./js/views/login.js";
 import { initForcePasswordChange } from "./js/views/force-password.js";
 import { initTheme } from "./js/ui/theme.js";
@@ -20,6 +21,9 @@ import { setupPlaybackBar, initPlaybackKeys } from "./js/views/playback.js";
 import { initHelp } from "./js/ui/help.js";
 import { initUpgradePrompt } from "./js/views/upgrade-prompt.js";
 
+// Fill static [data-icon] buttons/spans from the icon set before wiring up
+// handlers, so the markup carries no duplicated SVG path data.
+hydrateIcons();
 initTheme();
 initPasswordReveal();
 initUserMenu();

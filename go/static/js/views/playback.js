@@ -1,5 +1,6 @@
 import { $, $$, makeMsg } from "../util/dom.js";
 import { token } from "../api.js";
+import { icon } from "../ui/icons.js";
 import { Timeline } from "../../timeline.js";
 
 export const PB_DEFAULT_INTERVAL = 6 * 60 * 60 * 1000; // timeline window: 6 hours
@@ -25,6 +26,38 @@ function findRecordAt(records, msec) {
   }
   return null;
 }
+
+// Read the timeline colors from the document's CSS custom properties.
+// Called both on initial build and on theme change (the canvas paints
+// colors directly via the canvas 2D context, so it can't pick up a
+// stylesheet-only theme switch). The hardcoded fallbacks (no-data bar,
+// time-pill text) are kept verbatim from the original builder.
+function readTimelineColors() {
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return {
+    colorBackground: css("--panel-2") || "#222c38",
+    colorDigits: css("--muted") || "#8b98a5",
+    colorRectBackground: css("--accent") || "#3b82f6",
+    colorRectNoData: "#2c3846",
+    colorRectMajor1: css("--danger") || "#ef4444",
+    colorRectMajor2: css("--accent") || "#3b82f6",
+    colorTimeBackground: css("--accent") || "#3b82f6",
+    colorTimeText: "#ffffff",
+    colorTimelineSelected: css("--accent") || "#3b82f6",
+    colorMajor1Selected: css("--danger") || "#ef4444",
+    colorMajor2Selected: css("--accent") || "#3b82f6",
+  };
+}
+
+// Theme change listener: re-read the CSS custom properties and ask the
+// timeline to redraw itself. The canvas is the only non-CSS surface in
+// the app that hardcodes theme-dependent colors, so it owns its own
+// refresh. Other consumers (CSS-driven controls) don't need this.
+document.addEventListener("eneverre:themechange", () => {
+  if (!pbTimeline) return;
+  Object.assign(pbTimeline.options, readTimelineColors());
+  pbTimeline.draw();
+});
 
 async function fetchRecordings(camId, rangeMs = 24 * 3600 * 1000) {
   const end = new Date();
@@ -143,21 +176,10 @@ export async function buildPlaybackTimeline(filtered) {
   const desiredH = Math.max(80, filtered.length * rowH + 50);
   canvas.style.height = desiredH + "px";
 
-  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const tl = new Timeline({
     timelines: filtered.length,
     timelineNames: filtered.map((c) => c.name || c.id),
-    colorBackground: css("--panel-2") || "#222c38",
-    colorDigits: css("--muted") || "#8b98a5",
-    colorRectBackground: css("--accent") || "#3b82f6",
-    colorRectNoData: "#2c3846",
-    colorRectMajor1: css("--danger") || "#ef4444",
-    colorRectMajor2: css("--accent") || "#3b82f6",
-    colorTimeBackground: css("--accent") || "#3b82f6",
-    colorTimeText: "#ffffff",
-    colorTimelineSelected: css("--accent") || "#3b82f6",
-    colorMajor1Selected: css("--danger") || "#ef4444",
-    colorMajor2Selected: css("--accent") || "#3b82f6",
+    ...readTimelineColors(),
   });
   tl.intervalMsec = PB_DEFAULT_INTERVAL;
   tl.setCanvas(canvas);
@@ -340,7 +362,7 @@ export function setupPlaybackBar() {
       if (paused) v.play().catch(() => {});
       else v.pause();
     }
-    playBtn.textContent = paused ? "⏸" : "▶";
+    playBtn.innerHTML = icon(paused ? "pause" : "play");
     playBtn.setAttribute("aria-label", paused ? "Pause" : "Play");
     setVodPaused(!paused);
   });
@@ -350,7 +372,7 @@ export function setupPlaybackBar() {
     if (!pbTimeline) return;
     pbTimeline.setCurrent(Date.now());
     pbTimeline.draw();
-    playBtn.textContent = "▶";
+    playBtn.innerHTML = icon("play");
     playBtn.setAttribute("aria-label", "Play");
   });
 
@@ -537,7 +559,7 @@ function showVodNoRecording(tile) {
   const v = tile.querySelector("video");
   const msg = document.createElement("div");
   msg.className = "wall-no-recording wall-status";
-  msg.innerHTML = "<div class='wall-no-recording-icon'>📡</div><div>No recording</div>";
+  msg.innerHTML = `<div class='wall-no-recording-icon'>${icon("signal-off")}</div><div>No recording</div>`;
   if (v) v.replaceWith(msg); else tile.appendChild(msg);
   tile.dataset.mode = "playback-no-data";
 }
@@ -578,7 +600,7 @@ function showTileGapOverlay(tile) {
   if (!overlay) {
     overlay = document.createElement("div");
     overlay.className = "wall-no-recording wall-gap-overlay wall-status";
-    overlay.innerHTML = "<div class='wall-no-recording-icon'>📡</div><div>No recording</div>";
+    overlay.innerHTML = `<div class='wall-no-recording-icon'>${icon("signal-off")}</div><div>No recording</div>`;
     tile.appendChild(overlay);
   }
   overlay.hidden = false;
@@ -675,7 +697,7 @@ export function startVodPlayback(cams, startMsec) {
   }
   vodPaused = false;
   const pbPlay = $("#pb-play");
-  if (pbPlay) { pbPlay.textContent = "⏸"; pbPlay.setAttribute("aria-label", "Pause"); }
+  if (pbPlay) { pbPlay.innerHTML = icon("pause"); pbPlay.setAttribute("aria-label", "Pause"); }
   startVodCursor();
 }
 

@@ -14,6 +14,7 @@
 
 import { sessionGet, sessionSet } from "../util/storage.js";
 import { escapeHtml } from "../util/dom.js";
+import { icon } from "../ui/icons.js";
 
 const DISMISS_KEY = "eneverre.upgradePrompt.dismissedVersionCode";
 
@@ -76,7 +77,7 @@ function buildBanner(manifest, kind) {
   el.setAttribute("role", "status");
   el.setAttribute("aria-live", "polite");
 
-  const icon = kind === "tv" ? "📺" : "📱";
+  const iconName = kind === "tv" ? "tv" : "smartphone";
   const label = kind === "tv" ? "Android TV" : "phone";
 
   const text = document.createElement("div");
@@ -84,7 +85,7 @@ function buildBanner(manifest, kind) {
   const iconEl = document.createElement("span");
   iconEl.className = "upgrade-prompt-icon";
   iconEl.setAttribute("aria-hidden", "true");
-  iconEl.textContent = icon;
+  iconEl.innerHTML = icon(iconName);
   const main = document.createElement("span");
   main.className = "upgrade-prompt-main";
   const title = document.createElement("strong");
@@ -109,7 +110,7 @@ function buildBanner(manifest, kind) {
   dismiss.type = "button";
   dismiss.className = "upgrade-prompt-dismiss ghost";
   dismiss.setAttribute("aria-label", "Dismiss");
-  dismiss.textContent = "✕";
+  dismiss.innerHTML = icon("x");
   actions.append(dl, dismiss);
 
   el.append(text, actions);

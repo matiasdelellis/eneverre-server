@@ -22,6 +22,23 @@
   --scrim-strong: rgba(0, 0, 0, 0.7);
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
   --radius: 10px;
+  /* Topbar tokens. In dark mode the bar blends with the panels; in light
+     mode (see below) it is a slightly darker gray than the main body so it
+     reads as a distinct header without going full dark. These let the
+     topbar be recolored without touching the sidebar, which also uses
+     --panel. */
+  --topbar-bg: var(--panel);
+  --topbar-fg: var(--fg);
+  --topbar-muted: var(--muted);
+  --topbar-border: var(--border);
+  --topbar-surface: var(--panel-2);
+  --topbar-border-strong: var(--border-strong);
+  --topbar-border-hover: var(--border-hover);
+  --topbar-hover: rgba(255, 255, 255, 0.08);
+  /* Sidebar body (the scrolling camera list). In dark mode it blends with
+     the panel; in light mode it's a subtle cool gray so it's not a flat
+     white next to the header band and the white thumbnails. */
+  --sidebar-bg: var(--panel);
   /* Width of the left sidebar. Set on :root so both the sidebar and the
      topbar (which is a sibling, not a descendant) can read it. Updated
      from JS when the sidebar collapses/expands. */
@@ -46,6 +63,17 @@
   --scrim-strong: rgba(15, 20, 25, 0.55);
   --shadow: 0 4px 16px rgba(15, 20, 25, 0.08);
   --radius: 10px;
+  /* Subtle: a touch darker than the body (--bg #f3f5f8), keeping dark text.
+     The segmented control uses white so it still pops off the gray bar. */
+  --topbar-bg: #e4e9f0;
+  --topbar-fg: var(--fg);
+  --topbar-muted: var(--muted);
+  --topbar-border: #cfd7e1;
+  --topbar-surface: #ffffff;
+  --topbar-border-strong: var(--border-strong);
+  --topbar-border-hover: var(--border-hover);
+  --topbar-hover: rgba(15, 20, 25, 0.05);
+  --sidebar-bg: #eef1f6;
 }
 
 /* No data-theme attribute: follow the OS preference. */
@@ -68,6 +96,15 @@
     --scrim-strong: rgba(15, 20, 25, 0.55);
     --shadow: 0 4px 16px rgba(15, 20, 25, 0.08);
     --radius: 10px;
+    --topbar-bg: #e4e9f0;
+    --topbar-fg: var(--fg);
+    --topbar-muted: var(--muted);
+    --topbar-border: #cfd7e1;
+    --topbar-surface: #ffffff;
+    --topbar-border-strong: var(--border-strong);
+    --topbar-border-hover: var(--border-hover);
+    --topbar-hover: rgba(15, 20, 25, 0.05);
+    --sidebar-bg: #eef1f6;
   }
 }
 
@@ -123,9 +160,24 @@ button.ghost {
   background: transparent;
   color: var(--fg);
   border: 1px solid var(--border-hover);
+  /* The 1px border would otherwise add 2px to the box (border-box),
+     making the ghost button taller and wider than `button.primary`
+     (`border: 0`). Compensate by shaving 1px of padding on each side
+     so cancel and Save line up in the dialog action rows. */
+  padding: 9px 15px;
 }
 button.danger { background: var(--danger); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Buttons that contain an inline icon SVG (back, etc.) align the glyph with
+   the label and add a small gap. Icon-only buttons are unaffected because
+   they have no text node after the SVG. */
+button:has(> svg) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+}
 
 input {
   background: var(--panel-2);
@@ -245,6 +297,12 @@ input {
 .pb-canvas {
   flex: 1;
   min-width: 0;
+  /* Default height so the bar doesn't fall back to the canvas element's
+     intrinsic 150px before buildPlaybackTimeline() sets an explicit height
+     (and again after teardown clears it). 80px matches the single-lane
+     minimum in buildPlaybackTimeline; it grows via inline style for more
+     cameras. timeline.js divides this height into per-camera lanes. */
+  height: 80px;
   display: block;
   cursor: pointer;
   background: var(--panel-2);
@@ -277,10 +335,75 @@ input {
   height: 52px;
   flex-shrink: 0;
   padding: 0 20px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  background: var(--topbar-bg);
+  color: var(--topbar-fg);
+  border-bottom: 1px solid var(--topbar-border);
   box-sizing: border-box;
 }
+/* The secondary topbars (Users / Cameras / Authorize device) put a
+   <strong> in place of the main view's "Live / Playback" tab list;
+   keep it on the same baseline. */
+.topbar strong { font-size: 16px; font-weight: 600; }
+/* Container for the controls that are always reachable from whichever
+   topbar is active: theme toggle + signed-in user menu. It's a single
+   DOM element re-parented into the active topbar on view switch (see
+   `moveGlobalControlsTo` in app-shell.js), so all three topbars share
+   one instance with no ID duplication. */
+.global-topbar-controls { display: flex; align-items: center; gap: 6px; }
+/* Recolor the topbar's controls against its (in light mode, dark) surface.
+   Scoped to .topbar so the sidebar — which shares --panel — is untouched. */
+.topbar button.ghost {
+  color: var(--topbar-fg);
+  border-color: var(--topbar-border-hover);
+}
+.topbar button.ghost:hover { background: var(--topbar-hover); }
+/* The unified `.topbar button` rule below sets `display: inline-flex`
+   to center icon-only and text buttons. That out-specifies the
+   browser's `[hidden] { display: none }` (0,1,1 vs 0,1,0), so the
+   `hidden` attribute on `#talk-toggle` / `#privacy-toggle` would be
+   ignored. Re-assert it here with higher specificity. */
+.topbar [hidden] { display: none; }
+/* Unify all topbar buttons to the same 36px height so the bar feels
+   balanced (icon-only, text, and the segmented control all line up).
+   Specific overrides below set the icon-btn square, the user-menu
+   trigger's gap, and the segmented control's inner height. */
+.topbar button {
+  height: 36px;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  border-radius: 8px;
+  /* Center the text vertically (line-height: 1 packs it at the top
+     otherwise). The `button:has(> svg)` rule further down already
+     sets inline-flex centering for icon-bearing buttons, so this is
+     mostly for the plain-text ones (e.g. "+ New user"). */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.topbar button.icon-btn {
+  padding: 0;
+  min-width: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.topbar .view-toggle {
+  background: var(--topbar-surface);
+  border-color: var(--topbar-border-strong);
+  height: 36px;
+  padding: 3px;
+}
+.topbar .view-toggle button.toggle {
+  color: var(--topbar-muted);
+  height: 30px;
+  padding: 0 18px;
+  font-size: 13px;
+  line-height: 1;
+}
+.topbar .view-toggle button.toggle:hover:not(.active) { color: var(--topbar-fg); }
+.topbar .user-menu-caret { color: var(--topbar-muted); }
 .viewer-side-header { box-sizing: border-box; }
 .brand-side, .brand { line-height: 1; }
 
@@ -294,9 +417,8 @@ input {
   align-items: center;
   gap: 8px;
   max-width: 220px;
-  padding: 6px 12px;
-  font-size: 14px;
-  font-weight: 500;
+  /* height / padding / font-size / border-radius come from the unified
+     `.topbar button` rule so the trigger matches the rest of the bar. */
 }
 .user-menu-name {
   min-width: 0;
@@ -328,8 +450,13 @@ input {
   flex-direction: column;
   gap: 2px;
 }
-.user-menu-item {
+.user-menu-list .user-menu-item {
+  /* Scoped under `.user-menu-list` to out-specify the unified
+     `.topbar button` rule (0,2,0 vs 0,1,1). The topbar rule sets
+     `justify-content: center` to center icon-only buttons; the dropdown
+     items are full-width and need the text on the left. */
   width: 100%;
+  justify-content: flex-start;
   text-align: left;
   background: transparent;
   color: var(--fg);
@@ -341,8 +468,8 @@ input {
   font-weight: 500;
   cursor: pointer;
 }
-.user-menu-item:hover { background: var(--panel-2); }
-.user-menu-item:focus-visible {
+.user-menu-list .user-menu-item:hover { background: var(--panel-2); }
+.user-menu-list .user-menu-item:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -366,6 +493,9 @@ input {
   padding: 3px;
   gap: 0;
 }
+/* display:inline-flex above would otherwise defeat the `hidden` attribute the
+   JS sets when no camera advertises playback. */
+.view-toggle[hidden] { display: none; }
 .view-toggle button.toggle {
   background: transparent;
   color: var(--muted);
@@ -398,10 +528,13 @@ button.icon-btn {
 }
 
 /* Topbar talk button: arms the mic (requests/holds the permission). Ringed
-   with the accent when armed; the actual talk trigger is the tile overlay. */
+   with the accent and the mic head is filled when armed; the actual talk
+   trigger is the tile overlay. */
 .talk-toggle.active {
   box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent);
 }
+.talk-toggle.active svg rect { fill: currentColor; }
 
 .grid {
   display: grid;
@@ -436,7 +569,11 @@ button.icon-btn {
   padding: 12px;
   height: 52px;
   flex-shrink: 0;
-  border-bottom: 1px solid var(--border);
+  /* Same surface as the topbar so the two share one continuous header band
+     across the full width; the sidebar body below stays --panel. */
+  background: var(--topbar-bg);
+  color: var(--topbar-fg);
+  border-bottom: 1px solid var(--topbar-border);
   box-sizing: border-box;
 }
 .viewer-side.collapsed .viewer-side-header {
@@ -450,6 +587,10 @@ button.icon-btn {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Brand wordmark gets prominence over the rest of the UI text. */
+  font-size: 18px;
+  letter-spacing: 0.01em;
+  color: var(--topbar-fg);
 }
 .viewer-side.collapsed .brand-side .brand-text { display: none; }
 .viewer-side.collapsed .brand-side {
@@ -530,9 +671,13 @@ button.icon-btn {
      performs the same role. */
   display: none;
 }
-.sidebar-open {
+.topbar button.sidebar-open {
   /* Shown only via the mobile media query below; hidden by default so
-     the desktop layout is unchanged. */
+     the desktop layout is unchanged. The selector needs the trailing
+     `button` to out-specify the unified `.topbar button.icon-btn` rule
+     (both 0,2,1; this one comes later in the file so it wins by source
+     order on desktop, and the mobile override below also uses this
+     selector to keep the tie-break consistent). */
   display: none;
 }
 /* Scrim is only meaningful in the mobile drawer layout. The element is
@@ -544,6 +689,15 @@ button.icon-btn {
 .viewer-toggle:hover { color: var(--fg); border-color: var(--fg); }
 .viewer-side.collapsed .viewer-toggle { transform: rotate(180deg); }
 
+/* No cameras at all: there is nothing to list, so hide the entire sidebar
+   and its openers (the desktop column, the mobile drawer, its scrim and the
+   topbar hamburger). `.app-main` is flex:1, so it reclaims the full width
+   on its own. The id + class specificity beats the mobile `.sidebar-open`
+   / `.viewer-side` rules without needing !important. */
+#app.no-cameras .viewer-side,
+#app.no-cameras .sidebar-open,
+#app.no-cameras .sidebar-scrim { display: none; }
+
 .viewer-side-scroll {
   flex: 1;
   min-height: 0;
@@ -551,6 +705,7 @@ button.icon-btn {
   flex-direction: column;
   gap: 8px;
   padding: 10px;
+  background: var(--sidebar-bg);
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -703,7 +858,10 @@ button.icon-btn {
   .viewer-side.collapsed { transform: translateX(0); }
   .viewer-toggle { display: none; }
   .sidebar-close { display: inline-flex; }
-  .sidebar-open { display: inline-flex; }
+  /* Match the `.topbar button.sidebar-open` desktop selector so the
+     unified `.topbar button.icon-btn` rule (0,2,1) doesn't out-specify
+     us. Same selector on both sides = source order decides. */
+  .topbar button.sidebar-open { display: inline-flex; }
 
   .sidebar-scrim {
     position: fixed;
@@ -797,14 +955,20 @@ button.icon-btn {
     padding: 0 10px;
     gap: 8px;
   }
-  .view-toggle button.toggle { padding: 5px 12px; }
-  .user-menu-trigger { padding: 5px 8px; max-width: 140px; }
-  .icon-btn { min-width: 40px; min-height: 40px; }
-  /* On a 360px screen the topbar doesn't have room for every action.
-     Move the audio/theme toggles into the user dropdown on mobile —
-     the per-tile mute button covers the audio case while watching,
-     and the theme is still two taps away. */
-  .topbar-hide-sm { display: none; }
+  /* Bump every topbar button to 40px on mobile (touch-target size) and
+     shrink the segmented control + user-menu trigger to match. The
+     `.topbar button` base sets 36px / 0 14px on desktop; both are
+     overridden here. */
+  .topbar button { height: 40px; padding: 0 10px; }
+  .topbar button.icon-btn { min-width: 40px; min-height: 40px; }
+  .topbar .view-toggle { height: 40px; }
+  .topbar .view-toggle button.toggle { height: 34px; padding: 0 12px; }
+  .topbar .user-menu-trigger { max-width: 140px; }
+  /* Same specificity bump as the desktop rule: `.topbar button` (0,1,1)
+     otherwise out-specifies `.topbar-hide-sm` (0,1,0) and the theme
+     toggle would show on mobile (it has a duplicate in the user menu
+     on small screens). */
+  .topbar button.topbar-hide-sm { display: none; }
   .user-menu-item-sm { display: block; }
 
   /* Playback bar: canvas gets more space, controls stay tappable. */
@@ -840,6 +1004,32 @@ button.icon-btn {
   gap: var(--gap);
 }
 .wall-status { padding: 20px; }
+/* Empty state for a wall with no cameras at all (fresh install). Centered
+   column: large muted icon, heading, one line of guidance, optional CTA. */
+.wall-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  max-width: 340px;
+  padding: 24px;
+  color: var(--muted);
+}
+.wall-empty-icon {
+  font-size: 56px;
+  line-height: 1;
+  opacity: 0.35;
+  margin-bottom: 4px;
+}
+.wall-empty-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.wall-empty-text { margin: 0; font-size: 14px; line-height: 1.45; }
+.wall-empty-cta { margin-top: 12px; }
 .wall-loading {
   position: absolute;
   inset: 0;
@@ -886,6 +1076,8 @@ button.icon-btn {
 .wall-buffering-icon {
   font-size: 28px;
   opacity: 0.6;
+  display: inline-block;
+  line-height: 1;
 }
 @keyframes wall-buffering-spin {
   to { transform: rotate(360deg); }
@@ -964,6 +1156,9 @@ button.icon-btn {
   font-size: 14px;
   cursor: pointer;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .wall-actions button:hover { background: rgba(0, 0, 0, 0.8); }
 .wall-actions button.clipping {
@@ -1196,17 +1391,10 @@ button.icon-btn {
   z-index: 200;
   overflow-y: auto;
 }
-.users-topbar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 12px 20px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.users-topbar strong { font-size: 16px; }
 
+/* The Users / Cameras / Authorize-device topbars all use the shared
+   `.topbar` styling (dark surface, 52px, gap 14px) for visual unity.
+   The `.users-view` body that follows is unchanged. */
 .users-body {
   flex: 1;
   padding: 20px;
@@ -1304,7 +1492,6 @@ button.primary {
   color: white;
   border: 0;
   border-radius: var(--radius);
-  padding: 8px 14px;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -1386,6 +1573,9 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .cam-caps { display: block; font-size: 11px; font-weight: 400; }
 
 .cam-wizard-card { width: 460px; }
+/* The wizard form reuses .users-form, whose 360px cap would leave it
+   narrower than the 460px step bar above it. Let it fill the card. */
+.cam-wizard-card .users-form { max-width: none; }
 .cam-wizard-steps {
   list-style: none;
   display: flex;
@@ -1412,10 +1602,68 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .cam-step small.muted { font-weight: 400; }
 .cam-step .req { color: var(--danger); }
 .cam-step input.readonly { opacity: 0.6; cursor: not-allowed; }
-.cam-check { flex-direction: row; align-items: center; gap: 8px; }
-.cam-check input { width: auto; }
-.checkbox-row { flex-direction: row; align-items: center; gap: 8px; }
-.checkbox-row input { width: auto; }
+/* Toggle switch.
+   The native checkbox stays in the DOM (and inside the <label>, so clicks
+   anywhere — track, text, or label — toggle it) but is visually hidden;
+   `.switch-track` renders the visible pill + thumb. State is driven by
+   `:checked` on the sibling input, so the markup stays a normal
+   <input type="checkbox"> and form serialization / `form.elements.X.checked`
+   keep working without JS changes.
+
+   Selectors use `label.switch` (not just `.switch`) to out-specify the
+   `.users-form label` rule higher up, which sets
+   `display: flex; flex-direction: column;` on every form label. */
+label.switch {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  line-height: 1.3;
+  /* A bit of breathing room between stacked switches (wizard step 3 has
+     five of them). The parent form/step already has 10px gap, so a
+     modest 4px on top/bottom keeps each row visually distinct without
+     making the column look loose. */
+  margin: 6px 0;
+}
+label.switch input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  margin: 0;
+}
+.switch-track {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 20px;
+  background: var(--border-strong);
+  border-radius: 999px;
+  transition: background-color 0.18s ease;
+  flex-shrink: 0;
+  order: 2;
+}
+.switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: var(--panel);
+  border-radius: 50%;
+  transition: transform 0.18s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+label.switch input:checked + .switch-track { background: var(--accent); }
+label.switch input:checked + .switch-track::after { transform: translateX(14px); }
+label.switch input:focus-visible + .switch-track { box-shadow: 0 0 0 2px var(--accent-soft); }
+label.switch input:disabled + .switch-track { opacity: 0.5; cursor: not-allowed; }
+.switch-text { flex: 1; order: 1; min-width: 0; }
+.switch-text small { font-weight: 400; }
 .cam-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 .cam-probe { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

@@ -5,6 +5,7 @@ import {
 import { getState } from "../state.js";
 import { confirmModal } from "../ui/dialog.js";
 import { closeUserMenu } from "../ui/user-menu.js";
+import { moveGlobalControlsTo } from "./app-shell.js";
 
 let camerasCache = null; // [Camera, ...] as returned by GET /api/cameras
 let wizardStep = 1;
@@ -22,6 +23,7 @@ export function enterCamerasView() {
   if (isCamerasViewOpen()) return;
   document.getElementById("app").hidden = true;
   document.getElementById("cameras-view").hidden = false;
+  moveGlobalControlsTo(document.querySelector("#cameras-view header.topbar"));
   document.getElementById("cameras-new").hidden = false;
   document.getElementById("cameras-list-section").hidden = false;
   loadCameras();
@@ -31,6 +33,9 @@ export function exitCamerasView() {
   const v = document.getElementById("cameras-view");
   if (v) v.hidden = true;
   closeWizard();
+  // Hand the global topbar controls (theme + user menu) back to the
+  // main app's topbar before showing it.
+  moveGlobalControlsTo(document.querySelector("#app .app-main header.topbar"));
   document.getElementById("app").hidden = false;
 }
 
