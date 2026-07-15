@@ -6,12 +6,32 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"eneverre/internal/auth"
 )
 
 func validRole(role string) bool { return role == "admin" || role == "user" }
+
+// maxUsernameLen bounds a username. Usernames are looked up verbatim and shown
+// in the session/user lists, so we keep them short, non-empty and free of
+// surrounding or embedded whitespace (which would make lookups ambiguous).
+const maxUsernameLen = 64
+
+// cleanUsername trims a username and reports whether it is acceptable. It
+// rejects empty, over-long, and whitespace-containing values. The returned
+// string is the trimmed form to store.
+func cleanUsername(raw string) (string, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" || len(s) > maxUsernameLen {
+		return "", false
+	}
+	if strings.ContainsAny(s, " \t\r\n") {
+		return "", false
+	}
+	return s, true
+}
 
 // --- admin: list / create -------------------------------------------------
 
@@ -64,6 +84,21 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	username, ok := cleanUsername(req.Username)
+	if !ok {
+		httpError(w, http.StatusUnprocessableEntity, "username is required (max 64 chars, no whitespace)")
+		return
+	}
+	// A password is mandatory (an empty one would be a usable blank-password
+	// account) and bounded — the same limit the login/change paths enforce, so a
+	// create can never store a password that login would then refuse to hash.
+	if req.Password == "" {
+		httpError(w, http.StatusUnprocessableEntity, "password is required")
+		return
+	}
+	if passwordTooLong(w, req.Password) {
+		return
+	}
 	if req.Role == "" {
 		req.Role = "user"
 	}
@@ -73,7 +108,7 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err := a.db.Exec(
 		"INSERT INTO users (username, password, role, first_name, last_name, must_change_password) VALUES (?, ?, ?, ?, ?, ?)",
-		req.Username, auth.GeneratePasswordHash(req.Password), req.Role, req.FirstName, req.LastName, req.MustChangePassword,
+		username, auth.GeneratePasswordHash(req.Password), req.Role, req.FirstName, req.LastName, req.MustChangePassword,
 	)
 	if err != nil {
 		// UNIQUE/PRIMARY KEY violation on username.
@@ -82,7 +117,7 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"message":              "User created",
-		"username":             req.Username,
+		"username":             username,
 		"role":                 req.Role,
 		"first_name":           req.FirstName,
 		"last_name":            req.LastName,
@@ -125,6 +160,11 @@ func (a *App) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "Could not update password")
 		return
 	}
+	// A password change must not leave old sessions valid — otherwise a token
+	// stolen before the reset survives it. Revoke every other session for this
+	// user but keep the caller's current token so they aren't logged out mid-change.
+	current := auth.BearerToken(r)
+	_, _ = a.db.Exec("DELETE FROM tokens WHERE username = ? AND token != ?", me.Username, current)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Password updated"})
 }
 
@@ -230,6 +270,24 @@ func (a *App) handleRevokeMySession(w http.ResponseWriter, r *http.Request) {
 
 // --- admin: role / password / name / delete ------------------------------
 
+// isLastAdmin reports whether username is an admin and the only one left, so
+// demoting or deleting it would strand the system with no administrator
+// (recoverable only by re-seeding an empty users table).
+func (a *App) isLastAdmin(username string) bool {
+	var role string
+	if err := a.db.QueryRow("SELECT role FROM users WHERE username = ?", username).Scan(&role); err != nil {
+		return false // not found / error: let the caller's normal path report it
+	}
+	if role != "admin" {
+		return false
+	}
+	var admins int
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM users WHERE role = 'admin'").Scan(&admins); err != nil {
+		return false
+	}
+	return admins <= 1
+}
+
 type updateRoleRequest struct {
 	Role string `json:"role"`
 }
@@ -244,6 +302,10 @@ func (a *App) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validRole(req.Role) {
 		httpError(w, http.StatusUnprocessableEntity, "role must be 'admin' or 'user'")
+		return
+	}
+	if req.Role != "admin" && a.isLastAdmin(r.PathValue("username")) {
+		httpError(w, http.StatusBadRequest, "Cannot demote the last admin")
 		return
 	}
 	res, err := a.db.Exec("UPDATE users SET role = ? WHERE username = ?", req.Role, r.PathValue("username"))
@@ -280,8 +342,9 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if passwordTooLong(w, req.Password) {
 		return
 	}
+	username := r.PathValue("username")
 	res, err := a.db.Exec("UPDATE users SET password = ?, must_change_password = ? WHERE username = ?",
-		auth.GeneratePasswordHash(req.Password), req.MustChangePassword, r.PathValue("username"))
+		auth.GeneratePasswordHash(req.Password), req.MustChangePassword, username)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "Could not update password")
 		return
@@ -290,6 +353,9 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "User not found")
 		return
 	}
+	// An admin-forced reset revokes all of the target user's sessions, so a
+	// compromised token can't outlive the reset.
+	_, _ = a.db.Exec("DELETE FROM tokens WHERE username = ?", username)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Password updated"})
 }
 
@@ -323,6 +389,10 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := r.PathValue("username")
+	if a.isLastAdmin(username) {
+		httpError(w, http.StatusBadRequest, "Cannot delete the last admin")
+		return
+	}
 	res, _ := a.db.Exec("DELETE FROM users WHERE username = ?", username)
 	if n, _ := res.RowsAffected(); n == 0 {
 		httpError(w, http.StatusNotFound, "User not found")

@@ -26,29 +26,33 @@ type CameraStatusFn func() []media.CameraStatus
 // PrivacyStateFn returns the privacy state for a given camera id.
 type PrivacyStateFn func(id string) bool
 
+// CamerasFn returns the current camera set. Called once per scrape so counts
+// reflect runtime create/delete rather than a snapshot captured at startup.
+type CamerasFn func() []camera.Camera
+
 // Store holds the Prometheus registry and all metric collectors. Create one
 // with New, then wire it into the App so the /api/metrics endpoints serve it.
 type Store struct {
 	reg *prometheus.Registry
 
 	db        *sql.DB
-	cameras   []camera.Camera
+	camerasFn CamerasFn
 	statusFn  CameraStatusFn
 	privacyFn PrivacyStateFn
 }
 
 // New creates a Store, registers all collectors, and returns it. Pass nil for
 // db to disable the database-stats collector (it then reports nothing rather
-// than zero values). The statusFn and privacyFn closures are called on every
-// scrape; they must be safe for concurrent use.
-func New(db *sql.DB, version string, statusFn CameraStatusFn, privacyFn PrivacyStateFn, cameras []camera.Camera) *Store {
+// than zero values). The camerasFn, statusFn and privacyFn closures are called
+// on every scrape; they must be safe for concurrent use.
+func New(db *sql.DB, version string, statusFn CameraStatusFn, privacyFn PrivacyStateFn, camerasFn CamerasFn) *Store {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector())
 
 	s := &Store{
 		reg:       reg,
 		db:        db,
-		cameras:   cameras,
+		camerasFn: camerasFn,
 		statusFn:  statusFn,
 		privacyFn: privacyFn,
 	}
@@ -85,11 +89,11 @@ func (s *Store) Gather() ([]*dto.MetricFamily, error) {
 // ---------------------------------------------------------------------------
 
 type dbStatsCollector struct {
-	store      *Store
-	descOpen   *prometheus.Desc
-	descInUse  *prometheus.Desc
-	descIdle   *prometheus.Desc
-	descWait   *prometheus.Desc
+	store       *Store
+	descOpen    *prometheus.Desc
+	descInUse   *prometheus.Desc
+	descIdle    *prometheus.Desc
+	descWait    *prometheus.Desc
 	descWaitDur *prometheus.Desc
 }
 
@@ -203,7 +207,7 @@ func (c *camerasCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *camerasCollector) Collect(ch chan<- prometheus.Metric) {
-	cameras := c.store.cameras
+	cameras := c.store.camerasFn()
 	ch <- prometheus.MustNewConstMetric(c.descTotal, prometheus.GaugeValue, float64(len(cameras)))
 
 	statuses := c.store.statusFn()

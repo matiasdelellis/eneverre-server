@@ -230,6 +230,13 @@ func (a *App) SetMetrics(m *metrics.Store) {
 	a.metrics = m
 }
 
+// Cameras returns a snapshot copy of the current camera set. Safe for
+// concurrent access; used by the metrics collector on each scrape so counts
+// track runtime create/delete instead of a stale startup snapshot.
+func (a *App) Cameras() []camera.Camera {
+	return a.listCameras()
+}
+
 // PrivacyState returns the current privacy state for a camera. Safe for
 // concurrent access; used by the metrics collector on each scrape.
 func (a *App) PrivacyState(id string) bool {

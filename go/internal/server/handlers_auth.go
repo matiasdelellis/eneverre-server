@@ -74,9 +74,18 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"SELECT password, role, first_name, last_name, must_change_password FROM users WHERE username = ?",
 		req.Username,
 	).Scan(&stored, &role, &firstName, &lastName, &mustChange)
-	if err != nil || !auth.CheckPasswordHash(stored, req.Password) {
-		// Even out timing for unknown users by hashing a dummy.
+	if err != nil {
+		// Unknown user: hash a dummy so a missing account costs the same as a
+		// present one. Doing this ONLY here (not also after a real hash on the
+		// wrong-password path) keeps both branches at exactly one PBKDF2 pass —
+		// otherwise "valid user, wrong password" would run two hashes and take
+		// ~2x as long, leaking which usernames exist.
 		auth.CheckPasswordHash("pbkdf2:sha256:600000$dummy$"+strings.Repeat("0", 64), req.Password)
+		a.logAuthFailure(r, req.Username, "invalid_credentials")
+		httpError(w, http.StatusUnauthorized, "Invalid credentials")
+		return
+	}
+	if !auth.CheckPasswordHash(stored, req.Password) {
 		a.logAuthFailure(r, req.Username, "invalid_credentials")
 		httpError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
@@ -103,15 +112,15 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, loginResponse{
-		Token:            token,
-		ExpiresAt:        expiresAt,
-		RefreshToken:     refresh,
-		RefreshExpiresAt: refreshExpiresAt,
-		Username:         req.Username,
-		FirstName:        nullStrPtr(firstName),
-		LastName:         nullStrPtr(lastName),
-		Role:             role,
-		IsAdmin:          role == "admin",
+		Token:              token,
+		ExpiresAt:          expiresAt,
+		RefreshToken:       refresh,
+		RefreshExpiresAt:   refreshExpiresAt,
+		Username:           req.Username,
+		FirstName:          nullStrPtr(firstName),
+		LastName:           nullStrPtr(lastName),
+		Role:               role,
+		IsAdmin:            role == "admin",
 		MustChangePassword: mustChange,
 	})
 }
@@ -147,32 +156,34 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnauthorized, "Invalid refresh token")
 		return
 	}
-	var id int64
-	var username string
-	var refreshExp sql.NullInt64
-	err := a.db.QueryRow(
-		"SELECT id, username, refresh_expires_at FROM tokens WHERE refresh_token = ?",
-		req.RefreshToken,
-	).Scan(&id, &username, &refreshExp)
-	if err != nil {
-		httpError(w, http.StatusUnauthorized, "Invalid refresh token")
-		return
-	}
 	now := time.Now().Unix()
-	if refreshExp.Valid && refreshExp.Int64 != 0 && refreshExp.Int64 < now {
-		_, _ = a.db.Exec("DELETE FROM tokens WHERE id = ?", id)
-		httpError(w, http.StatusUnauthorized, "Refresh token expired")
-		return
-	}
 	newToken := auth.TokenURLSafe(32)
 	newRefresh := auth.TokenURLSafe(32)
 	expiresAt := now + a.accessTTL
 	newRefreshExpiresAt := now + a.refreshTTL
-	if _, err := a.db.Exec(
-		"UPDATE tokens SET token = ?, expires_at = ?, refresh_token = ?, refresh_expires_at = ? WHERE id = ?",
-		newToken, expiresAt, newRefresh, newRefreshExpiresAt, id,
-	); err != nil {
+	// Rotate in a single conditional UPDATE rather than SELECT-then-UPDATE: the
+	// old refresh token is consumed atomically, so two concurrent requests with
+	// the same token can't both mint a new pair — the first flips refresh_token,
+	// the second's WHERE no longer matches (RowsAffected 0). (NULL/0
+	// refresh_expires_at means "never expires", matching the old semantics.)
+	res, err := a.db.Exec(
+		"UPDATE tokens SET token = ?, expires_at = ?, refresh_token = ?, refresh_expires_at = ? "+
+			"WHERE refresh_token = ? AND (refresh_expires_at IS NULL OR refresh_expires_at = 0 OR refresh_expires_at > ?)",
+		newToken, expiresAt, newRefresh, newRefreshExpiresAt, req.RefreshToken, now,
+	)
+	if err != nil {
 		httpError(w, http.StatusInternalServerError, "Could not refresh session")
+		return
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		// Nothing rotated: the token is unknown, expired, or already consumed (a
+		// reused/stale token or a lost race). Never mint a new pair; opportunistically
+		// prune the row if it was simply expired.
+		_, _ = a.db.Exec(
+			"DELETE FROM tokens WHERE refresh_token = ? AND refresh_expires_at > 0 AND refresh_expires_at < ?",
+			req.RefreshToken, now,
+		)
+		httpError(w, http.StatusUnauthorized, "Invalid refresh token")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

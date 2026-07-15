@@ -90,32 +90,39 @@ func seekAndMux(segments []index.Segment, start time.Time, duration time.Duratio
 		writeBlackGap(m, vID, vTS, blackPayload, 0, min(startOffset, duration))
 	}
 
-	dts := startOffset
-	prevInit := firstInit
-
-	segDur, err := muxParts(f, dts, duration, firstInit.Tracks, m)
+	segDur, err := muxParts(f, startOffset, duration, firstInit.Tracks, m)
 	if err != nil {
 		return err
 	}
 	segmentEnd := segments[0].Start.Add(segDur)
+	prevInit := firstInit
 
-	for _, seg := range segments[1:] {
-		sf, err2 := os.Open(seg.Fpath)
-		if err2 != nil {
-			return err2
+	// processSegment stitches one follow-on segment onto the output. It opens
+	// and closes the segment file within its own scope: muxParts/readHeader read
+	// eagerly (writeSample resolves each payload before returning), so the file
+	// is safe to close as soon as this returns. Keeping the open scoped per
+	// segment is what stops a wide range (thousands of 60s segments) from holding
+	// every file descriptor open at once and exhausting RLIMIT_NOFILE — which
+	// would also starve the recorders that need FDs to create new segments.
+	// It returns the advanced segmentEnd, the init to carry as prevInit, and a
+	// stop flag telling the caller to end the stitch loop.
+	processSegment := func(seg index.Segment, prevInit *fmp4.Init, segmentEnd time.Time) (time.Time, *fmp4.Init, bool, error) {
+		sf, err := os.Open(seg.Fpath)
+		if err != nil {
+			return segmentEnd, prevInit, false, err
 		}
 		defer sf.Close()
 
-		init, _, err2 := readHeader(sf)
-		if err2 != nil {
-			return err2
+		init, _, err := readHeader(sf)
+		if err != nil {
+			return segmentEnd, prevInit, false, err
 		}
 
 		concat := segmentCanBeConcatenated(prevInit, segmentEnd, init, seg.Start)
 		if !concat {
 			// gap or incompatible stream
 			if blackPayload == nil {
-				break // no filler available: stop here (legacy behavior)
+				return segmentEnd, prevInit, true, nil // no filler: stop here (legacy behavior)
 			}
 			gapStart := segmentEnd.Sub(start)
 			gapEnd := seg.Start.Sub(start)
@@ -124,11 +131,11 @@ func seekAndMux(segments []index.Segment, start time.Time, duration time.Duratio
 			}
 			writeBlackGap(m, vID, vTS, blackPayload, gapStart, gapEnd)
 			if gapEnd >= duration {
-				segmentEnd = start.Add(duration) // window already filled to the end
-				break
+				return start.Add(duration), prevInit, true, nil // window already filled to the end
 			}
 		}
 
+		var dts time.Duration
 		if concat && firstMtxi != nil {
 			mi := mtxi.Find(init.UserData)
 			dts = time.Duration(mi.DTS-firstMtxi.DTS) + startOffset
@@ -137,12 +144,22 @@ func seekAndMux(segments []index.Segment, start time.Time, duration time.Duratio
 			dts = seg.Start.Sub(start)
 		}
 
-		segDur, err2 = muxParts(sf, dts, duration, firstInit.Tracks, m)
-		if err2 != nil {
-			return err2
+		segDur, err := muxParts(sf, dts, duration, firstInit.Tracks, m)
+		if err != nil {
+			return segmentEnd, prevInit, false, err
 		}
-		segmentEnd = seg.Start.Add(segDur)
-		prevInit = init
+		return seg.Start.Add(segDur), init, false, nil
+	}
+
+	for _, seg := range segments[1:] {
+		var stop bool
+		segmentEnd, prevInit, stop, err = processSegment(seg, prevInit, segmentEnd)
+		if err != nil {
+			return err
+		}
+		if stop {
+			break
+		}
 	}
 
 	// Trailing gap: the window extends past the last available footage. Fill

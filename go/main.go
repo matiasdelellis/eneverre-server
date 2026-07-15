@@ -227,7 +227,7 @@ func main() {
 		m := metrics.New(db, version,
 			func() []media.CameraStatus { return engine.Status() },
 			func(id string) bool { return app.PrivacyState(id) },
-			cams)
+			app.Cameras)
 		app.SetMetrics(m)
 		slog.Info("metrics enabled", "prometheus", "/api/metrics", "json", "/api/metrics/json")
 	} else {
