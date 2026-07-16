@@ -32,11 +32,31 @@ import (
 const (
 	partDuration  = 300 * time.Millisecond // target fMP4 part length (latency knob)
 	subChanBuffer = 128                    // parts queued per client before dropping (slow client)
+	submitBuffer  = 256                    // samples queued for the marshaler before dropping
 )
+
+// liveSample is one finalized sample handed from the recorder to the async
+// marshaler goroutine.
+type liveSample struct {
+	trackID int
+	s       *fmp4.Sample
+	dts     int64
+}
 
 // Broadcaster muxes live parts and fans them out to HTTP subscribers.
 type Broadcaster struct {
 	Logf func(string, ...any)
+
+	// Async marshal path. The recorder hands finalized samples to submitCh (a
+	// non-blocking send from under its RTP mutex); a single run() goroutine drains
+	// it and does all the fMP4 part marshalling/copying/fan-out OFF that mutex, so
+	// serializing video for the browser never stalls RTP ingest or recording. Live
+	// is best-effort — a full channel drops rather than blocks. quit stops run();
+	// closeOnce makes Close idempotent; warnSubmitOnce logs the first drop.
+	submitCh       chan liveSample
+	quit           chan struct{}
+	closeOnce      sync.Once
+	warnSubmitOnce sync.Once
 
 	mu         sync.Mutex
 	running    bool
@@ -68,13 +88,55 @@ type subscriber struct {
 	ch chan []byte
 }
 
-// Initialize prepares the broadcaster.
+// Initialize prepares the broadcaster and starts its marshaler goroutine. Call
+// once per broadcaster; Close stops the goroutine when the camera is removed.
 func (b *Broadcaster) Initialize() {
 	if b.Logf == nil {
 		b.Logf = func(string, ...any) {}
 	}
 	b.subs = map[*subscriber]struct{}{}
+	b.submitCh = make(chan liveSample, submitBuffer)
+	b.quit = make(chan struct{})
 	b.resetPart()
+	go b.run()
+}
+
+// run is the marshaler goroutine: it drains submitCh and performs the fMP4 part
+// assembly/marshal/fan-out (all of WriteSample's work) off the recorder's RTP
+// mutex, until Close.
+func (b *Broadcaster) run() {
+	for {
+		select {
+		case <-b.quit:
+			return
+		case m := <-b.submitCh:
+			b.writeSample(m.trackID, m.s, m.dts)
+		}
+	}
+}
+
+// Submit hands one finalized sample to the marshaler. It is called from the
+// recorder under its RTP mutex, so it must not block: the send is non-blocking
+// and drops the sample when the marshaler has fallen behind (live is
+// best-effort — the fan-out already drops for slow clients). Dropping is only
+// reachable under sustained CPU overload; recording is unaffected (the recorder
+// has already written the sample to its segment before calling this).
+func (b *Broadcaster) Submit(trackID int, s *fmp4.Sample, dts int64) {
+	select {
+	case b.submitCh <- liveSample{trackID: trackID, s: s, dts: dts}:
+	default:
+		b.warnSubmitOnce.Do(func() {
+			b.Logf("live: marshaler behind, dropping samples (browser stream may stutter; recording unaffected)")
+		})
+	}
+}
+
+// Close stops the marshaler goroutine. Idempotent. Called when the camera is
+// removed from the engine. Submit after Close is safe (it targets a buffered
+// channel that is never closed, so it never panics — the samples are just never
+// drained).
+func (b *Broadcaster) Close() {
+	b.closeOnce.Do(func() { close(b.quit) })
 }
 
 // SetTracks (re)initializes the live stream from the source tracks. Called by the
@@ -193,8 +255,10 @@ func (b *Broadcaster) Stop() {
 	}
 }
 
-// WriteSample feeds one finalized sample (Duration already set) from the recorder.
-func (b *Broadcaster) WriteSample(trackID int, s *fmp4.Sample, dts int64) {
+// writeSample muxes one finalized sample (Duration already set) into the live
+// stream. It runs on the marshaler goroutine (see run), never on the recorder's
+// RTP path, so its marshalling/copying is off the recorder mutex.
+func (b *Broadcaster) writeSample(trackID int, s *fmp4.Sample, dts int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.running {

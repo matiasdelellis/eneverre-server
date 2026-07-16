@@ -411,12 +411,13 @@ func (e *Engine) RemoveCamera(id string) bool {
 	e.mu.Unlock()
 
 	ctrl.cancel()    // stop the retry loop
-	ctrl.rec.Close() // unblock rec.Start and finalize the current segment
+	ctrl.rec.Close() // unblock rec.Start and finalize the current segment (no more Submit after this)
 	if e.relay != nil {
 		e.relay.ClearSource(id)
 	}
 	if lb != nil {
-		lb.Stop()
+		lb.Stop()  // drop viewers, clear stream state
+		lb.Close() // stop the marshaler goroutine (rec is stopped, so no more Submit)
 	}
 	return true
 }
@@ -476,7 +477,7 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 			}
 			return nil // a broadcaster issue must never stop recording
 		}
-		rec.OnLiveSample = func(trackID int, s *fmp4.Sample, dts int64) { lb.WriteSample(trackID, s, dts) }
+		rec.OnLiveSample = func(trackID int, s *fmp4.Sample, dts int64) { lb.Submit(trackID, s, dts) }
 	}
 
 	rec.OnSourceLost = func() {
@@ -646,11 +647,19 @@ func (e *Engine) Close() {
 	e.cancel()
 	e.mu.RLock()
 	recs := append([]*recorder.Recorder(nil), e.recorders...)
+	bcs := make([]*live.Broadcaster, 0, len(e.broadcasters))
+	for _, lb := range e.broadcasters {
+		bcs = append(bcs, lb)
+	}
 	e.mu.RUnlock()
 	for _, r := range recs {
 		r.Close()
 	}
 	e.wg.Wait()
+	// Recorders are stopped (no more Submit), so stop the live marshaler goroutines.
+	for _, lb := range bcs {
+		lb.Close()
+	}
 	// Recorders have finalized (and enqueued) their last segments; drain the
 	// async indexer before closing the index so no pending insert is lost.
 	if e.idxCh != nil {
