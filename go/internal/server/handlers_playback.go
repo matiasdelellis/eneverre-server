@@ -28,16 +28,8 @@ func parseISOTime(ts string) (time.Time, error) {
 }
 
 func (a *App) handlePlaybackList(w http.ResponseWriter, r *http.Request) {
-	if a.engine == nil || !a.engine.RecordingEnabled() {
-		httpError(w, http.StatusNotFound, "Not Found")
-		return
-	}
-	if a.requireUser(w, r) == nil {
-		return
-	}
-	cam, ok := a.getCamera(r.PathValue("cam_id"))
-	if !ok || !cam.Capabilities.Playback {
-		httpError(w, http.StatusNotFound, "Not found")
+	cam := a.playbackGate(w, r)
+	if cam == nil {
 		return
 	}
 	q := r.URL.Query()
@@ -94,16 +86,8 @@ func (a *App) handleRecordingPaths(w http.ResponseWriter, r *http.Request) {
 // last end, and segment count. Requires the embedded engine; start/end are null
 // when there are no recordings.
 func (a *App) handlePlaybackTimeline(w http.ResponseWriter, r *http.Request) {
-	if a.engine == nil || !a.engine.RecordingEnabled() {
-		httpError(w, http.StatusNotFound, "Not Found")
-		return
-	}
-	if a.requireUser(w, r) == nil {
-		return
-	}
-	cam, ok := a.getCamera(r.PathValue("cam_id"))
-	if !ok || !cam.Capabilities.Playback {
-		httpError(w, http.StatusNotFound, "Not found")
+	cam := a.playbackGate(w, r)
+	if cam == nil {
 		return
 	}
 	tl, err := a.engine.Index().Timeline(cam.ID)
@@ -123,16 +107,8 @@ func (a *App) handlePlaybackTimeline(w http.ResponseWriter, r *http.Request) {
 // between consecutive segments) for a camera, optionally bounded by start/end.
 // Requires the embedded engine.
 func (a *App) handlePlaybackGaps(w http.ResponseWriter, r *http.Request) {
-	if a.engine == nil || !a.engine.RecordingEnabled() {
-		httpError(w, http.StatusNotFound, "Not Found")
-		return
-	}
-	if a.requireUser(w, r) == nil {
-		return
-	}
-	cam, ok := a.getCamera(r.PathValue("cam_id"))
-	if !ok || !cam.Capabilities.Playback {
-		httpError(w, http.StatusNotFound, "Not found")
+	cam := a.playbackGate(w, r)
+	if cam == nil {
 		return
 	}
 	q := r.URL.Query()
@@ -169,9 +145,11 @@ func (a *App) handlePlaybackGaps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// hlsGate enforces engine-active + user auth + playback capability for the HLS
-// VOD endpoints, returning the camera or nil (after writing the error).
-func (a *App) hlsGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
+// playbackGate enforces engine-active (in recording mode) + user auth + the
+// per-camera playback capability shared by every recordings endpoint, returning
+// the camera or nil (after writing the error). It is the single source of truth
+// for that preamble so the individual handlers can't drift apart.
+func (a *App) playbackGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
 	if a.engine == nil || !a.engine.RecordingEnabled() {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return nil
@@ -208,7 +186,7 @@ func (a *App) delegateHLS(w http.ResponseWriter, r *http.Request, camID string, 
 // continuous timeline; EXT-X-PROGRAM-DATE-TIME carries wall-clock for cursor
 // mapping.
 func (a *App) handlePlaybackHLSPlaylist(w http.ResponseWriter, r *http.Request) {
-	cam := a.hlsGate(w, r)
+	cam := a.playbackGate(w, r)
 	if cam == nil {
 		return
 	}
@@ -218,7 +196,7 @@ func (a *App) handlePlaybackHLSPlaylist(w http.ResponseWriter, r *http.Request) 
 
 // handlePlaybackHLSInit serves the CMAF init segment referenced by the playlist.
 func (a *App) handlePlaybackHLSInit(w http.ResponseWriter, r *http.Request) {
-	cam := a.hlsGate(w, r)
+	cam := a.playbackGate(w, r)
 	if cam == nil {
 		return
 	}
@@ -227,7 +205,7 @@ func (a *App) handlePlaybackHLSInit(w http.ResponseWriter, r *http.Request) {
 
 // handlePlaybackHLSSegment serves a CMAF media segment referenced by the playlist.
 func (a *App) handlePlaybackHLSSegment(w http.ResponseWriter, r *http.Request) {
-	cam := a.hlsGate(w, r)
+	cam := a.playbackGate(w, r)
 	if cam == nil {
 		return
 	}
@@ -235,16 +213,8 @@ func (a *App) handlePlaybackHLSSegment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handlePlaybackGet(w http.ResponseWriter, r *http.Request) {
-	if a.engine == nil || !a.engine.RecordingEnabled() {
-		httpError(w, http.StatusNotFound, "Not Found")
-		return
-	}
-	if a.requireUser(w, r) == nil {
-		return
-	}
-	cam, ok := a.getCamera(r.PathValue("cam_id"))
-	if !ok || !cam.Capabilities.Playback {
-		httpError(w, http.StatusNotFound, "Not found")
+	cam := a.playbackGate(w, r)
+	if cam == nil {
 		return
 	}
 	q := r.URL.Query()
@@ -253,7 +223,7 @@ func (a *App) handlePlaybackGet(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "start and duration are required")
 		return
 	}
-	a.playbackGetEngine(w, r, &cam, start, duration)
+	a.playbackGetEngine(w, r, cam, start, duration)
 }
 
 // playbackGetEngine serves a clip from the embedded engine's segment index.

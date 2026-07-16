@@ -45,6 +45,13 @@ type App struct {
 	// getCamera/listCameras under this lock.
 	camerasMu sync.RWMutex
 	cameras   []camera.Camera
+	// camMutateMu serializes whole camera mutations (create/update/delete): each
+	// spans a DB write, an engine reconfigure (RemoveCamera+AddCamera has no
+	// atomic form), and the in-memory update. Holding it across the sequence stops
+	// two concurrent admin mutations of the same camera from interleaving (e.g. an
+	// update racing a delete). camerasMu (above) only guards the slice itself and
+	// is taken inside the small helpers; this is the coarser, handler-level lock.
+	camMutateMu sync.Mutex
 	// engine is the embedded media engine (recording, RTSP relay, live MSE,
 	// playback). Always attached in normal operation (main builds and starts
 	// it unconditionally); the [media] section only tunes it. May be nil in
@@ -778,36 +785,16 @@ func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
-	// Rebuild the embedded engine's stream URLs from the current rotating
-	// credentials so rotation is reflected immediately. Camera marshals without
-	// the Thingino fields, so this is the public view. The global [media]
-	// toggles come from the engine (falling back to defaults when the engine is
-	// absent, e.g. in tests); camera.ResolveFeatures then decides, per camera,
-	// which feeds to advertise — the same rule the engine uses to start them.
-	def := media.DefaultOptions()
-	gMSE, gRelay, gRecord := def.MSEEnabled, def.RelayEnabled, def.RecordEnabled
-	if a.engine != nil {
-		gMSE, gRelay, gRecord = a.engine.GlobalToggles()
-	}
-	creds := a.creds.Current()
+	// Project each camera through publicCamera — the single source of truth for
+	// the public view (engine stream URLs rebuilt from the current rotating
+	// credentials, live privacy applied, talk codecs attached). Keeping the
+	// per-camera POST/PUT responses and this list on the same projection means
+	// they can't drift.
 	cams := a.listCameras()
-	a.privacyMu.RLock()
-	a.talkCodecsMu.RLock()
 	out := make([]camera.Camera, len(cams))
 	for i, c := range cams {
-		f := c.ResolveFeatures(gMSE, gRelay, gRecord)
-		out[i] = c.WithEngineURLs(a.cfg, creds, r.Host, f)
-		out[i].Privacy = a.privacy[c.ID]
-		if out[i].Privacy {
-			// Paused for privacy: the engine serves no live feed, so don't
-			// advertise stale live/relay URLs the client would fail to play.
-			out[i].LiveMSE = ""
-			out[i].RTSP = ""
-		}
-		out[i].Capabilities.TalkCodecs = a.talkCodecs[c.ID]
+		out[i] = a.publicCamera(c, r.Host)
 	}
-	a.talkCodecsMu.RUnlock()
-	a.privacyMu.RUnlock()
 	writeJSON(w, http.StatusOK, out)
 }
 

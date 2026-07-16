@@ -82,8 +82,6 @@ function withThumbGrab(cam, video, handle) {
   };
 }
 
-export function getWallInstances() { return wallInstances; }
-
 function isWallLike() {
   const v = getState().viewMode;
   return v === "live" || v === "playback";
@@ -375,10 +373,6 @@ export function resumeWall() {
     if (h.resume) { try { h.resume(); } catch {} }
   }
   $$("#wall video").forEach((v) => v.play().catch(() => {}));
-}
-
-export function wallSize() {
-  return wallInstances.size;
 }
 
 async function applyPlayback(filtered) {

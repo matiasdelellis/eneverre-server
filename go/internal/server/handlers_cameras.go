@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -125,8 +124,7 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req createCameraReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	s, msg := req.spec()
@@ -134,6 +132,11 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
+
+	// Serialize the DB + engine + in-memory mutation against other camera
+	// create/update/delete so they can't interleave.
+	a.camMutateMu.Lock()
+	defer a.camMutateMu.Unlock()
 
 	cam, err := a.camStore.Create(s, time.Now().Unix())
 	if errors.Is(err, camera.ErrExists) {
@@ -191,8 +194,7 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("cam_id")
 	var req createCameraReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	req.ID = id // the id is set by the path; any body id is ignored
@@ -201,6 +203,11 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
+
+	// Serialize the DB + engine reconfigure (RemoveCamera+AddCamera) + in-memory
+	// update so a concurrent update/delete of the same camera can't interleave.
+	a.camMutateMu.Lock()
+	defer a.camMutateMu.Unlock()
 
 	switch err := a.camStore.Update(s); {
 	case errors.Is(err, camera.ErrNotFound):
@@ -244,6 +251,9 @@ func (a *App) handleDeleteCamera(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("cam_id")
+	// Serialize against other camera create/update/delete (see camMutateMu).
+	a.camMutateMu.Lock()
+	defer a.camMutateMu.Unlock()
 	switch err := a.camStore.Delete(id); {
 	case errors.Is(err, camera.ErrNotFound):
 		httpError(w, http.StatusNotFound, "camera not found")
@@ -282,8 +292,7 @@ func (a *App) handleProbeCamera(w http.ResponseWriter, r *http.Request) {
 		Source    string `json:"source"`
 		Transport string `json:"transport"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	res, err := media.ProbeSource(req.Source, req.Transport, 8*time.Second)
