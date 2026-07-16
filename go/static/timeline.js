@@ -208,6 +208,18 @@ export class Timeline {
     return null;
   }
 
+  // oldestTimestampMsec returns the smallest timestampMsec in a record list.
+  // The lists are sorted, but in opposite directions (recordings ascending,
+  // events descending), so the "request more into the past" trigger scans for
+  // the true minimum instead of assuming which end holds the oldest record.
+  oldestTimestampMsec(records) {
+    let m = Infinity;
+    for (const record of records) {
+      if (record.timestampMsec < m) m = record.timestampMsec;
+    }
+    return m;
+  }
+
   getNextMajorRecord(timelineIndex) {
     return this.getNextRecord(this.selectedMsec, this.recordsMajor1[timelineIndex]);
   }
@@ -524,9 +536,8 @@ export class Timeline {
         }
       }
     }
-    if (this.recordsMajor1[timelineIndex].length > 0) {
-      const record = this.recordsMajor1[timelineIndex][this.recordsMajor1[timelineIndex].length - 1];
-      if (minValue < record.timestampMsec && this.requestMoreMajor1DataCallback != null) {
+    if (this.requestMoreMajor1DataCallback != null && this.recordsMajor1[timelineIndex].length > 0) {
+      if (minValue < this.oldestTimestampMsec(this.recordsMajor1[timelineIndex])) {
         this.requestMoreMajor1DataCallback(timelineIndex);
       }
     }
@@ -547,9 +558,8 @@ export class Timeline {
         }
       }
     }
-    if (this.recordsMajor2[timelineIndex].length > 0) {
-      const record = this.recordsMajor2[timelineIndex][this.recordsMajor2[timelineIndex].length - 1];
-      if (minValue < record.timestampMsec && this.requestMoreMajor2DataCallback != null) {
+    if (this.requestMoreMajor2DataCallback != null && this.recordsMajor2[timelineIndex].length > 0) {
+      if (minValue < this.oldestTimestampMsec(this.recordsMajor2[timelineIndex])) {
         this.requestMoreMajor2DataCallback(timelineIndex);
       }
     }
@@ -566,9 +576,8 @@ export class Timeline {
         this.rectsBackground[timelineIndex].push(rect);
       }
     }
-    if (this.recordsBackground[timelineIndex].length > 0) {
-      const record = this.recordsBackground[timelineIndex][this.recordsBackground[timelineIndex].length - 1];
-      if (minValue < record.timestampMsec && this.requestMoreBackgroundDataCallback != null) {
+    if (this.requestMoreBackgroundDataCallback != null && this.recordsBackground[timelineIndex].length > 0) {
+      if (minValue < this.oldestTimestampMsec(this.recordsBackground[timelineIndex])) {
         this.requestMoreBackgroundDataCallback(timelineIndex);
       }
     }

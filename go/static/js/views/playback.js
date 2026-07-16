@@ -16,6 +16,22 @@ let preservedPbState = null;
 let pbBuildGen = 0;
 let pbLoadGen = 0;     // initial-playback render; bumped when leaving playback
 let pbSelectGen = 0;   // timeline clicks; bumped when leaving playback or on a newer click
+
+const PB_REFRESH_INTERVAL_MS = 15 * 1000;   // present-edge poll cadence
+const PB_PAGE_MS = 24 * 3600 * 1000;        // older chunk loaded per back-scroll step
+
+let pbRefreshTimer = null;   // present-edge poll (setInterval id)
+let pbRefreshing = false;    // reentrancy guard for a slow poll
+
+// Per-timeline backward-pagination state, indexed by timeline index and reset
+// on every buildPlaybackTimeline. pbRecFloor[i] is the oldest wall-clock we've
+// loaded recordings down to; pbRecEarliest[i] is the camera's first-ever
+// segment (the terminator); the *Loading/*Done flags serialize the async fetch
+// and stop it at the start of history.
+let pbRecFloor = [];
+let pbRecEarliest = [];
+let pbRecPageLoading = [];
+let pbRecPageDone = [];
 export function getTimeline() { return pbTimeline; }
 export function getPbCams() { return pbCams; }
 export function getLoadGen() { return pbLoadGen; }
@@ -60,12 +76,15 @@ document.addEventListener("eneverre:themechange", () => {
   pbTimeline.draw();
 });
 
-async function fetchRecordings(camId, rangeMs = 24 * 3600 * 1000) {
-  const end = new Date();
-  const start = new Date(end.getTime() - rangeMs);
+// fetchRecordingsRange fetches recording segments over an explicit
+// [startMs,endMs] wall-clock window and shapes them into timeline records
+// (ascending by start, as the server returns them). The window is explicit so
+// the same fetch serves the initial 24h build, the present-edge refresh, and
+// the older-data pagination.
+async function fetchRecordingsRange(camId, startMs, endMs) {
   const params = new URLSearchParams({
-    start: start.toISOString(),
-    end: end.toISOString(),
+    start: new Date(startMs).toISOString(),
+    end: new Date(endMs).toISOString(),
   });
   try {
     const r = await fetch(
@@ -84,12 +103,36 @@ async function fetchRecordings(camId, rangeMs = 24 * 3600 * 1000) {
   }
 }
 
-async function fetchEvents(camId, rangeMs = 24 * 3600 * 1000) {
-  const end = new Date();
-  const start = new Date(end.getTime() - rangeMs);
+function fetchRecordings(camId, rangeMs = 24 * 3600 * 1000) {
+  const end = Date.now();
+  return fetchRecordingsRange(camId, end - rangeMs, end);
+}
+
+// fetchRecordingStart returns the wall-clock (ms) of the camera's first-ever
+// recorded segment, or null if it has none / the request fails. Used as the
+// terminator for backward pagination so we stop asking for older data once the
+// start of history is loaded.
+async function fetchRecordingStart(camId) {
+  try {
+    const r = await fetch(
+      `/api/camera/${encodeURIComponent(camId)}/recordings/timeline`,
+      { headers: { Authorization: `Bearer ${token()}` } },
+    );
+    if (!r.ok) return null;
+    const data = await r.json();
+    return data && data.start ? new Date(data.start).getTime() : null;
+  } catch {
+    return null;
+  }
+}
+
+// fetchEventsRange fetches motion events over an explicit [startMs,endMs]
+// window. Returned newest-first, so getNextRecord/getPrevRecord (which assume a
+// descending list) walk events the same way j/l walk recordings.
+async function fetchEventsRange(camId, startMs, endMs) {
   const params = new URLSearchParams({
-    since: start.toISOString(),
-    until: end.toISOString(),
+    since: new Date(startMs).toISOString(),
+    until: new Date(endMs).toISOString(),
     limit: "1000",
   });
   try {
@@ -101,20 +144,105 @@ async function fetchEvents(camId, rangeMs = 24 * 3600 * 1000) {
     const data = await r.json();
     return (data.events || [])
       .map((ev) => {
-        const startMs = new Date(ev.start_ts).getTime();
-        const endMs = new Date(ev.end_ts).getTime();
+        const s = new Date(ev.start_ts).getTime();
+        const e = new Date(ev.end_ts).getTime();
         return {
-          timestampMsec: startMs,
-          durationMsec: Math.max(1000, endMs - startMs),
+          timestampMsec: s,
+          durationMsec: Math.max(1000, e - s),
           object: ev,
         };
       })
-      // Newest first, so getNextRecord/getPrevRecord (which assume a
-      // descending list) walk events the same way j/l walk recordings.
       .sort((a, b) => b.timestampMsec - a.timestampMsec);
   } catch {
     return [];
   }
+}
+
+function fetchEvents(camId, rangeMs = 24 * 3600 * 1000) {
+  const end = Date.now();
+  return fetchEventsRange(camId, end - rangeMs, end);
+}
+
+// refreshTimelineEdge re-fetches the newest slice of each camera's recordings
+// and events and splices it onto the loaded lists, so segments recorded after
+// the timeline was built appear without a full rebuild (and without the gap
+// state machine wrongly flagging "no recording" over freshly recorded time).
+// For recordings it re-reads from the start of the last loaded segment — that
+// segment may have grown, and newer ones may have finalized — and replaces the
+// tail directly. Anchored per camera to what is currently loaded, so it is a
+// small, bounded query regardless of how long the timeline has been open. The
+// pbBuildGen guard drops any response that arrives after a teardown/rebuild.
+async function refreshTimelineEdge() {
+  const tl = pbTimeline;
+  if (!tl || !pbCams.length || pbRefreshing) return;
+  pbRefreshing = true;
+  const gen = pbBuildGen;
+  const now = Date.now();
+  try {
+    await Promise.all(pbCams.map(async (cam, i) => {
+      // Recordings (ascending): anchor at the last loaded segment's start.
+      const recs = tl.getBackgroundRecords(i) || [];
+      const recFrom = recs.length
+        ? recs[recs.length - 1].timestampMsec
+        : now - PB_DEFAULT_INTERVAL;
+      const freshRecs = await fetchRecordingsRange(cam.id, recFrom, now);
+      if (gen !== pbBuildGen) return;
+      // Re-read the live array after the await: loadOlderRecordings may have
+      // prepended older segments while the fetch was in flight, and we must
+      // keep those. We only replace the tail (>= recFrom).
+      const recHead = (tl.getBackgroundRecords(i) || []).filter((r) => r.timestampMsec < recFrom);
+      tl.setBackgroundRecords(i, recHead.concat(freshRecs));
+
+      // Events (descending): anchor at the newest loaded event's start.
+      const evs = tl.getMajor1Records(i) || [];
+      const evFrom = evs.length ? evs[0].timestampMsec : now - PB_DEFAULT_INTERVAL;
+      const freshEvs = await fetchEventsRange(cam.id, evFrom, now);
+      if (gen !== pbBuildGen) return;
+      const evTail = (tl.getMajor1Records(i) || []).filter((e) => e.timestampMsec < evFrom);
+      tl.setMajor1Records(i, freshEvs.concat(evTail));
+    }));
+    if (gen === pbBuildGen) tl.scheduleDraw();
+  } finally {
+    pbRefreshing = false;
+  }
+}
+
+// loadOlderRecordings extends the recordings list further into the past when
+// the timeline is scrolled left past the oldest loaded segment. The timeline's
+// requestMore callback fires it (repeatedly, per frame while the condition
+// holds); the *Loading/*Done flags keep at most one fetch per camera in flight
+// and stop it once the camera's first-ever segment is loaded. Each step walks
+// the floor back by PB_PAGE_MS whether or not that chunk had data, so a long
+// coverage gap doesn't wedge the loop or re-fetch the same empty window.
+async function loadOlderRecordings(i) {
+  const tl = pbTimeline;
+  if (!tl || pbRecPageLoading[i] || pbRecPageDone[i]) return;
+  const cam = pbCams[i];
+  if (!cam) return;
+  const earliest = pbRecEarliest[i];
+  if (earliest != null && pbRecFloor[i] <= earliest) {
+    pbRecPageDone[i] = true;
+    return;
+  }
+
+  pbRecPageLoading[i] = true;
+  const gen = pbBuildGen;
+  const to = pbRecFloor[i];
+  const from = earliest != null ? Math.max(earliest, to - PB_PAGE_MS) : to - PB_PAGE_MS;
+  const older = await fetchRecordingsRange(cam.id, from, to);
+  if (gen !== pbBuildGen) return; // superseded; state arrays already reset
+
+  const fresh = older.filter((r) => r.timestampMsec < to);
+  if (fresh.length) {
+    const recs = tl.getBackgroundRecords(i) || [];
+    tl.setBackgroundRecords(i, fresh.concat(recs));
+    tl.scheduleDraw();
+  }
+  pbRecFloor[i] = from;
+  // Terminate at the start of history, or after one extra chunk when the extent
+  // is unknown (endpoint failed) so a runaway loop can't form.
+  if (earliest == null || from <= earliest) pbRecPageDone[i] = true;
+  pbRecPageLoading[i] = false;
 }
 
 export async function loadPlaybackBlob(camId, start, duration, opts = {}) {
@@ -185,9 +313,11 @@ export async function buildPlaybackTimeline(filtered) {
   tl.intervalMsec = PB_DEFAULT_INTERVAL;
   tl.setCanvas(canvas);
 
-  const [results, events] = await Promise.all([
+  const buildStart = Date.now();
+  const [results, events, earliests] = await Promise.all([
     Promise.all(filtered.map((c) => fetchRecordings(c.id))),
     Promise.all(filtered.map((c) => fetchEvents(c.id))),
+    Promise.all(filtered.map((c) => fetchRecordingStart(c.id))),
   ]);
   if (myGen !== pbBuildGen) return null;
 
@@ -195,6 +325,14 @@ export async function buildPlaybackTimeline(filtered) {
     tl.setBackgroundRecords(i, results[i]);
     tl.setMajor1Records(i, events[i]);
   }
+
+  // Reset backward-pagination state: the initial fetch loaded [buildStart-24h,
+  // buildStart], so that is the current floor for each camera.
+  pbRecFloor = filtered.map(() => buildStart - 24 * 3600 * 1000);
+  pbRecEarliest = earliests.slice();
+  pbRecPageLoading = filtered.map(() => false);
+  pbRecPageDone = filtered.map(() => false);
+  tl.setRequestMoreBackgroundDataCallback((idx) => { loadOlderRecordings(idx); });
 
   tl.setTimeSelectedCallback((_tlIdx, msec, _record) => {
     for (const cam of pbCams) {
@@ -250,6 +388,11 @@ export async function buildPlaybackTimeline(filtered) {
   if (myGen !== pbBuildGen) return null;
   pbTimeline = tl;
 
+  // Poll the present edge so recordings finalized after this build appear on
+  // the timeline while playing. Cleared in teardownPlaybackTimeline.
+  if (pbRefreshTimer) clearInterval(pbRefreshTimer);
+  pbRefreshTimer = setInterval(refreshTimelineEdge, PB_REFRESH_INTERVAL_MS);
+
   resizePbCanvas();
   tl.draw();
 
@@ -292,6 +435,8 @@ export function teardownPlaybackTimeline() {
   }
   pbBuildGen++;
   pbSelectGen++;
+  if (pbRefreshTimer) { clearInterval(pbRefreshTimer); pbRefreshTimer = null; }
+  pbRefreshing = false;
   killVods();
   pbTimeline = null;
   pbCams = [];
