@@ -208,9 +208,21 @@ export function attachMse(cam, video) {
     };
     sb.addEventListener("updateend", () => {
       if (!sb.updating && video.buffered.length) {
+        // Trim already-played history in small slices kept behind the play head.
+        // The old approach let the buffer grow to 30s then removed ~15s at once:
+        // a large remove (and nearing the SourceBuffer's size cap) briefly
+        // disturbs the buffered range and stalls the <video> once per cycle — the
+        // visible ~30s hiccup. This does NOT affect live latency: the play head
+        // still rides ~TARGET (1.2s) behind the live edge; KEEP_BEHIND is only
+        // retained past frames (memory), not delay. Kept small but above a
+        // typical camera GOP so a remove never deletes the current GOP's
+        // keyframe (which would stall decoding).
+        const KEEP_BEHIND = 6; // seconds of history kept behind the play head
+        const SLICE = 4;       // only trim after this much extra history accrues
         const s = video.buffered.start(0);
-        const e = video.buffered.end(video.buffered.length - 1);
-        if (e - s > 30) { try { sb.remove(s, e - 15); return; } catch {} }
+        if (video.currentTime - s > KEEP_BEHIND + SLICE) {
+          try { sb.remove(s, video.currentTime - KEEP_BEHIND); return; } catch {}
+        }
       }
       if (!started && video.buffered.length) {
         const e = video.buffered.end(video.buffered.length - 1);

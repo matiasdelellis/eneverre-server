@@ -44,6 +44,12 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
+// Unwrap exposes the wrapped ResponseWriter so http.ResponseController can reach
+// the underlying connection — needed by streaming handlers that clear the
+// server's WriteTimeout (e.g. the long-lived live MSE feed) via
+// SetWriteDeadline. Without Unwrap the controller can't see past this recorder.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 // Hijack forwards to the underlying ResponseWriter so WebSocket upgrades (the
 // push-to-talk endpoint) work through the access-log middleware. The connection
 // is taken over by the caller, so the logged status stays at its default (the

@@ -65,6 +65,8 @@ export class Timeline {
     this.timeSelectedCallback = null;
     this.liveCallback = null;
     this.timerSelectedId = 0;
+    this._rafId = 0;   // pending coalesced draw (scheduleDraw)
+    this._animRaf = 0; // in-flight easing animation (setCurrent/IntervalWithAnimation)
     this.isLive = false;
     this._hoverX = null;
     this._hoverMsec = null;
@@ -94,21 +96,41 @@ export class Timeline {
 
   getCurrent() { return this.selectedMsec; }
 
+  // scheduleDraw coalesces repaints to one per animation frame. Rapid callers
+  // (wheel scroll, mousemove hover, the playback cursor tick) can call it freely
+  // without triggering a full canvas rebuild per event — the browser paints at
+  // most once per frame, and nothing runs while the tab is hidden.
+  scheduleDraw() {
+    if (this._rafId) return;
+    this._rafId = requestAnimationFrame(() => {
+      this._rafId = 0;
+      this.draw();
+    });
+  }
+
+  // _animate runs a 150ms easing loop on requestAnimationFrame, calling apply(p)
+  // with p in [0,1]. It replaces the old 10ms setInterval (which repainted ~15
+  // times regardless of the display refresh and kept ticking in a hidden tab).
+  // Only one animation runs at a time (position vs zoom are mutually exclusive
+  // user actions); starting a new one cancels the previous.
+  _animate(apply) {
+    const DURATION_MSEC = 150;
+    if (this._animRaf) cancelAnimationFrame(this._animRaf);
+    let t0 = null;
+    const step = (ts) => {
+      if (t0 === null) t0 = ts;
+      const p = Math.min((ts - t0) / DURATION_MSEC, 1);
+      apply(p);
+      this.draw();
+      this._animRaf = p < 1 ? requestAnimationFrame(step) : 0;
+    };
+    this._animRaf = requestAnimationFrame(step);
+  }
+
   setCurrentWithAnimation(selectedMsec) {
-    const REPEAT_MSEC = 10;
-    const ANIMATION_DURATION_MSEC = 150;
-    const delta = (this.selectedMsec - selectedMsec) / (ANIMATION_DURATION_MSEC / REPEAT_MSEC);
-    let newCurrentMsec = this.selectedMsec;
-    const timerId = setInterval(() => {
-      newCurrentMsec -= delta;
-      this.setCurrent(newCurrentMsec);
-      this.draw();
-    }, REPEAT_MSEC);
-    setTimeout(() => {
-      clearInterval(timerId);
-      this.setCurrent(selectedMsec);
-      this.draw();
-    }, ANIMATION_DURATION_MSEC);
+    const from = this.selectedMsec;
+    const to = Math.min(selectedMsec, Date.now());
+    this._animate((p) => this.setCurrent(from + (to - from) * p));
   }
 
   setCanvas(canvas) { this.canvas = canvas; }
@@ -342,14 +364,13 @@ export class Timeline {
       }
     }
     this.setCurrentWithAnimation(newSelectedXMsec);
-    this.draw();
     this.runTimeSelectedCallbackDelayed();
   }
 
   onScroll(deltaX) {
     const msecInPixels = this.intervalMsec / this.canvas.clientWidth;
     this.setCurrent(this.getCurrent() - msecInPixels * deltaX);
-    this.draw();
+    this.scheduleDraw();
     this.runTimeSelectedCallbackDelayed();
   }
 
@@ -554,20 +575,8 @@ export class Timeline {
   }
 
   setIntervalWithAnimation(interval) {
-    const REPEAT_MSEC = 10;
-    const ANIMATION_DURATION_MSEC = 150;
-    const delta = (this.intervalMsec - interval) / (ANIMATION_DURATION_MSEC / REPEAT_MSEC);
-    let newIntervalMsec = this.intervalMsec;
-    const timerId = setInterval(() => {
-      newIntervalMsec -= delta;
-      this.intervalMsec = newIntervalMsec;
-      this.draw();
-    }, REPEAT_MSEC);
-    setTimeout(() => {
-      clearInterval(timerId);
-      this.intervalMsec = interval;
-      this.draw();
-    }, ANIMATION_DURATION_MSEC);
+    const from = this.intervalMsec;
+    this._animate((p) => { this.intervalMsec = from + (interval - from) * p; });
   }
 
   getInterval() { return this.intervalMsec; }

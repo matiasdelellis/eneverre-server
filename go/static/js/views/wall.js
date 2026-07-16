@@ -63,12 +63,17 @@ function withThumbGrab(cam, video, handle) {
     if (video.paused) return; // paused/off-screen: keep the last pushed frame
     publishLiveThumb(cam.id, captureVideoFrame(video, { maxWidth: 480 }));
   };
-  const kick = setTimeout(grab, 4000); // first frame shortly after the stream starts
-  const iv = setInterval(grab, THUMB_GRAB_MS);
+  // Stagger both the first grab and the steady 15s cadence with a per-tile
+  // random phase, so a wall of N tiles doesn't run N synchronous canvas
+  // toDataURL encodes in the same tick (visible jank). Each tile grabs on its
+  // own offset instead.
+  const jitter = 2000 + Math.random() * THUMB_GRAB_MS;
+  let iv = null;
+  const kick = setTimeout(() => { grab(); iv = setInterval(grab, THUMB_GRAB_MS); }, jitter);
   return {
     destroy() {
       clearTimeout(kick);
-      clearInterval(iv);
+      if (iv) clearInterval(iv);
       try { handle.destroy(); } catch {}
     },
     stopLoad() { try { handle.stopLoad?.(); } catch {} },
@@ -401,7 +406,10 @@ async function applyPlayback(filtered) {
   for (const cam of filtered) {
     const tile = renderWallTile(cam);
     wall.appendChild(tile);
-    tryLoadThumbnail(tile, cam.id);
+    // Only cameras that actually expose a snapshot (Thingino key or snapshot_url)
+    // have a working /thumbnail endpoint; others get their poster from the live
+    // frame grabber, so skip the guaranteed-failing round-trip.
+    if (cam.capabilities?.thumbnail) tryLoadThumbnail(tile, cam.id);
     if (hasRecording(cam)) {
       setTilePlaybackLoading(tile);
       camsWithData.push(cam);
@@ -510,7 +518,7 @@ export async function loadWall(mode = "live") {
         }
       }
       wall.appendChild(tile);
-      tryLoadThumbnail(tile, cam.id);
+      if (cam.capabilities?.thumbnail) tryLoadThumbnail(tile, cam.id);
     }
     updateSidebarActive();
   }

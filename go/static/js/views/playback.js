@@ -346,13 +346,13 @@ export function setupPlaybackBar() {
     const numTL = pbTimeline.options.timelines;
     const rowH = (canvas.clientHeight - OFFSET * 2) / numTL;
     const idx = Math.floor((e.offsetY - OFFSET) / rowH);
-    if (idx < 0 || idx >= numTL) { pbTimeline.clearHover(); pbTimeline.draw(); return; }
+    if (idx < 0 || idx >= numTL) { pbTimeline.clearHover(); pbTimeline.scheduleDraw(); return; }
     const records = pbTimeline.getBackgroundRecords(idx);
-    if (!records || !findRecordAt(records, msec)) { pbTimeline.clearHover(); pbTimeline.draw(); return; }
+    if (!records || !findRecordAt(records, msec)) { pbTimeline.clearHover(); pbTimeline.scheduleDraw(); return; }
     pbTimeline.setHover(e.offsetX, msec);
-    pbTimeline.draw();
+    pbTimeline.scheduleDraw();
   });
-  canvas.addEventListener("mouseleave", () => { pbTimeline?.clearHover(); pbTimeline?.draw(); });
+  canvas.addEventListener("mouseleave", () => { pbTimeline?.clearHover(); pbTimeline?.scheduleDraw(); });
 
   // ----- Play / pause -----
   playBtn.addEventListener("click", () => {
@@ -612,6 +612,17 @@ function hideTileGapOverlay(tile) {
   if (overlay) overlay.hidden = true;
 }
 
+// vodMaxBufferLength caps how many seconds each tile's HLS controller buffers
+// ahead. With many cameras playing at once, N decoders each holding 30s of
+// buffered frames is heavy on memory and the decoder pool, so shrink the buffer
+// as the grid grows; a few cameras keep the generous buffer for smoother review.
+function vodMaxBufferLength() {
+  const n = pbCams.length || 1;
+  if (n >= 9) return 8;
+  if (n >= 4) return 15;
+  return 30;
+}
+
 // reinitTileVideo rebuilds the HLS instance for one tile so playback
 // resumes at cursorMsec (the cursor's current wall-clock). The existing
 // video element is reused; only the HLS controller is torn down and a
@@ -624,9 +635,10 @@ function reinitTileVideo(tile, cam, cursorMsec) {
 
   const video = tile.querySelector("video");
   if (!video) return;
+  if (!window.Hls || !Hls.isSupported()) return; // defensive: same guard startVodPlayback uses
 
   const hls = new Hls({
-    maxBufferLength: 30,
+    maxBufferLength: vodMaxBufferLength(),
     xhrSetup: (xhr) => { const t = token(); if (t) xhr.setRequestHeader("Authorization", `Bearer ${t}`); },
   });
   hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
@@ -680,7 +692,7 @@ export function startVodPlayback(cams, startMsec) {
     tile.dataset.mode = "playback";
 
     const hls = new Hls({
-      maxBufferLength: 30,
+      maxBufferLength: vodMaxBufferLength(),
       xhrSetup: (xhr) => { const t = token(); if (t) xhr.setRequestHeader("Authorization", `Bearer ${t}`); },
     });
     hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
@@ -718,7 +730,7 @@ function startVodCursor() {
 
     const cursorMsec = vodPlaybackStartMsec + (Date.now() - vodPlaybackStartTime);
     pbTimeline.setCurrent(cursorMsec);
-    pbTimeline.draw();
+    pbTimeline.scheduleDraw();
 
     for (let i = 0; i < pbCams.length; i++) {
       const cam = pbCams[i];
