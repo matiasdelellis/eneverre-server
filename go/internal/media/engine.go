@@ -65,6 +65,7 @@ type Options struct {
 	RecordPath      string        // segment path pattern (default <RecordDir>/%path/%Y-%m-%d/%H/<time>)
 	SegmentDuration time.Duration // min segment length (default 60s)
 	PartDuration    time.Duration // fMP4 fragment length (default 1s)
+	MaxPartSize     uint64        // max fMP4 part size in bytes (default 50 MiB)
 	Retain          time.Duration // delete recordings older than this; 0 = keep forever
 	RTSPAddress     string        // relay listen address (default ":8554")
 	Transport       string        // RTSP source transport: auto|tcp|udp (default auto)
@@ -83,6 +84,7 @@ func DefaultOptions() Options {
 		MSEEnabled:   true,
 		RelayEnabled: true,
 		// RecordEnabled: false (zero value) — recording is off by default.
+		MaxPartSize: 50 * 1024 * 1024,
 		RTSPAddress: ":8554",
 		Transport:   "auto",
 	}
@@ -108,6 +110,7 @@ func OptionsFromSection(sec config.Section) Options {
 	o.RecordPath = sec.Get("record_path", filepath.Join(recordDir, "%path", "%Y-%m-%d", "%H", "%Y-%m-%d_%H-%M-%S-%f"))
 	o.SegmentDuration = durationOr(sec.Get("segment_duration", ""), 60*time.Second)
 	o.PartDuration = durationOr(sec.Get("part_duration", ""), time.Second)
+	o.MaxPartSize = sizeOr(sec.Get("max_part_size", ""), 50*1024*1024)
 	o.Retain = durationOr(sec.Get("retain", ""), 0)
 	o.RTSPAddress = sec.Get("rtsp_address", ":8554")
 	o.Transport = sec.Get("transport", "auto")
@@ -124,6 +127,20 @@ func durationOr(s string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// sizeOr parses a byte size ("50M", "1G", or a plain byte count; base 1024),
+// falling back to def on missing or invalid input. Mirrors durationOr.
+func sizeOr(s string, def uint64) uint64 {
+	if s == "" {
+		return def
+	}
+	n, err := config.ParseSize(s)
+	if err != nil || n <= 0 {
+		slog.Warn("media: invalid size, using default", "value", s, "default", def)
+		return def
+	}
+	return uint64(n)
 }
 
 // Engine supervises recording, live relay/broadcast and playback for all cameras.
@@ -520,6 +537,7 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 		SegmentDuration: e.opts.SegmentDuration,
 		Record:          record,
 		PartDuration:    e.opts.PartDuration,
+		MaxPartSize:     e.opts.MaxPartSize,
 		Logf:            func(f string, a ...any) { slog.Debug("media/recorder[" + id + "]: " + fmt.Sprintf(f, a...)) },
 		OnSegment: func(s recorder.SegmentInfo) {
 			// Hand off to the async indexer so the WAL fsync never runs under the

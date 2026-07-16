@@ -327,6 +327,10 @@ func (c *Config) ServerReadTimeout() time.Duration {
 	return 5 * time.Minute
 }
 
+// ParseSize is the exported form of parseSize: a decimal byte count with an
+// optional K/M/G suffix (case-insensitive, base 1024), e.g. "50M" -> 52428800.
+func ParseSize(s string) (int64, error) { return parseSize(s) }
+
 // parseSize accepts a decimal byte count with an optional K/M/G suffix
 // (case-insensitive, base 1024). Empty or unparseable input returns 0 +
 // error so the caller can fall through to the next precedence layer.

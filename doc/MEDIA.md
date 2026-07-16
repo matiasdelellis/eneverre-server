@@ -203,7 +203,8 @@ record_dir       = /var/lib/eneverre/recordings
 ;index_path      = /var/lib/eneverre/recordings/index.db
 ;record_path     = /var/lib/eneverre/recordings/%path/%Y-%m-%d/%H/%Y-%m-%d_%H-%M-%S-%f
 segment_duration = 60s
-part_duration    = 1s
+part_duration    = 1s          ; recovery-point objective (crash loses ≤ this)
+;max_part_size   = 50M         ; force a part out past this size (K/M/G, base 1024)
 retain           = 240h        ; 0 = keep forever
 rtsp_address     = :8554       ; RTSP relay listen address
 ;rtsp_host       = nvr.example.com  ; public host; only then is `rtsp` exposed

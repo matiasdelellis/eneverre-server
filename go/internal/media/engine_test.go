@@ -6,7 +6,37 @@ import (
 	"time"
 
 	"eneverre/internal/camera"
+	"eneverre/internal/config"
 )
+
+// max_part_size is parsed from [media] with a K/M/G suffix, falling back to the
+// 50 MiB default when absent or invalid.
+func TestOptionsMaxPartSize(t *testing.T) {
+	const def = uint64(50 * 1024 * 1024)
+	cases := []struct {
+		name string
+		sec  config.Section
+		want uint64
+	}{
+		{"absent", config.Section{}, def},
+		{"megabytes", config.Section{"max_part_size": "10M"}, 10 * 1024 * 1024},
+		{"gigabytes", config.Section{"max_part_size": "1G"}, 1024 * 1024 * 1024},
+		{"plain bytes", config.Section{"max_part_size": "1048576"}, 1024 * 1024},
+		{"invalid falls back", config.Section{"max_part_size": "notasize"}, def},
+		{"zero falls back", config.Section{"max_part_size": "0"}, def},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := OptionsFromSection(c.sec).MaxPartSize; got != c.want {
+				t.Fatalf("MaxPartSize = %d, want %d", got, c.want)
+			}
+		})
+	}
+
+	if got := DefaultOptions().MaxPartSize; got != def {
+		t.Fatalf("DefaultOptions MaxPartSize = %d, want %d", got, def)
+	}
+}
 
 // TestCamCtrlPauseResume exercises the retry-loop pause control the privacy
 // endpoint drives: waitWhilePaused blocks while paused and unblocks on resume,
