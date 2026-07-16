@@ -384,22 +384,77 @@ func (e *Engine) AddCamera(cam camera.Camera) (camera.Features, bool) {
 	if exists {
 		return f, false
 	}
-	// Before the recorder starts writing (so no live writer races the scan of
-	// this camera's directories), re-index any segment a previous run's hard
-	// crash left on disk but never indexed. Cheap: it walks only forward from
-	// the last indexed segment, not the whole tree.
 	if f.Record && e.idx != nil {
-		n, dur, rerr := recovery.Recover(e.idx, e.opts.RecordPath, cam.ID, e.opts.SegmentDuration,
-			func(fm string, a ...any) { slog.Debug("media/recovery[" + cam.ID + "]: " + fmt.Sprintf(fm, a...)) })
-		switch {
-		case rerr != nil:
-			slog.Warn("media/recovery failed", "camera", cam.ID, "err", rerr)
-		case n > 0:
-			slog.Info("media/recovery recovered orphaned segments", "camera", cam.ID, "count", n, "total_s", dur.Seconds())
-		}
+		e.recoverCamera(cam.ID)
 	}
 	e.startCamera(cam, f.MSE, f.Relay, f.Record)
 	return f, true
+}
+
+// recoverCamera re-indexes segments left on disk without an index row, before
+// the camera's recorder starts writing. It picks the cheap or the thorough path
+// by whether the camera already has index rows:
+//
+//   - rows present → a hard crash may have orphaned the newest segment(s). Run
+//     the cheap forward scan synchronously (bounded to a few directories at the
+//     tail; see recovery.Recover).
+//   - no rows → either a fresh install (footage absent → instant no-op) or a
+//     lost/corrupt index (footage on disk, no rows). Rebuild the whole subtree
+//     in the background so recording starts immediately; the walk is idempotent
+//     and safe alongside the live recorder.
+func (e *Engine) recoverCamera(id string) {
+	logf := func(fm string, a ...any) { slog.Debug("media/recovery[" + id + "]: " + fmt.Sprintf(fm, a...)) }
+	tl, err := e.idx.Timeline(id)
+	if err != nil {
+		slog.Warn("media/recovery timeline failed", "camera", id, "err", err)
+		return
+	}
+	if tl.Count > 0 {
+		n, dur, rerr := recovery.Recover(e.idx, e.opts.RecordPath, id, e.opts.SegmentDuration, logf)
+		switch {
+		case rerr != nil:
+			slog.Warn("media/recovery failed", "camera", id, "err", rerr)
+		case n > 0:
+			slog.Info("media/recovery recovered orphaned segments", "camera", id, "count", n, "total_s", dur.Seconds())
+		}
+		return
+	}
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		n, dur, rerr := recovery.Reindex(e.ctx, e.idx, e.opts.RecordPath, id, logf)
+		switch {
+		case rerr != nil:
+			slog.Warn("media/reindex failed", "camera", id, "err", rerr)
+		case n > 0:
+			slog.Info("media/reindex rebuilt index from disk", "camera", id, "count", n, "total_s", dur.Seconds())
+		}
+	}()
+}
+
+// ReindexAll rebuilds the index for every recording camera with a full disk
+// walk, synchronously. Unlike the automatic startup recovery, it does not skip
+// cameras that already have index rows — so it also repairs PARTIAL index
+// corruption. Intended for the --reindex operator flag; run before Start so the
+// subsequent per-camera recovery sees a populated index and takes its cheap path.
+func (e *Engine) ReindexAll(cams []camera.Camera) {
+	if e.idx == nil {
+		return
+	}
+	for _, cam := range cams {
+		f := cam.ResolveFeatures(e.opts.MSEEnabled, e.opts.RelayEnabled, e.opts.RecordEnabled)
+		if cam.Source == "" || !f.Record {
+			continue
+		}
+		logf := func(fm string, a ...any) { slog.Debug("media/reindex[" + cam.ID + "]: " + fmt.Sprintf(fm, a...)) }
+		n, dur, err := recovery.Reindex(e.ctx, e.idx, e.opts.RecordPath, cam.ID, logf)
+		switch {
+		case err != nil:
+			slog.Warn("media/reindex failed", "camera", cam.ID, "err", err)
+		default:
+			slog.Info("media/reindex complete", "camera", cam.ID, "recovered", n, "total_s", dur.Seconds())
+		}
+	}
 }
 
 // RemoveCamera stops and detaches a camera from the running engine: it cancels

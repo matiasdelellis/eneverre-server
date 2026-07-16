@@ -213,6 +213,10 @@ func main() {
 	if err != nil {
 		fatal("media engine init failed", "err", err)
 	}
+	if opts.reindex {
+		slog.Info("reindex requested: rebuilding recording index from disk before start")
+		engine.ReindexAll(cams)
+	}
 	engine.Start(cams)
 
 	app := server.New(cfg, db, creds, camStore, cams, uiFS, opts.staticCacheControl,
@@ -322,6 +326,7 @@ type cliOptions struct {
 	staticCacheControl string
 	accessTTLHours     int
 	refreshTTLDays     int
+	reindex            bool
 }
 
 // parseFlags wires up the flag set, parses os.Args[1:], and returns the
@@ -362,6 +367,7 @@ func parseFlags() (cliOptions, func()) {
 	// Behavior
 	fs.StringVar(&opts.logLevel, "log-level", "", "log level: debug, info, warn, error")
 	fs.BoolVar(&opts.noCache, "no-cache", false, "send Cache-Control: no-store on static assets (forces a fresh download on every page load)")
+	fs.BoolVar(&opts.reindex, "reindex", false, "rebuild the recording index from segments on disk before starting (recover from a lost or corrupt index)")
 	// Token lifetimes (0 = unset -> env / [auth] / default)
 	fs.IntVar(&opts.accessTTLHours, "access-token-ttl-hours", 0, "access token lifetime in hours (overrides env / [auth]; default 24)")
 	fs.IntVar(&opts.refreshTTLDays, "refresh-token-ttl-days", 0, "refresh token lifetime in days (overrides env / [auth]; default 90)")

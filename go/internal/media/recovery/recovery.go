@@ -25,9 +25,12 @@ package recovery
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -178,6 +181,92 @@ func Recover(idx *index.Index, recordPath, camera string, segmentDuration time.D
 	}
 
 	return recovered, total, nil
+}
+
+// Reindex rebuilds the index for one camera by walking its ENTIRE recording
+// subtree and inserting every segment not already indexed. Unlike Recover (a
+// cheap forward scan for crash orphans), this is a full walk — meant for
+// recovering from a lost or corrupt index, where the watermark is gone and
+// footage on disk is otherwise invisible. Inserts are idempotent
+// (INSERT OR REPLACE by path), so it is safe to run alongside the live recorder
+// and to re-run. It honours ctx for cancellation (e.g. shutdown) and never
+// aborts on a single unreadable file — only skips it.
+func Reindex(ctx context.Context, idx *index.Index, recordPath, camera string, logf func(string, ...any)) (recovered int, total time.Duration, err error) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	root := cameraRoot(recordPath, camera)
+
+	// Everything already indexed for this camera — skipped without opening.
+	existing, err := idx.Range(camera, nil, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("range: %w", err)
+	}
+	indexed := make(map[string]struct{}, len(existing))
+	for _, s := range existing {
+		indexed[s.Fpath] = struct{}{}
+	}
+
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, werr error) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if werr != nil {
+			// Missing subtree = no footage; other per-entry errors are logged but
+			// must not abort the whole rebuild.
+			if !errors.Is(werr, fs.ErrNotExist) {
+				logf("walk %s: %v", path, werr)
+			}
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".mp4") {
+			return nil
+		}
+		if _, ok := indexed[path]; ok {
+			return nil
+		}
+		seg, perr := probe(path, camera)
+		if perr != nil {
+			// A file still being written (the live recorder's open segment) or a
+			// truncated one can't be parsed yet; the recorder indexes it at close.
+			logf("skip unreadable %s: %v", path, perr)
+			return nil
+		}
+		if ierr := idx.Insert(seg); ierr != nil {
+			logf("index insert %s: %v", path, ierr)
+			return nil
+		}
+		recovered++
+		total += time.Duration(seg.Duration * float64(time.Second))
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, fs.ErrNotExist) {
+		return recovered, total, walkErr
+	}
+	return recovered, total, nil
+}
+
+// cameraRoot returns the directory subtree that holds one camera's segments,
+// derived from the record-path format by substituting the camera id into the
+// %path component. For the default layout `<dir>/%path/%Y-.../…` this is
+// `<dir>/<camera>`, so a rebuild walks only that camera. If %path is not a clean
+// directory component (unusual custom layout), it falls back to the fixed prefix
+// (the whole record root), which still works — just less selectively.
+func cameraRoot(recordPath, camera string) string {
+	sep := string(filepath.Separator)
+	parts := strings.Split(recordPath, sep)
+	for i, p := range parts {
+		if strings.Contains(p, "%path") {
+			if p == "%path" {
+				parts[i] = camera
+				return strings.Join(parts[:i+1], sep)
+			}
+			break // %path shares a component with other specifiers — can't isolate
+		}
+	}
+	return recstore.CommonPath(recordPath)
 }
 
 // probe reads a segment file and derives its index row: start/StreamID/segment

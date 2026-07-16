@@ -122,6 +122,28 @@ crash are always the newest segment(s), so it walks only **forward** from the
 last indexed segment (stopping after a few empty directories), never the whole
 tree. A ten-day tree of one-minute files costs a handful of `readdir`s.
 
+### Rebuilding a lost or corrupt index
+
+The crash recovery above assumes the index still knows where recording left off.
+If the index file itself is lost or corrupted, that anchor is gone and every
+segment on disk becomes invisible. Two paths rebuild it from the segments
+themselves (each carries its own start/stream/segment/duration, so the disk is
+the source of truth):
+
+- **Automatic** — when a recording camera starts with **no** index rows (a
+  recreated index, or footage copied in), the engine walks that camera's whole
+  subtree and re-indexes it. This runs in the **background** so recording starts
+  immediately, and is idempotent, so it is safe alongside the live recorder. A
+  fresh install with no footage is an instant no-op.
+- **`--reindex`** — start the binary once with this flag to force a full rebuild
+  of every recording camera before serving. Unlike the automatic path it does
+  **not** skip cameras that still have some rows, so it also repairs *partial*
+  corruption. It rebuilds only what is missing (existing rows are kept), then the
+  binary continues starting normally.
+
+Both walk the full tree, so they are reserved for the index-loss case — normal
+startup uses only the cheap forward crash scan.
+
 ## Codec support
 
 **Video: H264 or H265/HEVC. Audio: AAC or G711** (G711 is transcoded to LPCM for

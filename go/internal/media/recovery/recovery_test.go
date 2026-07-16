@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -216,5 +217,84 @@ func TestRecoverIdempotent(t *testing.T) {
 	}
 	if n, _, err := Recover(idx, recordPath, "cam1", 60*time.Second, nil); err != nil || n != 0 {
 		t.Fatalf("second Recover: n=%d err=%v, want 0/nil", n, err)
+	}
+}
+
+// With a lost index (empty), Reindex walks the whole camera subtree and rebuilds
+// every segment — including old footage the forward crash-scan would never reach.
+func TestReindexRebuildsFromEmptyIndex(t *testing.T) {
+	dir := t.TempDir()
+	recordPath := filepath.Join(dir, testRecordPathTail)
+	fmtExt := recstore.PathAddExtension(recordPath)
+
+	idx, err := index.Open(filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+
+	stream := uuid.New()
+	// Three segments spread across two days and different hours — far older than
+	// any watermark window, so only a full walk finds them.
+	starts := []time.Time{
+		time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 14, 22, 30, 0, 0, time.UTC),
+		time.Date(2026, 7, 15, 8, 15, 0, 0, time.UTC),
+	}
+	for i, st := range starts {
+		p := recstore.Path{Start: st, Path: "cam1"}.Encode(fmtExt)
+		writeSegment(t, p, stream, uint64(i), st, 60, 90000/30) // 2s each
+	}
+
+	n, total, err := Reindex(context.Background(), idx, recordPath, "cam1", func(f string, a ...any) { t.Logf(f, a...) })
+	if err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("rebuilt %d segments, want 3", n)
+	}
+	if total < 5900*time.Millisecond || total > 6100*time.Millisecond {
+		t.Fatalf("total = %v, want ~6s", total)
+	}
+
+	segs, err := idx.Range("cam1", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 3 {
+		t.Fatalf("index has %d segments, want 3", len(segs))
+	}
+	// Rebuilt in chronological order with the right stream id.
+	for i, s := range segs {
+		if !s.Start.Equal(starts[i]) {
+			t.Errorf("seg %d start = %v, want %v", i, s.Start.UTC(), starts[i])
+		}
+		if s.StreamID != stream.String() {
+			t.Errorf("seg %d streamID = %q, want %q", i, s.StreamID, stream.String())
+		}
+	}
+
+	// Idempotent: a second run indexes nothing new.
+	if n, _, err := Reindex(context.Background(), idx, recordPath, "cam1", nil); err != nil || n != 0 {
+		t.Fatalf("second Reindex: n=%d err=%v, want 0/nil", n, err)
+	}
+}
+
+// Reindex on a camera with no footage on disk is a clean no-op (fresh install).
+func TestReindexNoFootage(t *testing.T) {
+	dir := t.TempDir()
+	recordPath := filepath.Join(dir, testRecordPathTail)
+	idx, err := index.Open(filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+
+	n, total, err := Reindex(context.Background(), idx, recordPath, "cam1", nil)
+	if err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if n != 0 || total != 0 {
+		t.Fatalf("n=%d total=%v, want 0/0", n, total)
 	}
 }
