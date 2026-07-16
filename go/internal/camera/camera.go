@@ -163,12 +163,16 @@ type Spec struct {
 }
 
 // Camera expands a Spec into the public Camera model, deriving capabilities
-// exactly as the INI loader historically did: Thumbnail follows a thingino API
-// key, Talk follows a backchannel URL, PTZ/Playback/Privacy come straight from
-// the spec. The live-privacy state and engine stream URLs are left at their
-// zero values; the server fills them per request.
+// exactly as the INI loader historically did: Thumbnail follows a thingino
+// firmware endpoint (url + key) or a snapshot URL, Talk follows a backchannel
+// URL, PTZ/Playback/Privacy come straight from the spec. The live-privacy state
+// and engine stream URLs are left at their zero values; the server fills them
+// per request.
 func (s Spec) Camera() Camera {
-	hasAPIKey := s.ThinginoAPIKey != ""
+	// The thumbnail handler's thingino path needs BOTH the base URL and the API
+	// key; advertise the capability on the same condition so it never claims a
+	// thumbnail the endpoint would answer 404 for.
+	hasThinginoThumb := s.ThinginoURL != "" && s.ThinginoAPIKey != ""
 	return Camera{
 		ID:       s.ID,
 		Name:     s.Name,
@@ -176,9 +180,9 @@ func (s Spec) Camera() Camera {
 		Location: s.Location,
 		Capabilities: Capabilities{
 			Privacy: s.Privacy,
-			// A thumbnail is available from a Thingino API key or any camera's own
-			// snapshot URL (proxied without decode).
-			Thumbnail: hasAPIKey || s.SnapshotURL != "",
+			// A thumbnail is available from a Thingino firmware endpoint or any
+			// camera's own snapshot URL (proxied without decode).
+			Thumbnail: hasThinginoThumb || s.SnapshotURL != "",
 			Playback:  s.Playback,
 			PTZ:       s.PTZ,
 			Talk:      s.Backchannel != "",

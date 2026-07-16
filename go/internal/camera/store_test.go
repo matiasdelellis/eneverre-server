@@ -188,6 +188,19 @@ func TestStoreSnapshotURL(t *testing.T) {
 	if p.Capabilities.Thumbnail {
 		t.Error("camera without snapshot_url or Thingino key must not advertise thumbnail")
 	}
+
+	// A Thingino API key WITHOUT a thingino_url must not advertise thumbnail:
+	// the handler's firmware path needs both, so a key alone would 404.
+	keyOnly := sampleSpec()
+	keyOnly.ID = "keyonly"
+	keyOnly.ThinginoAPIKey = "k"
+	if _, err := st.Create(keyOnly, 3); err != nil {
+		t.Fatalf("Create keyonly: %v", err)
+	}
+	ko, _, _ := st.Get("keyonly")
+	if ko.Capabilities.Thumbnail {
+		t.Error("Thingino API key without thingino_url must not advertise thumbnail")
+	}
 }
 
 func TestStoreCapabilitiesDerived(t *testing.T) {
