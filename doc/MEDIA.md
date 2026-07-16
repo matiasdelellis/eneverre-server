@@ -101,6 +101,27 @@ For every camera that has a `source` RTSP URL, the engine:
 It is a single binary and a single systemd unit — no separate streamer to
 install, configure or supervise.
 
+### Crash recovery
+
+A segment is added to the SQLite index when it closes. Graceful stops (source
+disconnect, `SIGTERM`) finalize and index the in-progress segment too, so its
+footage is never lost. A **hard** crash — power loss, OOM-kill (`SIGKILL`),
+panic — skips that path: the fMP4 parts are already on disk, but no index row
+exists, so playback can't see them.
+
+At startup, before each recording camera's recorder connects, the engine
+re-indexes any such orphaned segment. Every segment file carries its start time,
+stream id and segment number in its `mtxi` box, and its real duration is summed
+from its fragments, so a single file yields everything the index needs (the
+unwritten `mvhd` duration is ignored). Recovery of the in-progress segment is
+therefore bounded to at most `part_duration` of un-flushed data lost to the
+crash — the recovery-point objective.
+
+The scan is cheap and independent of how much footage exists: orphans from a
+crash are always the newest segment(s), so it walks only **forward** from the
+last indexed segment (stopping after a few empty directories), never the whole
+tree. A ten-day tree of one-minute files costs a handful of `readdir`s.
+
 ## Codec support
 
 **Video: H264 or H265/HEVC. Audio: AAC or G711** (G711 is transcoded to LPCM for

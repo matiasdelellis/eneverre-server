@@ -34,6 +34,7 @@ import (
 	"eneverre/internal/media/liverelay"
 	"eneverre/internal/media/playback"
 	"eneverre/internal/media/recorder"
+	"eneverre/internal/media/recovery"
 	"eneverre/internal/media/retention"
 )
 
@@ -382,6 +383,20 @@ func (e *Engine) AddCamera(cam camera.Camera) (camera.Features, bool) {
 	e.mu.RUnlock()
 	if exists {
 		return f, false
+	}
+	// Before the recorder starts writing (so no live writer races the scan of
+	// this camera's directories), re-index any segment a previous run's hard
+	// crash left on disk but never indexed. Cheap: it walks only forward from
+	// the last indexed segment, not the whole tree.
+	if f.Record && e.idx != nil {
+		n, dur, rerr := recovery.Recover(e.idx, e.opts.RecordPath, cam.ID, e.opts.SegmentDuration,
+			func(fm string, a ...any) { slog.Debug("media/recovery[" + cam.ID + "]: " + fmt.Sprintf(fm, a...)) })
+		switch {
+		case rerr != nil:
+			slog.Warn("media/recovery failed", "camera", cam.ID, "err", rerr)
+		case n > 0:
+			slog.Info("media/recovery recovered orphaned segments", "camera", cam.ID, "count", n, "total_s", dur.Seconds())
+		}
 	}
 	e.startCamera(cam, f.MSE, f.Relay, f.Record)
 	return f, true
