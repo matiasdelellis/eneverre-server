@@ -356,7 +356,11 @@ paths:
   /api/camera/{camera_id}/thumbnail:
     get:
       summary: JPEG snapshot of the camera
-      description: Proxies the Thingino snapshot. Requires a configured thingino_api_key.
+      description: >-
+        Returns a still image for the camera. For Thingino cameras it proxies the
+        firmware snapshot (needs a configured thingino_api_key); for any other
+        camera it proxies the configured `snapshot_url` (the camera's own JPEG
+        endpoint). 404 when the camera has neither configured.
       parameters:
         - $ref: '#/components/parameters/camera_id'
       responses:

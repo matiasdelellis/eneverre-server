@@ -3,16 +3,19 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -937,21 +940,76 @@ func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"privacy": enable})
 }
 
+// maxSnapshotBytes caps a proxied camera snapshot so a misbehaving endpoint
+// can't stream an unbounded body into memory. A still JPEG is far smaller.
+const maxSnapshotBytes = 8 << 20 // 8 MiB
+
+// snapshotClient fetches camera snapshot URLs with a bounded timeout so a slow
+// or hung camera can't tie up the handler goroutine.
+var snapshotClient = &http.Client{Timeout: 10 * time.Second}
+
 func (a *App) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	if a.requireUser(w, r) == nil {
 		return
 	}
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
-	if !ok || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
+	if !ok {
 		httpError(w, http.StatusNotFound, "Camera not found")
 		return
 	}
-	content, err := thingino.Thumb(cam.ThinginoURL, cam.ThinginoAPIKey)
-	if err != nil {
-		thinginoError(w, err)
-		return
+	switch {
+	case cam.ThinginoURL != "" && cam.ThinginoAPIKey != "":
+		// Thingino: the firmware API serves the JPEG.
+		content, err := thingino.Thumb(cam.ThinginoURL, cam.ThinginoAPIKey)
+		if err != nil {
+			thinginoError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	case cam.SnapshotURL != "":
+		// Any other camera with its own still-JPEG endpoint: proxy it verbatim.
+		// No decode/transcode — the camera already produced the image.
+		content, ct, err := fetchSnapshot(r.Context(), cam.SnapshotURL)
+		if err != nil {
+			slog.Warn("camera snapshot fetch failed", "camera", cam.ID, "err", err)
+			httpError(w, http.StatusBadGateway, "Snapshot unavailable")
+			return
+		}
+		w.Header().Set("Content-Type", ct)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	default:
+		// Camera exists but offers no snapshot (no Thingino key, no snapshot_url).
+		httpError(w, http.StatusNotFound, "Camera not found")
 	}
-	w.Header().Set("Content-Type", "image/jpeg")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(content)
+}
+
+// fetchSnapshot GETs a camera's own snapshot URL and returns the body and an
+// image content-type. Bounded by snapshotClient's timeout and maxSnapshotBytes.
+// The URL is admin-configured (same trust as the RTSP source / Thingino URL).
+func fetchSnapshot(ctx context.Context, url string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := snapshotClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("upstream status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSnapshotBytes))
+	if err != nil {
+		return nil, "", err
+	}
+	// Trust an image/* content-type from the camera; default to JPEG otherwise.
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "image/") {
+		ct = "image/jpeg"
+	}
+	return body, ct, nil
 }

@@ -74,6 +74,14 @@ type Camera struct {
 	// credentials never leak in responses.
 	Source string `json:"-"`
 
+	// SnapshotURL is an HTTP(S) endpoint on the camera that returns a still JPEG
+	// (many non-Thingino cameras expose one, e.g. an ONVIF/CGI snapshot path). When
+	// set, /api/camera/{id}/thumbnail proxies it — giving non-Thingino cameras a
+	// server snapshot without any decode/transcode. May carry credentials, so it
+	// is json:"-" (never leaked in the public model). Thingino cameras use their
+	// firmware API instead and ignore this.
+	SnapshotURL string `json:"-"`
+
 	// Transport overrides the embedded engine's RTSP source transport for this
 	// camera: "tcp" | "udp" | "auto". Read from the INI `transport` key; empty
 	// means use the global [media] transport. Useful to force TCP on a lossy
@@ -131,6 +139,10 @@ type Spec struct {
 	Source      string `json:"source"`
 	Backchannel string `json:"backchannel"`
 	Transport   string `json:"transport"`
+	// SnapshotURL is the camera's own still-JPEG HTTP endpoint, proxied by the
+	// thumbnail route for non-Thingino cameras. Returned by the admin config
+	// endpoint (may carry credentials) so the edit form can prefill it.
+	SnapshotURL string `json:"snapshot_url"`
 
 	Record   bool `json:"record"`
 	MSE      bool `json:"mse"`
@@ -163,8 +175,10 @@ func (s Spec) Camera() Camera {
 		Comment:  s.Comment,
 		Location: s.Location,
 		Capabilities: Capabilities{
-			Privacy:   s.Privacy,
-			Thumbnail: hasAPIKey,
+			Privacy: s.Privacy,
+			// A thumbnail is available from a Thingino API key or any camera's own
+			// snapshot URL (proxied without decode).
+			Thumbnail: hasAPIKey || s.SnapshotURL != "",
 			Playback:  s.Playback,
 			PTZ:       s.PTZ,
 			Talk:      s.Backchannel != "",
@@ -172,6 +186,7 @@ func (s Spec) Camera() Camera {
 		RTSP:           s.Source,
 		Backchannel:    s.Backchannel,
 		Source:         s.Source,
+		SnapshotURL:    s.SnapshotURL,
 		Transport:      s.Transport,
 		Record:         s.Record,
 		MSE:            s.MSE,
@@ -256,6 +271,7 @@ func loadSpec(path string) (Spec, bool) {
 
 	source := strings.TrimSpace(cam.Key("source").String())
 	backchannel := strings.TrimSpace(cam.Key("backchannel").String())
+	snapshotURL := strings.TrimSpace(cam.Key("snapshot_url").String())
 	transport := strings.ToLower(strings.TrimSpace(cam.Key("transport").String()))
 	// Default to true: cameras with a Source are recorded. A per-camera
 	// `record = false` opts out of disk writing (the live pipeline keeps
@@ -282,6 +298,7 @@ func loadSpec(path string) (Spec, bool) {
 		Location:       cam.Key("location").String(),
 		Source:         source,
 		Backchannel:    backchannel,
+		SnapshotURL:    snapshotURL,
 		Transport:      transport,
 		Record:         record,
 		MSE:            mse,

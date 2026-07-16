@@ -78,6 +78,7 @@ var schema = []string{
 		location TEXT NOT NULL DEFAULT '',
 		source TEXT NOT NULL DEFAULT '',
 		backchannel TEXT NOT NULL DEFAULT '',
+		snapshot_url TEXT NOT NULL DEFAULT '',
 		transport TEXT NOT NULL DEFAULT '',
 		record INTEGER NOT NULL DEFAULT 1,
 		mse INTEGER NOT NULL DEFAULT 1,
@@ -194,6 +195,9 @@ func migrateColumns(db *sql.DB) error {
 		// refresh secret + its own expiry; device-flow tokens leave them NULL.
 		{"tokens", "refresh_token", "TEXT"},
 		{"tokens", "refresh_expires_at", "INTEGER"},
+		// Generic per-camera still-JPEG URL, proxied by the thumbnail route so
+		// non-Thingino cameras get a snapshot. Older DBs predate the column.
+		{"cameras", "snapshot_url", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, m := range migrations {
 		exists, err := tableExists(db, m.table)

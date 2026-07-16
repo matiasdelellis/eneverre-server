@@ -366,6 +366,10 @@
           <label><span data-i18n="wizard.backchannel">Backchannel URL (two-way audio)</span>
             <input name="backchannel" data-i18n-placeholder="wizard.backchannel_placeholder" placeholder="rtsp://user:pass@192.168.1.50:554/ch0" />
           </label>
+          <label><span data-i18n="wizard.snapshot_url">Snapshot URL (still JPEG)</span>
+            <input name="snapshot_url" data-i18n-placeholder="wizard.snapshot_url_placeholder" placeholder="http://user:pass@192.168.1.50/snapshot.jpg" />
+            <small class="muted" data-i18n="wizard.snapshot_url_hint">Optional. The camera's own JPEG endpoint (ONVIF/CGI). Enables thumbnails for non-Thingino cameras; proxied by the server, never exposed to clients.</small>
+          </label>
         </div>
 
         <!-- Step 4: thingino (optional) -->

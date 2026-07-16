@@ -27,7 +27,7 @@ func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
 // camColumns is the column list shared by List and Get so the scan order can
 // never drift from the SELECT.
-const camColumns = `id, name, comment, location, source, backchannel, transport,
+const camColumns = `id, name, comment, location, source, backchannel, snapshot_url, transport,
 	record, mse, relay, privacy, playback, width, height,
 	thingino_url, thingino_api_key, ptz, home_x, home_y, privacy_x, privacy_y`
 
@@ -35,7 +35,7 @@ const camColumns = `id, name, comment, location, source, backchannel, transport,
 func scanSpec(scan func(dest ...any) error) (Spec, error) {
 	var s Spec
 	err := scan(
-		&s.ID, &s.Name, &s.Comment, &s.Location, &s.Source, &s.Backchannel, &s.Transport,
+		&s.ID, &s.Name, &s.Comment, &s.Location, &s.Source, &s.Backchannel, &s.SnapshotURL, &s.Transport,
 		&s.Record, &s.MSE, &s.Relay, &s.Privacy, &s.Playback, &s.Width, &s.Height,
 		&s.ThinginoURL, &s.ThinginoAPIKey, &s.PTZ, &s.HomeX, &s.HomeY, &s.PrivacyX, &s.PrivacyY,
 	)
@@ -131,12 +131,12 @@ func (st *Store) Create(s Spec, createdAt int64) (Camera, error) {
 
 	if _, err := tx.Exec(
 		`INSERT INTO cameras (
-			id, name, comment, location, source, backchannel, transport,
+			id, name, comment, location, source, backchannel, snapshot_url, transport,
 			record, mse, relay, privacy, playback, width, height,
 			thingino_url, thingino_api_key, ptz, home_x, home_y, privacy_x, privacy_y,
 			sort_order, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.ID, s.Name, s.Comment, s.Location, s.Source, s.Backchannel, s.Transport,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.Name, s.Comment, s.Location, s.Source, s.Backchannel, s.SnapshotURL, s.Transport,
 		s.Record, s.MSE, s.Relay, s.Privacy, s.Playback, s.Width, s.Height,
 		s.ThinginoURL, s.ThinginoAPIKey, s.PTZ, s.HomeX, s.HomeY, s.PrivacyX, s.PrivacyY,
 		sortOrder, createdAt,
@@ -171,11 +171,11 @@ func (st *Store) GetSpec(id string) (Spec, bool, error) {
 func (st *Store) Update(s Spec) error {
 	res, err := st.db.Exec(
 		`UPDATE cameras SET
-			name = ?, comment = ?, location = ?, source = ?, backchannel = ?, transport = ?,
+			name = ?, comment = ?, location = ?, source = ?, backchannel = ?, snapshot_url = ?, transport = ?,
 			record = ?, mse = ?, relay = ?, privacy = ?, playback = ?, width = ?, height = ?,
 			thingino_url = ?, thingino_api_key = ?, ptz = ?, home_x = ?, home_y = ?, privacy_x = ?, privacy_y = ?
 		 WHERE id = ?`,
-		s.Name, s.Comment, s.Location, s.Source, s.Backchannel, s.Transport,
+		s.Name, s.Comment, s.Location, s.Source, s.Backchannel, s.SnapshotURL, s.Transport,
 		s.Record, s.MSE, s.Relay, s.Privacy, s.Playback, s.Width, s.Height,
 		s.ThinginoURL, s.ThinginoAPIKey, s.PTZ, s.HomeX, s.HomeY, s.PrivacyX, s.PrivacyY,
 		s.ID,

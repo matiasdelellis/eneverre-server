@@ -173,6 +173,7 @@ function fillForm(c) {
   text("source", c.source);
   f.transport.value = c.transport || "";
   text("backchannel", c.backchannel);
+  text("snapshot_url", c.snapshot_url);
   check("record", c.record);
   check("mse", c.mse);
   check("relay", c.relay);
@@ -297,6 +298,7 @@ function collectForm() {
     source: trim("source"),
     transport: f.transport.value,
     backchannel: trim("backchannel"),
+    snapshot_url: trim("snapshot_url"),
     record: f.record.checked,
     mse: f.mse.checked,
     relay: f.relay.checked,
@@ -329,6 +331,7 @@ function buildReview() {
     [t("cameras.review_resolution"), b.width && b.height ? `${b.width}×${b.height}` : "default"],
     [t("cameras.review_privacy"), b.privacy ? t("cameras.yes") : t("cameras.no")],
     [t("cameras.review_talk"), b.backchannel ? t("cameras.yes") : t("cameras.no")],
+    [t("cameras.review_snapshot"), b.snapshot_url ? t("cameras.yes") : t("cameras.no")],
     [t("cameras.review_thingino"), b.thingino_url ? `${b.thingino_url}${b.ptz ? " (PTZ)" : ""}` : t("cameras.no")],
   ];
   dl.innerHTML = rows

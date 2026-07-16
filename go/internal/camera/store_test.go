@@ -155,6 +155,41 @@ func TestStoreListOrder(t *testing.T) {
 // TestStoreCapabilitiesDerived checks the DB round-trip derives capabilities the
 // same way the INI loader does: thumbnail from a thingino key, talk from a
 // backchannel URL, PTZ from the thingino ptz flag.
+func TestStoreSnapshotURL(t *testing.T) {
+	st := NewStore(testDB(t))
+	s := sampleSpec()
+	s.ID = "snapcam"
+	s.SnapshotURL = "http://user:pass@10.0.0.2/snapshot.jpg"
+	if _, err := st.Create(s, 1); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A snapshot_url (without any Thingino key) derives the thumbnail capability.
+	got, ok, err := st.Get("snapcam")
+	if err != nil || !ok {
+		t.Fatalf("Get = ok:%v err:%v", ok, err)
+	}
+	if !got.Capabilities.Thumbnail {
+		t.Error("snapshot_url should derive Thumbnail capability")
+	}
+	// The URL (which may carry credentials) round-trips for the engine/proxy but
+	// stays out of the public JSON (json:"-").
+	if got.SnapshotURL != "http://user:pass@10.0.0.2/snapshot.jpg" {
+		t.Errorf("SnapshotURL lost on round-trip: %q", got.SnapshotURL)
+	}
+
+	// No snapshot_url and no Thingino key -> no thumbnail capability.
+	plain := sampleSpec()
+	plain.ID = "plaincam"
+	if _, err := st.Create(plain, 2); err != nil {
+		t.Fatalf("Create plain: %v", err)
+	}
+	p, _, _ := st.Get("plaincam")
+	if p.Capabilities.Thumbnail {
+		t.Error("camera without snapshot_url or Thingino key must not advertise thumbnail")
+	}
+}
+
 func TestStoreCapabilitiesDerived(t *testing.T) {
 	st := NewStore(testDB(t))
 	s := sampleSpec()

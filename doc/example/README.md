@@ -118,6 +118,10 @@ height = 1080
 ; Must point at the camera itself. Its presence enables the push-to-talk
 ; endpoint.
 backchannel = rtsp://username:password@192.168.1.91:554/ch0
+; Optional: the camera's own still-JPEG endpoint. Its presence enables the
+; thumbnail capability for a non-Thingino camera; the server proxies it (no
+; decode). Never exposed to clients.
+snapshot_url = http://username:password@192.168.1.91/snapshot.jpg
 
 ; The [thingino] section is optional. Its presence (specifically a
 ; thingino_api_key) is what enables the thumbnail capability and the firmware
@@ -179,6 +183,12 @@ privacy_y = 1600
    presence enables the `talk` capability and the
    `GET /api/camera/{id}/talk` push-to-talk WebSocket. Never exposed in
    API responses.
+ * **snapshot_url:** Optional HTTP(S) URL of the camera's own still-JPEG
+   endpoint (many non-Thingino cameras expose one, e.g. an ONVIF/CGI snapshot
+   path). Its presence enables the `thumbnail` capability and makes
+   `GET /api/camera/{id}/thumbnail` proxy that image — no server-side decode or
+   transcode. Thingino cameras use their firmware API instead and ignore this.
+   May carry credentials, so it is never exposed in API responses.
 
 ### `[thingino]` keys (optional)
 

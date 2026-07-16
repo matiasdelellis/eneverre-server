@@ -30,6 +30,7 @@ type createCameraReq struct {
 	Location    string `json:"location"`
 	Source      string `json:"source"`
 	Backchannel string `json:"backchannel"`
+	SnapshotURL string `json:"snapshot_url"`
 	Transport   string `json:"transport"`
 
 	Record   *bool `json:"record"`
@@ -95,6 +96,7 @@ func (req createCameraReq) spec() (camera.Spec, string) {
 		Location:       strings.TrimSpace(req.Location),
 		Source:         source,
 		Backchannel:    strings.TrimSpace(req.Backchannel),
+		SnapshotURL:    strings.TrimSpace(req.SnapshotURL),
 		Transport:      transport,
 		Record:         boolOr(req.Record, true),
 		MSE:            boolOr(req.MSE, true),
