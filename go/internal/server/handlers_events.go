@@ -42,7 +42,11 @@ func (a *App) handleWebhookEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, _ := io.ReadAll(r.Body)
+	// Cap the body: the webhook JSON is tiny (a timestamp/type/duration), and a
+	// valid-secret client shouldn't be able to stream an unbounded body into
+	// memory. MaxBytesReader aborts the read once the limit is crossed; the
+	// truncated read then just fails JSON parsing and is recorded as a raw event.
+	raw, _ := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONBodyBytes))
 	rawStr := string(raw)
 
 	var parsed *parsedWebhook

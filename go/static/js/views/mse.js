@@ -14,7 +14,8 @@ import { icon } from "../ui/icons.js";
 import { t } from "../i18n.js";
 
 const TARGET = 1.2;          // seconds of latency to hold at the live edge
-const RECONNECT_MS = 1500;   // wait before retrying after the source drops
+const RECONNECT_MS = 1500;   // base wait before retrying after the source drops
+const RECONNECT_MAX_MS = 30000; // cap for the exponential reconnect backoff
 
 function authHeaders() {
   const t = token();
@@ -33,6 +34,7 @@ export function attachMse(cam, video) {
   const streamUrl = `/api/camera/${encodeURIComponent(cam.id)}/live/stream`;
 
   let destroyed = false;
+  let paused = false;    // hidden tab / off-screen: connection torn down until resume()
   let abort = null;
   let timer = null;      // latency-control interval for the current connection
   let retry = null;      // pending reconnect timeout
@@ -82,8 +84,26 @@ export function attachMse(cam, video) {
     connect();
   };
 
+  // pause tears the live connection down (aborts the HTTP stream + latency loop)
+  // without permanently destroying the handle, so a hidden tab / off-screen tile
+  // stops decoding AND stops pulling bytes over the network. resume() rebuilds
+  // it. Idempotent.
+  const pause = () => {
+    if (destroyed || paused) return;
+    paused = true;
+    if (retry) { clearTimeout(retry); retry = null; }
+    clearConn();
+    try { video.pause(); } catch {}
+  };
+  const resume = () => {
+    if (destroyed || !paused) return;
+    paused = false;
+    reconnectCount = 0;
+    connect();
+  };
+
   const scheduleReconnect = () => {
-    if (destroyed) return;
+    if (destroyed || paused) return;
     clearConn();
     reconnectCount++;
     const el = ensureOverlay();
@@ -101,7 +121,11 @@ export function attachMse(cam, video) {
         el.querySelector(".wall-buffering-text").textContent = t("loading");
       }
     }
-    retry = setTimeout(() => { retry = null; connect(); }, RECONNECT_MS);
+    // Exponential backoff capped at RECONNECT_MAX_MS: transient drops still
+    // recover in ~1.5s, but a permanently-dead camera settles to one retry
+    // every 30s instead of hammering /live/info + /live/stream forever.
+    const delay = Math.min(RECONNECT_MS * 2 ** Math.max(0, reconnectCount - 1), RECONNECT_MAX_MS);
+    retry = setTimeout(() => { retry = null; connect(); }, delay);
   };
 
   // Adds a Retry button to the connection-lost overlay (once).
@@ -116,7 +140,7 @@ export function attachMse(cam, video) {
   };
 
   async function connect() {
-    if (destroyed) return;
+    if (destroyed || paused) return;
     removeOverlay();
     setCamStatus(cam.id, "connecting");
     abort = new AbortController();
@@ -199,6 +223,10 @@ export function attachMse(cam, video) {
       pump();
     });
 
+    // Scope these to the per-connection AbortSignal so they are removed when the
+    // connection is torn down (reconnect / pause / destroy). Without { signal }
+    // they stack up on the persistent <video> element on every reconnect — a
+    // flaky camera retrying for hours would accumulate hundreds of live handlers.
     let waitingTimer = null;
     video.addEventListener("waiting", () => {
       if (!tile || tile.querySelector(".wall-buffering")) return;
@@ -214,12 +242,12 @@ export function attachMse(cam, video) {
           break;
         }
       }
-    });
+    }, { signal });
     video.addEventListener("playing", () => {
       if (waitingTimer) { clearTimeout(waitingTimer); waitingTimer = null; }
       removeOverlay();
       setCamStatus(cam.id, "online");
-    });
+    }, { signal });
 
     timer = setInterval(() => {
       if (!started || !video.buffered.length) return;
@@ -247,7 +275,7 @@ export function attachMse(cam, video) {
   }
 
   connect();
-  return { destroy };
+  return { destroy, pause, resume };
 }
 
 // captureVideoFrame grabs the currently-displayed frame from an already-playing

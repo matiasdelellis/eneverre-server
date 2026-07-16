@@ -20,6 +20,7 @@ import (
 	"eneverre/internal/backchannel"
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
+	"eneverre/internal/events"
 	"eneverre/internal/media"
 	"eneverre/internal/metrics"
 	"eneverre/internal/streamauth"
@@ -99,6 +100,12 @@ type App struct {
 	// metrics exposes Prometheus and JSON instrumentation for the entire service.
 	// Nil when not configured (tests).
 	metrics *metrics.Store
+
+	// version is the build version, surfaced by the admin /api/status endpoint.
+	// Set once from main via SetVersion; empty in tests.
+	version string
+	// startedAt is when the App was constructed, used for the status uptime.
+	startedAt time.Time
 }
 
 // Token-lifetime defaults, used when nothing (flag/env/[auth]) sets them.
@@ -142,6 +149,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		updates:            updateStores,
 		talk:               make(map[string]*backchannel.Session),
 		talkCodecs:         make(map[string][]string),
+		startedAt:          time.Now(),
 	}
 	// Precompute the embedded UI (ETag + gzip) so repeat loads revalidate
 	// cheaply instead of re-downloading. Only used when no on-disk dir wins.
@@ -160,8 +168,14 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 	if min := cfg.AuthCleanupIntervalMinutes(); min > 0 {
 		go a.startTokenCleaner(time.Duration(min) * time.Minute)
 	}
+	// The event-retention sweep is started from SetMediaEngine, once the media
+	// engine (and its [media] retain window) is known.
 	return a
 }
+
+// SetVersion records the build version for the admin /api/status endpoint.
+// Called from main after New (mirrors SetMetrics / SetMediaEngine).
+func (a *App) SetVersion(v string) { a.version = v }
 
 // getCamera returns a copy of the camera with the given id (and true), or a
 // zero Camera and false. Taken under the read lock so it is safe against a
@@ -266,6 +280,13 @@ func (a *App) SetMediaEngine(e *media.Engine) {
 	for _, id := range on {
 		e.SetPrivacy(id, true)
 	}
+	// Mirror recording retention onto motion events: when [media] retain is set,
+	// prune events on the same window so the events table never outlives the
+	// footage its rows reference. Enabled here because the retain window lives on
+	// the engine, which only becomes available now.
+	if e != nil && e.Retain() > 0 {
+		go a.startEventCleaner(eventRetentionInterval)
+	}
 }
 
 // startTokenCleaner runs cleanupExpiredTokens on a ticker. The ticker is
@@ -277,6 +298,46 @@ func (a *App) startTokenCleaner(interval time.Duration) {
 	defer ticker.Stop()
 	for range ticker.C {
 		a.cleanupExpiredTokens()
+	}
+}
+
+// eventRetentionInterval is how often the event-retention sweep runs. Motion
+// events accrue slowly, so an hourly pass is ample and cheap.
+const eventRetentionInterval = time.Hour
+
+// pruneOldEvents deletes motion events older than the recording-retention window
+// ([media] retain), so the events table is aged out on the exact same schedule
+// as the footage its rows reference. No-op when there is no engine or retention
+// is disabled (retain = 0, keep forever).
+func (a *App) pruneOldEvents() {
+	if a.engine == nil {
+		return
+	}
+	retain := a.engine.Retain()
+	if retain <= 0 {
+		return
+	}
+	cutoff := time.Now().Add(-retain).Unix()
+	n, err := events.Prune(a.db, cutoff)
+	if err != nil {
+		slog.Warn("event retention prune failed", "err", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("event retention pruned", "deleted", n, "retain", retain)
+	}
+}
+
+// startEventCleaner prunes old events once at startup and then on a ticker, so
+// the events table doesn't grow unbounded while the recordings it references are
+// aged out by the media retention loop. Started from SetMediaEngine only when
+// [media] retain is set (that is where the retention window becomes known).
+func (a *App) startEventCleaner(interval time.Duration) {
+	a.pruneOldEvents()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		a.pruneOldEvents()
 	}
 }
 
@@ -363,6 +424,9 @@ func (a *App) Handler() http.Handler {
 
 	// health
 	mux.HandleFunc("GET /api/health", a.handleHealth)
+
+	// admin operational status (per-camera state + disk headroom)
+	mux.HandleFunc("GET /api/status", a.handleStatus)
 
 	// metrics (Prometheus + JSON). Open to a local scraper (Prometheus on the
 	// same host, hitting us directly) but authenticated from anywhere else, so
@@ -480,8 +544,9 @@ func (a *App) Handler() http.Handler {
 	}
 
 	// accessLog is outermost so every request (including CORS preflight) is
-	// logged; cors handles OPTIONS before the mux.
-	return accessLog(cors(mux))
+	// logged; cors handles OPTIONS before the mux. The Origin allowlist is empty
+	// by default (permissive), or locked down via [server] cors_origins.
+	return accessLog(cors(mux, a.cfg.CORSOrigins()))
 }
 
 // deprecatedAlias wraps a handler so a legacy route alias flags every response
@@ -604,6 +669,106 @@ func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request) *auth.Current
 
 func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "eneverre-api"})
+}
+
+type statusCamera struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Connected bool   `json:"connected"`
+	Recording bool   `json:"recording"`
+	MSEActive bool   `json:"mse_active"`
+	Privacy   bool   `json:"privacy"`
+}
+
+type statusStorage struct {
+	RecordDir  string `json:"record_dir"`
+	TotalBytes uint64 `json:"total_bytes"`
+	FreeBytes  uint64 `json:"free_bytes"`
+	UsedBytes  uint64 `json:"used_bytes"`
+}
+
+// handleStatus serves an admin-only operational snapshot: per-camera
+// connectivity/recording/privacy, aggregate counts, and (when recording)
+// storage headroom. It answers the NVR operator's "is everything up and is
+// there disk left?" without needing the Prometheus endpoint. Admin-gated
+// because it exposes each camera's live state by id.
+func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if a.requireAdmin(w, r) == nil {
+		return
+	}
+
+	cams := a.listCameras()
+	nameByID := make(map[string]string, len(cams))
+	for _, c := range cams {
+		nameByID[c.ID] = c.Name
+	}
+
+	var engineStatuses []media.CameraStatus
+	recordingEnabled := false
+	recordDir := ""
+	if a.engine != nil {
+		engineStatuses = a.engine.Status()
+		_, _, recordingEnabled = a.engine.GlobalToggles()
+		recordDir = a.engine.RecordDir()
+	}
+	byID := make(map[string]media.CameraStatus, len(engineStatuses))
+	for _, s := range engineStatuses {
+		byID[s.ID] = s
+	}
+
+	a.privacyMu.RLock()
+	out := make([]statusCamera, 0, len(cams))
+	var connected, recording, privacyOn int
+	for _, c := range cams {
+		sc := statusCamera{ID: c.ID, Name: c.Name, Privacy: a.privacy[c.ID]}
+		if st, ok := byID[c.ID]; ok {
+			sc.Connected = st.Connected
+			sc.Recording = st.Recording
+			sc.MSEActive = st.MSEActive
+		}
+		if sc.Connected {
+			connected++
+		}
+		if sc.Recording {
+			recording++
+		}
+		if sc.Privacy {
+			privacyOn++
+		}
+		out = append(out, sc)
+	}
+	a.privacyMu.RUnlock()
+
+	resp := map[string]any{
+		"service":           "eneverre-api",
+		"version":           a.version,
+		"uptime_seconds":    int64(time.Since(a.startedAt).Seconds()),
+		"recording_enabled": recordingEnabled,
+		"cameras":           out,
+		"totals": map[string]int{
+			"cameras":   len(out),
+			"connected": connected,
+			"recording": recording,
+			"privacy":   privacyOn,
+		},
+	}
+
+	// Disk headroom for the recording volume (best-effort: a statfs failure just
+	// omits the block rather than failing the whole status).
+	if recordDir != "" {
+		if total, free, err := diskUsage(recordDir); err == nil {
+			resp["storage"] = statusStorage{
+				RecordDir:  recordDir,
+				TotalBytes: total,
+				FreeBytes:  free,
+				UsedBytes:  total - free,
+			}
+		} else {
+			slog.Debug("status: disk usage unavailable", "dir", recordDir, "err", err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {

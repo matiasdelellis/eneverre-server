@@ -40,6 +40,65 @@ paths:
                     type: string
                     example: eneverre-api
 
+  /api/status:
+    get:
+      summary: Operational status (admin)
+      description: >-
+        Admin-only operational snapshot: per-camera connectivity, recording and
+        privacy state, aggregate counts, and — when recording is enabled — the
+        recording volume's disk headroom. Requires an admin token (403 for a
+        non-admin).
+      responses:
+        '200':
+          description: Status snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service:
+                    type: string
+                    example: eneverre-api
+                  version:
+                    type: string
+                  uptime_seconds:
+                    type: integer
+                    format: int64
+                  recording_enabled:
+                    type: boolean
+                  cameras:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        connected: { type: boolean }
+                        recording: { type: boolean }
+                        mse_active: { type: boolean }
+                        privacy: { type: boolean }
+                  totals:
+                    type: object
+                    properties:
+                      cameras: { type: integer }
+                      connected: { type: integer }
+                      recording: { type: integer }
+                      privacy: { type: integer }
+                  storage:
+                    type: object
+                    description: >-
+                      Present only when recording is enabled and the volume can
+                      be queried.
+                    properties:
+                      record_dir: { type: string }
+                      total_bytes: { type: integer, format: int64 }
+                      free_bytes: { type: integer, format: int64 }
+                      used_bytes: { type: integer, format: int64 }
+        '401':
+          description: Missing or invalid token
+        '403':
+          description: Admin required
+
   /api/auth/login:
     post:
       summary: Login (username/password)

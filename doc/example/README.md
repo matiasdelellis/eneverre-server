@@ -83,6 +83,11 @@ refresh_token_ttl_days = 90
 webhook_secret = changeme    ; required to accept POST /api/camera/{id}/events
 ```
 
+Motion events are pruned on the **same** retention window as recordings
+(`[media] retain`): with it set, a background sweep drops events older than
+that window so the events table never outlives the footage its rows
+reference. Without `[media] retain` (the default), events are kept forever.
+
 With `[media]`, every camera records/relays from its `source` RTSP URL
 and the public `rtsp` URL is the embedded relay (rotating credentials
 included) and `live_mse` is the same-origin browser feed. Without it,

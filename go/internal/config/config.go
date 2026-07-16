@@ -287,6 +287,26 @@ func (c *Config) UpdatesMaxAPKSize() int64 {
 	return 100 * 1024 * 1024
 }
 
+// CORSOrigins returns the allowlist of browser Origins that CORS accepts, from
+// [server] cors_origins (comma-separated). Empty (the default) keeps the
+// permissive behavior of reflecting any Origin — acceptable because the API is
+// reached same-origin by the web UI and with Bearer tokens (not cookies) by the
+// apps, so classic CSRF does not apply. Set it to lock the browser surface to
+// known front-ends. A literal "*" entry also means "reflect any".
+func (c *Config) CORSOrigins() []string {
+	raw := strings.TrimSpace(c.Server.Get("cors_origins", ""))
+	if raw == "" {
+		return nil
+	}
+	out := make([]string, 0)
+	for _, p := range strings.Split(raw, ",") {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // ServerReadTimeout resolves the http.Server.ReadTimeout used for the
 // listen socket. The body read is what trips the default (15s) for big
 // publishes; the publish endpoints legitimately need a generous window

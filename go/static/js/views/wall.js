@@ -72,6 +72,8 @@ function withThumbGrab(cam, video, handle) {
       try { handle.destroy(); } catch {}
     },
     stopLoad() { try { handle.stopLoad?.(); } catch {} },
+    pause() { try { handle.pause?.(); } catch {} },
+    resume() { try { handle.resume?.(); } catch {} },
   };
 }
 
@@ -355,12 +357,18 @@ export function destroyWall() {
 
 export function pauseWall() {
   for (const h of wallInstances.values()) {
-    try { h.stopLoad(); } catch {}
+    // pause() tears down the live connection (no more decoding AND no more
+    // network); stopLoad() is the softer fallback for handles without it.
+    if (h.pause) { try { h.pause(); } catch {} }
+    else { try { h.stopLoad(); } catch {} }
   }
   $$("#wall video").forEach((v) => v.pause());
 }
 
 export function resumeWall() {
+  for (const h of wallInstances.values()) {
+    if (h.resume) { try { h.resume(); } catch {} }
+  }
   $$("#wall video").forEach((v) => v.play().catch(() => {}));
 }
 
@@ -512,6 +520,17 @@ export async function loadWall(mode = "live") {
 }
 
 export function initWall() {
+  // Stop decoding + streaming every live tile while the tab/app is hidden. A
+  // backgrounded wall would otherwise keep N H.264 decoders and N HTTP streams
+  // running indefinitely, burning CPU, battery and bandwidth for frames nobody
+  // sees. Only acts in the wall-like views (live/playback); resuming snaps each
+  // MSE tile back to the live edge via its latency-control loop.
+  document.addEventListener("visibilitychange", () => {
+    if (!isWallLike()) return;
+    if (document.hidden) pauseWall();
+    else resumeWall();
+  });
+
   // Reload the wall (or just refresh the sidebar highlight) when the
   // wall filter changes. In playback we need to preserve the cursor
   // state across the rebuild, so capture it before reloading.

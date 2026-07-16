@@ -211,7 +211,7 @@ func TestRefreshRotationIsSingleUse(t *testing.T) {
 	a.refreshTTL = 86400
 	insertUser(t, a.db, "bob", "bobpw", "user")
 	if _, err := a.db.Exec(
-		"INSERT INTO tokens (token, username, expires_at, created_at, refresh_token, refresh_expires_at) "+
+		"INSERT INTO tokens (token, username, expires_at, created_at, refresh_token, refresh_expires_at) " +
 			"VALUES ('acc', 'bob', 9999999999, 0, 'refresh-me', 9999999999)",
 	); err != nil {
 		t.Fatalf("insert token: %v", err)

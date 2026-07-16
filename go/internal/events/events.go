@@ -207,6 +207,20 @@ func Get(db *sql.DB, cameraID string, id int64) (Event, bool, error) {
 	return e, true, nil
 }
 
+// Prune deletes every event whose window ended before cutoff (unix seconds),
+// returning how many rows were removed. It is the retention sweep's primitive:
+// recordings are pruned by age already, so without this the events table grows
+// unbounded and accumulates rows pointing at footage that no longer exists.
+// Events still within the window (end_ts >= cutoff) are kept.
+func Prune(db *sql.DB, cutoff int64) (int64, error) {
+	res, err := db.Exec("DELETE FROM events WHERE end_ts < ?", cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // Delete removes an event by id scoped to a camera, reporting whether a row
 // was deleted.
 func Delete(db *sql.DB, cameraID string, id int64) (bool, error) {

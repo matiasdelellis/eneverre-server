@@ -194,37 +194,42 @@ func muxParts(
 			dataOffset := moofOffset + uint64(trun.DataOffset)
 			dts := int64(tfdt.BaseMediaDecodeTimeV1) + startDTSMP4
 
+			// A trun's sample payloads are stored back-to-back from dataOffset, so
+			// read the whole region in one ReadAt instead of a syscall + allocation
+			// per sample. Each sample is then a slice into this buffer; io.ReaderAt
+			// guarantees a full read when err == nil, so no short-read check is
+			// needed. Payloads share the backing array — safe because the muxer only
+			// reads them (never mutates) and each trun gets its own buffer.
+			var totalSize uint64
+			for _, e := range trun.Entries {
+				totalSize += uint64(e.SampleSize)
+			}
+			blob := make([]byte, totalSize)
+			if _, err := r.ReadAt(blob, int64(dataOffset)); err != nil {
+				return nil, err
+			}
+
+			var rel uint64
 			for _, e := range trun.Entries {
 				if dts >= durationMP4 {
 					breakAtNextMdat = true
 					break
 				}
 
-				sampleOffset := dataOffset
-				sampleSize := e.SampleSize
+				payload := blob[rel : rel+uint64(e.SampleSize)]
 
 				err = m.writeSample(
 					dts,
 					e.SampleCompositionTimeOffsetV1,
 					(e.SampleFlags&sampleFlagIsNonSyncSample) != 0,
 					e.SampleSize,
-					func() ([]byte, error) {
-						payload := make([]byte, sampleSize)
-						n, err2 := r.ReadAt(payload, int64(sampleOffset))
-						if err2 != nil {
-							return nil, err2
-						}
-						if n != int(sampleSize) {
-							return nil, fmt.Errorf("partial read")
-						}
-						return payload, nil
-					},
+					func() ([]byte, error) { return payload, nil },
 				)
 				if err != nil {
 					return nil, err
 				}
 
-				dataOffset += uint64(e.SampleSize)
+				rel += uint64(e.SampleSize)
 				dts += int64(e.SampleDuration)
 			}
 

@@ -218,6 +218,7 @@ func main() {
 	app := server.New(cfg, db, creds, camStore, cams, uiFS, opts.staticCacheControl,
 		int64(accessHours)*3600, int64(refreshDays)*86400, updateStores)
 	app.SetMediaEngine(engine)
+	app.SetVersion(version)
 
 	// Metrics (Prometheus + JSON). On by default; set [server] metrics = false
 	// to drop the endpoints entirely (no store wired, so the routes 404).

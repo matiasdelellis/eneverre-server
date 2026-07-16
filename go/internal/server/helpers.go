@@ -4,28 +4,56 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
-// cors reflects the request Origin and allows credentials, matching the
-// permissive CORSMiddleware config in app/main.py. Preflight OPTIONS requests
-// are answered here.
-func cors(h http.Handler) http.Handler {
+// cors handles CORS and preflight OPTIONS. `allowed` is the Origin allowlist:
+// when empty it preserves the historical permissive behavior (reflect any
+// Origin with credentials, matching the old FastAPI config); when non-empty
+// only those Origins get CORS headers, so a hostile page can't ride a browser
+// session against the API. A request with no Origin (same-origin, curl, the
+// native apps) is unaffected either way.
+func cors(h http.Handler, allowed []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == "" {
-			origin = "*"
+		allow := ""
+		switch {
+		case len(allowed) == 0:
+			// No allowlist: reflect the Origin, or "*" when absent (unchanged).
+			if origin != "" {
+				allow = origin
+			} else {
+				allow = "*"
+			}
+		case origin != "" && originAllowed(origin, allowed):
+			allow = origin
 		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Add("Vary", "Origin")
+		if allow != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allow)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Add("Vary", "Origin")
+		}
 		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Methods", "*")
-			w.Header().Set("Access-Control-Allow-Headers", "*")
+			if allow != "" {
+				w.Header().Set("Access-Control-Allow-Methods", "*")
+				w.Header().Set("Access-Control-Allow-Headers", "*")
+			}
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// originAllowed reports whether origin is in the allowlist. A literal "*" entry
+// matches any Origin (an explicit opt-in to the permissive behavior).
+func originAllowed(origin string, allowed []string) bool {
+	for _, a := range allowed {
+		if a == "*" || strings.EqualFold(a, origin) {
+			return true
+		}
+	}
+	return false
 }
 
 // queryFloat reads a float query param, falling back to def when missing/invalid.

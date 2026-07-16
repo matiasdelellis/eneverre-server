@@ -137,6 +137,17 @@ type Engine struct {
 	recorders    []*recorder.Recorder
 	ctrls        map[string]*camCtrl // camera id -> retry-loop pause control
 
+	// Async segment indexer. A completed segment's index.Insert carries a WAL
+	// fsync and — because it runs inside recorder.OnSegment, which fires from
+	// segment.close() under the recorder's mutex — it would stall that camera's
+	// RTP demux (live MSE + relay) for the duration of the write, up to the
+	// index's busy_timeout under writer contention. Instead OnSegment hands the
+	// row to idxCh and a single drainer goroutine performs every insert off the
+	// hot path (and serialized, which also eases the single SQLite writer). Both
+	// are nil when recording is disabled (no index). See runIndexer / Close.
+	idxCh   chan index.Segment
+	idxDone chan struct{}
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -249,7 +260,45 @@ func New(opts Options) (*Engine, error) {
 		ctx:          ctx,
 		cancel:       cancel,
 	}
+	if idx != nil {
+		// Buffered well beyond the real rate (segments rotate ~once/minute per
+		// camera), so the non-blocking enqueue in enqueueIndex effectively never
+		// spills to its synchronous fallback in normal operation.
+		e.idxCh = make(chan index.Segment, 256)
+		e.idxDone = make(chan struct{})
+		go e.runIndexer()
+	}
 	return e, nil
+}
+
+// runIndexer drains idxCh, performing every segment index.Insert on this single
+// goroutine so the write never blocks a recorder's RTP demux. Exits when idxCh
+// is closed (during Close, after all recorders have finalized), then signals
+// idxDone so Close can safely close the index.
+func (e *Engine) runIndexer() {
+	defer close(e.idxDone)
+	for seg := range e.idxCh {
+		if err := e.idx.Insert(seg); err != nil {
+			slog.Error("media/index insert failed", "camera", seg.Path, "seg", seg.SegmentNumber, "err", err)
+			continue
+		}
+		slog.Debug("media/segment indexed", "camera", seg.Path, "seg", seg.SegmentNumber, "dur_s", seg.Duration, "path", seg.Fpath)
+	}
+}
+
+// enqueueIndex hands a completed segment to the async indexer. The send is
+// non-blocking: if the buffer is full (the DB writer has fallen far behind) it
+// falls back to a synchronous insert rather than dropping the row, so a segment
+// on disk is never left unqueryable. The fallback reintroduces the old
+// under-lock stall only in that pathological case.
+func (e *Engine) enqueueIndex(seg index.Segment) {
+	select {
+	case e.idxCh <- seg:
+	default:
+		if err := e.idx.Insert(seg); err != nil {
+			slog.Error("media/index insert failed (sync fallback)", "camera", seg.Path, "seg", seg.SegmentNumber, "err", err)
+		}
+	}
 }
 
 // Start begins serving every camera that has a Source URL and at least one of
@@ -402,18 +451,16 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 		PartDuration:    e.opts.PartDuration,
 		Logf:            func(f string, a ...any) { slog.Debug("media/recorder[" + id + "]: " + fmt.Sprintf(f, a...)) },
 		OnSegment: func(s recorder.SegmentInfo) {
-			if err := e.idx.Insert(index.Segment{
+			// Hand off to the async indexer so the WAL fsync never runs under the
+			// recorder mutex (this fires from segment.close() while r.mu is held).
+			e.enqueueIndex(index.Segment{
 				Fpath:         s.Path,
 				Path:          id,
 				Start:         s.Start,
 				Duration:      s.Duration.Seconds(),
 				SegmentNumber: s.SegmentNumber,
 				StreamID:      s.StreamID,
-			}); err != nil {
-				slog.Error("media/index insert failed", "camera", id, "err", err)
-				return
-			}
-			slog.Debug("media/segment indexed", "camera", id, "seg", s.SegmentNumber, "dur_s", s.Duration.Seconds(), "path", s.Path)
+			})
 		},
 	}
 
@@ -542,6 +589,21 @@ func (e *Engine) GlobalToggles() (mse, relay, record bool) {
 	return e.opts.MSEEnabled, e.opts.RelayEnabled, e.opts.RecordEnabled
 }
 
+// RecordDir returns the base directory recordings are written under, or "" when
+// recording is disabled. Used by the admin status endpoint to report disk usage.
+func (e *Engine) RecordDir() string {
+	if !e.opts.RecordEnabled {
+		return ""
+	}
+	return e.opts.RecordDir
+}
+
+// Retain returns the configured retention window ([media] retain): recordings
+// older than this are pruned, and motion events are pruned on the same window so
+// the events table never outlives the footage its rows reference. 0 = keep
+// forever.
+func (e *Engine) Retain() time.Duration { return e.opts.Retain }
+
 // CameraStatus is a snapshot of a single camera's media state, collected by
 // Status() from the engine's internal state at a point in time. The engine's
 // retry loop means a camera may briefly report disconnected between reconnect
@@ -589,6 +651,12 @@ func (e *Engine) Close() {
 		r.Close()
 	}
 	e.wg.Wait()
+	// Recorders have finalized (and enqueued) their last segments; drain the
+	// async indexer before closing the index so no pending insert is lost.
+	if e.idxCh != nil {
+		close(e.idxCh)
+		<-e.idxDone
+	}
 	if e.relay != nil {
 		e.relay.Close()
 	}

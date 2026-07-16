@@ -226,7 +226,11 @@ func (a *App) cleanupExpiredDevices() {
 func (a *App) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	a.cleanupExpiredDevices()
 	deviceCode := auth.TokenURLSafe(16)
-	userCode := strings.ToUpper(auth.TokenHex(3))
+	// 4 bytes = 8 hex chars = 32 bits of entropy. The verify path is
+	// authenticated and codes expire in 300s, but 3 bytes (24 bits) was thin for
+	// a user-facing pairing code; 4 keeps it short to compare while removing any
+	// realistic guessing margin.
+	userCode := strings.ToUpper(auth.TokenHex(4))
 	expiresAt := time.Now().Unix() + 300
 	name := cleanDeviceName(r.URL.Query().Get("device_name"))
 	if _, err := a.db.Exec(
