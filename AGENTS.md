@@ -45,6 +45,15 @@ adds `gortsplib` (RTSP client) + `mediacommon` (fMP4) + `pion/*` (RTP/SDP).
   talk audio-quality work: what's done (G.711 latency cap, client-side AAC
   silence warm-up + no server settle, AAC drop-oldest) and what's deferred
   (stateful resampling, AAC `a=fmtp` parsing, `AudioWorklet` capture).
+- [`doc/PLANS/TALK-BACKCHANNEL-LOCAL-GAPS.md`](doc/PLANS/TALK-BACKCHANNEL-LOCAL-GAPS.md) —
+  additive plan to close the known backchannel gaps (RTCP SR, AAC `a=fmtp`
+  parsing, Digest `qop=auth`, typed codec selection) in the existing
+  hand-rolled code. ~1-2 days, low risk, no API change.
+- [`doc/PLANS/TALK-BACKCHANNEL-GORTSPLIB-CLIENT.md`](doc/PLANS/TALK-BACKCHANNEL-GORTSPLIB-CLIENT.md) —
+  alternative: replace the hand-rolled RTSP client in
+  `internal/backchannel` with `gortsplib.Client` (already a dependency via
+  the recorder). ~4-6.5 days, deletes ~540 lines, medium risk. Same end state
+  on the wire.
 - [`doc/UPDATES.md`](doc/UPDATES.md) — the auto-update protocol for the
   Android clients.
 - [`doc/TALK.md`](doc/TALK.md) — the two-way-audio (push-to-talk) WebSocket
