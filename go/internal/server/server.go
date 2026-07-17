@@ -851,18 +851,31 @@ func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (a *App) handlePTZMove(w http.ResponseWriter, r *http.Request) {
+// ptzGate enforces user auth plus the PTZ capability (the camera advertises PTZ
+// and carries thingino credentials), returning the camera or nil after writing
+// the error. Single source of truth for the preamble the PTZ proxy handlers
+// share, so they can't drift apart (mirrors playbackGate).
+func (a *App) ptzGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
 	if a.requireUser(w, r) == nil {
-		return
+		return nil
 	}
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
 	if !ok || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
 		httpError(w, http.StatusNotFound, "PTZ not available")
+		return nil
+	}
+	return &cam
+}
+
+// proxyThingino gates the request through ptzGate, runs the thingino call, and
+// relays its raw JSON response (or maps the error). The three PTZ handlers
+// differ only in `call`, so this holds the identical gate + write plumbing.
+func (a *App) proxyThingino(w http.ResponseWriter, r *http.Request, call func(cam camera.Camera) ([]byte, error)) {
+	cam := a.ptzGate(w, r)
+	if cam == nil {
 		return
 	}
-	x := queryFloat(r, "x", 0)
-	y := queryFloat(r, "y", 0)
-	body, err := thingino.Move(cam.ThinginoURL, cam.ThinginoAPIKey, x, y)
+	body, err := call(*cam)
 	if err != nil {
 		thinginoError(w, err)
 		return
@@ -870,46 +883,26 @@ func (a *App) handlePTZMove(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+func (a *App) handlePTZMove(w http.ResponseWriter, r *http.Request) {
+	a.proxyThingino(w, r, func(cam camera.Camera) ([]byte, error) {
+		return thingino.Move(cam.ThinginoURL, cam.ThinginoAPIKey, queryFloat(r, "x", 0), queryFloat(r, "y", 0))
+	})
 }
 
 // handlePTZHome moves the camera to its configured home position (home_x/home_y).
 func (a *App) handlePTZHome(w http.ResponseWriter, r *http.Request) {
-	if a.requireUser(w, r) == nil {
-		return
-	}
-	cam, ok := a.getCamera(r.PathValue("cam_id"))
-	if !ok || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
-		httpError(w, http.StatusNotFound, "PTZ not available")
-		return
-	}
-	body, err := thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, cam.HomeX, cam.HomeY)
-	if err != nil {
-		thinginoError(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	a.proxyThingino(w, r, func(cam camera.Camera) ([]byte, error) {
+		return thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, cam.HomeX, cam.HomeY)
+	})
 }
 
 // handlePTZRecalibrate runs the motor recalibration routine.
 func (a *App) handlePTZRecalibrate(w http.ResponseWriter, r *http.Request) {
-	if a.requireUser(w, r) == nil {
-		return
-	}
-	cam, ok := a.getCamera(r.PathValue("cam_id"))
-	if !ok || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
-		httpError(w, http.StatusNotFound, "PTZ not available")
-		return
-	}
-	body, err := thingino.Recalibrate(cam.ThinginoURL, cam.ThinginoAPIKey)
-	if err != nil {
-		thinginoError(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	a.proxyThingino(w, r, func(cam camera.Camera) ([]byte, error) {
+		return thingino.Recalibrate(cam.ThinginoURL, cam.ThinginoAPIKey)
+	})
 }
 
 // privacyOp returns (creating if needed) the per-camera privacy-toggle mutex.

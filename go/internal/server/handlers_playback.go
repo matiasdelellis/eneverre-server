@@ -9,20 +9,12 @@ import (
 	"time"
 
 	"eneverre/internal/camera"
+	"eneverre/internal/timeutil"
 )
 
-const isoMillis = "2006-01-02T15:04:05.000"
-
 func parseISOTime(ts string) (time.Time, error) {
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if t, err := time.Parse(layout, ts); err == nil {
-			return t.UTC(), nil
-		}
-	}
-	for _, layout := range []string{"2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05"} {
-		if t, err := time.Parse(layout, ts); err == nil {
-			return t.UTC(), nil
-		}
+	if t, ok := timeutil.ParseISO(ts); ok {
+		return t, nil
 	}
 	return time.Time{}, fmt.Errorf("invalid iso %q", ts)
 }

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"eneverre/internal/timeutil"
 )
 
 // recordMu serializes RecordMotion's read-merge-write sequence; see the
@@ -62,15 +64,8 @@ func ParseTimestamp(value string) (int64, bool) {
 		}
 		return n, true
 	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.Unix(), true
-		}
-	}
-	for _, layout := range []string{"2006-01-02T15:04:05.999999", "2006-01-02T15:04:05"} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC().Unix(), true
-		}
+	if t, ok := timeutil.ParseISO(s); ok {
+		return t.Unix(), true
 	}
 	return 0, false
 }

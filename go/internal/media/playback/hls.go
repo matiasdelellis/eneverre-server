@@ -211,6 +211,11 @@ func (h *Handler) hlsFindSegment(w http.ResponseWriter, r *http.Request) (seg in
 	return seg, false
 }
 
+// parseHLSTime parses the from/to query params of an HLS playlist request.
+// Deliberately strict RFC3339 (not the lenient timeutil.ParseISO used by the
+// public API): these values come from URIs this server generates, so anything
+// other than the exact format it emits is a bug, not input to tolerate.
+// Returns nil on empty or malformed input; the caller treats nil as "unbounded".
 func parseHLSTime(s string) *time.Time {
 	if s == "" {
 		return nil
