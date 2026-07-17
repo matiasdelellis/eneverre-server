@@ -143,12 +143,7 @@ Motion events are pruned on the **same** retention window as recordings
 that window so the events table never outlives the footage its rows
 reference. Without `[media] retain` (the default), events are kept forever.
 
-With `[media]`, every camera records/relays from its `source` RTSP URL
-and the public `rtsp` URL is the embedded relay (rotating credentials
-included) and `live_mse` is the same-origin browser feed. Without it,
-the engine runs in live-only mode: `live_mse` and `rtsp` are still
-populated (so the wall works), but `/recordings/*` answer 404. See
-[`doc/MEDIA.md`](../MEDIA.md) for the full endpoint list, client
+See [`doc/MEDIA.md`](../MEDIA.md) for the full endpoint list, client
 integration notes, and the codec/coverage-gap semantics.
 
 ## Command-line flags
@@ -223,11 +218,12 @@ privacy_y = 1600
  * **id:** Camera id; the path the embedded engine records/relays under.
    One id, one camera.
  * **name / comment / location:** Friendly labels shown by the clients.
- * **source:** The camera's RTSP URL. With the embedded media engine
-   (`[media]`) the engine records/relays from it; without the engine it
-   is served as-is from `/api/cameras` as `rtsp`. Must point at the
-   camera itself because the engine speaks RTSP directly to it (not at a
-   streamer in front). Never exposed in API responses.
+ * **source:** The camera's direct RTSP URL. The engine always connects to
+   it and relays/records from it — `[media]` only decides whether
+   *recording* happens, not whether the engine talks to the camera. This
+   URL is never returned by `/api/cameras`; clients get the relay
+   `rtsp://…:8554/{id}` instead. Must point at the camera itself, since
+   the engine speaks RTSP to it directly (not to a streamer in front of it).
  * **mse:** Per-camera opt-out of the live MSE (fMP4) browser feed. Default
     true. Set to `false` to skip the MSE broadcaster for this camera — it
     will not appear with a `live_mse` URL in `/api/cameras`. The RTSP relay
@@ -252,9 +248,10 @@ privacy_y = 1600
    `[media] transport` for the source RTSP: `auto` (default), `tcp` (reliable,
    recommended for lossy/distant links), or `udp`. Useful to force TCP on a
    single camera without changing the global default.
- * **playback:** Tells clients this camera has recordings available. With
-   `[media]` the engine serves them from its segment index; without it,
-   playback endpoints answer 404.
+ * **playback:** Tells clients this camera is expected to have recordings,
+   so the UI shows a timeline for it. It's just a hint — it doesn't turn
+   recording on by itself (that's `record`, see above). If this camera
+   isn't actually being recorded, its recordings endpoints answer 404.
  * **width / height:** Pixel dimensions, used to give the playback boxes the
    right aspect ratio (default 16×9).
  * **backchannel:** Optional direct RTSP URL (with credentials) to the camera's

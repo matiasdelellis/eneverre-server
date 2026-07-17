@@ -70,11 +70,12 @@ All code lives under `go/` (module `eneverre`).
 - `go/main.go` — bootstrap: `config.Load()`, `store.Open()`+`store.Init()`,
   `streamauth.NewStore(db)` (reads/writes the credential row, so it runs
   after the schema exists), `camera.Load()`. The embedded engine is
-  always built and started when any camera has a `source` URL — it runs
-  in **live-only mode** without `[media]` (live MSE + RTSP relay, no
-  recording) and in **full mode** with `[media]` (live + per-camera
-  recording). `server.SetMediaEngine()` wires it into the handler set
-  regardless of mode. `server.New()` is built next, then the server runs
+  always built and started when any camera has a `source` URL — live MSE
+  and the RTSP relay are on unconditionally. Recording is the only part
+  that's gated: off (**live-only mode**) unless `[media] record = true`
+  turns it on (per-camera `record = false` still opts individual cameras
+  out even then). `server.SetMediaEngine()` wires the engine into the
+  handler set regardless of mode. `server.New()` is built next, then the server runs
   on an `http.Server` with explicit timeouts (ReadHeader 5s / Read 15s
   / Write 30s / Idle 60s) so a slow or idle client can't hold a goroutine
   open indefinitely. Credential rotation is started when the engine is
@@ -116,9 +117,11 @@ All code lives under `go/` (module `eneverre`).
   whether a file was actually read (`main.go` logs "using defaults" when not).
   `Config` exposes optional section handles (`cfg.Media`, `cfg.Events`,
   `cfg.Auth`, `cfg.Updates`) — `nil` when the section is absent — so
-  callers branch with a single nil check. `cfg.Media` specifically
-  drives recording mode: when present, the engine records; when absent,
-  the engine runs in live-only mode. The per-platform search paths
+  callers branch with a single nil check. `cfg.Media` being absent just
+  means every `[media]` key falls back to its default, including
+  `record = false` — so a missing section and a present-but-unconfigured
+  one behave the same (live-only mode); recording only turns on once
+  `record = true` is set, section or no section. The per-platform search paths
   come from `config.go` (Unix) and `paths_windows.go` (Windows, which
   rewrites the slices in `init()` to `%ProgramData%\Eneverre\...`).
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
@@ -268,17 +271,20 @@ see request query strings and the more verbose media-engine traces
   (guarded by `camerasMu`) is updated in step. `store.go` maps rows ↔
   `camera.Spec`; `Spec.Camera()` derives the public model (capabilities) exactly
   as the INI loader did, so both paths agree.
-- **Single streaming mode (embedded engine).** When `[media]` is set,
-  `GET /api/cameras` rewrites each camera's stream fields via
-  `WithEngineURLs`: `live_mse` becomes the same-origin MSE path
-  (`/api/camera/{id}/live/stream`), `rtsp` becomes the relay
-  `rtsp://<user>:<pass>@<host>:<port>/<id>`. The camera's
+- **Single streaming mode (embedded engine).** `GET /api/cameras` always
+  rewrites each camera's stream fields via `WithEngineURLs` — this does
+  not depend on `[media]` being present. `live_mse` becomes the
+  same-origin MSE path (`/api/camera/{id}/live/stream`) and `rtsp`
+  becomes the relay `rtsp://<user>:<pass>@<host>:<port>/<id>`, each shown
+  only when that feature resolves on (global toggle AND per-camera
+  toggle — see `Camera.ResolveFeatures`). The camera's
   `source`/`thingino_*`/`backchannel` are tagged `json:"-"` and never
-  appear in responses. Set `[media] rtsp_host` to pin a public host in
-  reverse-proxied deployments; otherwise the relay host is taken from the
-  request (`r.Host`). When `[media]` is absent the camera is returned
-  unchanged from the INI (raw `source` value), and every
-  recording endpoint answers 404.
+  appear in responses, `[media]` or not. Set `[media] rtsp_host` to pin a
+  public host in reverse-proxied deployments; otherwise the relay host is
+  taken from the request (`r.Host`). `[media]`'s only effect here is
+  `record`: when it (or a per-camera override) resolves false — the
+  default — every recording endpoint answers 404 for that camera; live
+  MSE and the RTSP relay are unaffected.
 - The rotating credential pair (random 8/8 alphanumeric) guards the
   embedded RTSP relay and is embedded in the relay URL on every
   `/api/cameras` call, so rotation takes effect without a restart. The
@@ -357,12 +363,15 @@ see request query strings and the more verbose media-engine traces
   on disable (`home_x/y` and `privacy_x/y` default to `-1` → no auto-move).
   `GET /api/cameras` reflects the privacy state and withholds `live_mse`/`rtsp`
   while a camera is paused.
-- In **embedded mode** (`[media]`) the recordings endpoints serve from the
-  in-process segment index, and additional embedded-only endpoints are
-  served: timeline, gaps, HLS VOD (`/recordings/hls/*`) and the live MSE
-  feed (`/live/{info,stream}`). Without `[media]` every recording endpoint
-  answers 404 (and the cameras' `source` is served raw from the INI).
-  Full endpoint list, payload shapes and client integration notes are in
+- The embedded engine (live MSE, RTSP relay, recording) is always active for
+  any camera with a `source` URL — there is no mode where it's off.
+  `[media]` only toggles **recording** (default off) and tunes its
+  paths/timing/retention. With recording on for a camera, its recordings
+  endpoints (list/get/timeline/gaps, HLS VOD under `/recordings/hls/*`)
+  serve from the in-process segment index; with it off, those answer 404
+  but `/live/{info,stream}` and the RTSP relay keep working regardless.
+  The raw camera `source` is never returned by the API either way. Full
+  endpoint list, payload shapes and client integration notes are in
   [`doc/MEDIA.md`](doc/MEDIA.md).
 - **Two-way audio (push-to-talk).** `GET /api/camera/{id}/talk` upgrades to a
   WebSocket that relays client mic audio to the camera's ONVIF backchannel

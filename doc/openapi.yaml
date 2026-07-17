@@ -290,7 +290,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Message'
         '401':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/Unauthorized'
 
   /api/cameras:
     get:
@@ -663,8 +663,9 @@ paths:
       description: |
         **Deprecated compatibility alias** for
         `GET /api/camera/{camera_id}/recordings/list`, kept only during the
-        transition while clients migrate. Identical behavior; responses carry a
-        `Deprecation: true` header. Use the `recordings/` path in new code.
+        transition while clients migrate. Identical behavior; responses carry
+        `Deprecation: true` and `Warning` headers pointing at the successor
+        path. Use the `recordings/` path in new code.
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - name: start
@@ -692,6 +693,12 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          description: start and end are required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/camera/{camera_id}/playback/get:
     get:
@@ -701,8 +708,9 @@ paths:
         **Deprecated compatibility alias** for
         `GET /api/camera/{camera_id}/recordings/get`, kept only during the
         transition while clients migrate. Identical behavior (including gap
-        fill / `fill_gaps`); responses carry a `Deprecation: true` header. Use
-        the `recordings/` path in new code.
+        fill / `fill_gaps`); responses carry `Deprecation: true` and
+        `Warning` headers pointing at the successor path. Use the
+        `recordings/` path in new code.
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - name: start
@@ -736,6 +744,12 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          description: start and duration are required, or duration exceeds the export limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/camera/{camera_id}/recordings/list:
     get:
@@ -776,6 +790,13 @@ paths:
 
         '404':
           $ref: '#/components/responses/NotFound'
+
+        '422':
+          description: start and end are required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/camera/{camera_id}/recordings/get:
     get:
@@ -834,6 +855,13 @@ paths:
 
         '404':
           $ref: '#/components/responses/NotFound'
+
+        '422':
+          description: start and duration are required, or duration exceeds the export limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/camera/{camera_id}/recordings/timeline:
     get:
@@ -1059,7 +1087,8 @@ paths:
         **Deprecated compatibility alias** for
         `GET /api/camera/{camera_id}/events` (note the singular `camera`), kept
         only during the transition while clients migrate. Identical behavior;
-        responses carry a `Deprecation: true` header. Use the singular path in
+        responses carry `Deprecation: true` and `Warning` headers pointing at
+        the successor path. Use the singular path in
         new code.
       parameters:
         - $ref: '#/components/parameters/camera_id'
@@ -1193,6 +1222,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/Event'
         '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
           $ref: '#/components/responses/NotFound'
         '503':
           description: webhook_secret not configured on the server
@@ -1257,6 +1288,7 @@ paths:
                   expires_at:
                     type: integer
                     format: int64
+                    description: The issued token's expiry (unix seconds). Only present when status = approved.
                   device_name:
                     type: string
                     nullable: true
@@ -1342,11 +1374,21 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Message'
+                $ref: '#/components/schemas/UserCreated'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: Username already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '422':
+          description: username missing/too long/whitespace, password missing or over 1024 bytes, or role not 'admin'/'user'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/users/me/password:
     put:
@@ -1392,6 +1434,12 @@ paths:
       responses:
         '200':
           description: Name updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NameUpdateResult'
+        '422':
+          description: Malformed request body
           content:
             application/json:
               schema:
@@ -1460,10 +1508,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
+        '400':
+          description: >-
+            Cannot demote the last admin (this is the only admin account and
+            the request would leave none).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          description: role must be 'admin' or 'user'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/users/{username}/password:
     put:
@@ -1522,9 +1584,17 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Message'
+                $ref: '#/components/schemas/NameUpdateResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          description: Malformed request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/users/{username}:
     delete:
@@ -1538,6 +1608,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
+        '400':
+          description: >-
+            Cannot delete the last admin (this is the only admin account and
+            the request would leave none).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -1594,11 +1674,20 @@ paths:
     post:
       summary: Publish a new build for the TV track
       description: |
-        Accepts a `multipart/form-data` body with the APK and its metadata.
-        Writes the file to the track's storage directory, computes SHA-256,
-        and persists the sidecar manifest. Subsequent `GET /api/app/tv/update`
-        returns the new manifest. Old APKs are kept on disk so in-flight
-        downloads survive a release.
+        Accepts a `multipart/form-data` body with one or more APKs (one form
+        file per Android ABI, named `apk_<abi>`) and release metadata.
+        Streams each APK straight to a temp file (no full-body buffering),
+        computes its SHA-256, and persists the sidecar manifest. Subsequent
+        `GET /api/app/tv/update` returns the new manifest. APKs belonging to
+        the previous release are deleted once this one commits — only the
+        current release's APKs are kept on disk.
+
+        Supports both a single self-contained POST (all APKs at once, the
+        default `finalize=true` behavior) and a multi-POST sequence for large
+        releases on slow links (`finalize=false` on the first N-1 POSTs,
+        `finalize=true` — or omitted — on the last). See "Single POST vs
+        multi-POST" in `doc/UPDATES.md` for the full state machine and
+        worked examples.
 
         **Auth:** `Authorization: Bearer <publish_token>`. User/password
         and session Bearer tokens are not accepted. Returns `503` if the
@@ -1606,35 +1695,31 @@ paths:
       security:
         - updateToken: []
       requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [apk, versionName, versionCode]
-              properties:
-                apk: { type: string, format: binary, description: "Universal APK (opaque binary)" }
-                versionName: { type: string, example: "1.0.1" }
-                versionCode: { type: integer, example: 10101, description: "Non-negative integer. Common scheme: MAJOR*10000+MINOR*100+PATCH" }
-                releaseNotes: { type: string, description: "Optional; surfaced to the user in the update dialog" }
-                mandatory: { type: boolean, default: false, description: "Optional; if true the dialog is non-cancelable" }
-                url: { type: string, format: uri, description: "Optional override for the manifest's `url` field (e.g. a CDN URL)" }
+        $ref: '#/components/requestBodies/AppUpdatePublish'
       responses:
         '200':
-          description: Publish succeeded
+          description: Publish succeeded (state committed or pending — see the schema).
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ok: { type: boolean }
-                  versionName: { type: string }
-                  versionCode: { type: integer }
-                  sha256: { type: string, description: "Hex SHA-256 of the uploaded APK bytes" }
-                  apkFilename: { type: string, description: "The basename of the file as it lives in the storage directory" }
+                $ref: '#/components/schemas/AppUpdatePublishResult'
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '422': { $ref: '#/components/responses/Unprocessable' }
+        '413':
+          description: >-
+            Total body (or a single APK part) exceeds `[updates] max_apk_size`
+            (default 100 MiB).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '422':
+          description: >-
+            versionName/versionCode missing, versionCode not a non-negative
+            integer, or no `apk_<abi>` file part present.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api/admin/app/updates/phone:
@@ -1642,39 +1727,35 @@ paths:
       summary: Publish a new build for the phone track
       description: |
         Same shape as the TV publish endpoint, separate track. See the TV
-        endpoint for the auth rules.
+        endpoint for the auth rules and the multi-POST publish flow.
       security:
         - updateToken: []
       requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [apk, versionName, versionCode]
-              properties:
-                apk: { type: string, format: binary }
-                versionName: { type: string }
-                versionCode: { type: integer }
-                releaseNotes: { type: string }
-                mandatory: { type: boolean, default: false }
-                url: { type: string, format: uri }
+        $ref: '#/components/requestBodies/AppUpdatePublish'
       responses:
         '200':
-          description: Publish succeeded
+          description: Publish succeeded (state committed or pending — see the schema).
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ok: { type: boolean }
-                  versionName: { type: string }
-                  versionCode: { type: integer }
-                  sha256: { type: string }
-                  apkFilename: { type: string }
+                $ref: '#/components/schemas/AppUpdatePublishResult'
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '422': { $ref: '#/components/responses/Unprocessable' }
+        '413':
+          description: >-
+            Total body (or a single APK part) exceeds `[updates] max_apk_size`
+            (default 100 MiB).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '422':
+          description: >-
+            versionName/versionCode missing, versionCode not a non-negative
+            integer, or no `apk_<abi>` file part present.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api/app/updates/tv/{filename}:
@@ -1763,6 +1844,45 @@ components:
       schema:
         type: string
       example: "admin"
+
+  requestBodies:
+    AppUpdatePublish:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            required: [versionName, versionCode]
+            description: >-
+              At least one `apk_<abi>` file part is required (not
+              expressible as a JSON Schema `required` entry since the field
+              name is the variable ABI). `apk_arm64-v8a`, `apk_armeabi-v7a`,
+              `apk_x86_64`, `apk_x86` and `apk_universal` are the common
+              names in use; any `apk_<abi>` name is accepted. A release can
+              carry any combination of them in one POST, or be built up
+              across several POSTs (see `finalize` below and
+              `doc/UPDATES.md`).
+            properties:
+              apk_arm64-v8a: { type: string, format: binary, description: "APK for arm64-v8a devices" }
+              apk_armeabi-v7a: { type: string, format: binary, description: "APK for armeabi-v7a devices" }
+              apk_x86_64: { type: string, format: binary, description: "APK for x86_64 devices (Chromebooks, emulators)" }
+              apk_x86: { type: string, format: binary, description: "APK for x86 devices (older emulators)" }
+              apk_universal: { type: string, format: binary, description: "Fat APK; fallback for clients that don't list a specific ABI" }
+              versionName: { type: string, example: "1.0.1" }
+              versionCode: { type: integer, example: 10101, description: "Non-negative integer. Common scheme: MAJOR*10000+MINOR*100+PATCH. All POSTs building the same release must share this value." }
+              releaseNotes: { type: string, description: "Optional; surfaced to the user in the update dialog" }
+              mandatory: { type: boolean, default: false, description: "Optional; if true the dialog is non-cancelable" }
+              finalize:
+                type: boolean
+                default: true
+                description: >-
+                  Whether this POST makes the release visible to clients.
+                  Default true: this POST commits (single-POST publish, the
+                  simple case). Set false to stage this POST's APK(s) into
+                  the in-progress release without publishing it yet —
+                  send a later POST with `finalize=true` (or omitted) to
+                  commit. See "Single POST vs multi-POST" in
+                  `doc/UPDATES.md`.
 
   schemas:
 
@@ -1973,11 +2093,12 @@ components:
       description: |
         Body of `GET /api/app/<track>/update` when a build is available.
         Clients upgrade iff `versionCode` is strictly greater than their
-        installed `BuildConfig.VERSION_CODE`. The `url` points to the
-        currently advertised APK; `sha256` lets the client verify the
-        download. `mandatory` removes the "Later" / "Skip" buttons in the
-        dialog.
-      required: [versionName, versionCode, apkFilename, sha256, url]
+        installed `BuildConfig.VERSION_CODE`. Every APK in the release is a
+        first-class entry in `builds` — there is no single-APK convenience
+        field, even for a release with only one build. `mandatory` removes
+        the "Later" / "Skip" buttons in the dialog. See the client selection
+        algorithm in `doc/UPDATES.md`.
+      required: [versionName, versionCode, mandatory, builds]
       properties:
         versionName:
           type: string
@@ -1985,24 +2106,79 @@ components:
         versionCode:
           type: integer
           example: 10101
-        apkFilename:
-          type: string
-          description: Basename of the APK as stored on the server
-          example: "eneverre-tv-universal-1.0.1.apk"
-        url:
-          type: string
-          format: uri
-          description: Absolute URL the client should GET to download the APK
-        sha256:
-          type: string
-          description: Lowercase hex SHA-256 of the APK bytes
-          example: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
         mandatory:
           type: boolean
           default: false
         releaseNotes:
           type: string
           description: Optional release notes shown in the update dialog
+        builds:
+          type: array
+          description: One entry per APK variant in the release, in CI publish order.
+          items:
+            $ref: '#/components/schemas/UpdateBuild'
+
+    UpdateBuild:
+      type: object
+      required: [abi, apkFilename, size, sha256, url]
+      properties:
+        abi:
+          type: string
+          description: "Android ABI: arm64-v8a, armeabi-v7a, x86, x86_64, universal, ..."
+          example: "arm64-v8a"
+        apkFilename:
+          type: string
+          description: Basename of the APK as stored on the server
+          example: "eneverre-tv-arm64-1.0.1.apk"
+        size:
+          type: integer
+          format: int64
+          description: Size of the APK in bytes
+        sha256:
+          type: string
+          description: Lowercase hex SHA-256 of the APK bytes; the client verifies it after download
+          example: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        url:
+          type: string
+          format: uri
+          description: Absolute URL the client GETs to download this APK
+
+    AppUpdatePublishResult:
+      type: object
+      description: >-
+        Response of a successful publish POST. `state` distinguishes a
+        finalized (client-visible) release from a staged, in-progress one
+        (multi-POST flow).
+      required: [ok, state, versionName, versionCode, builds, abis]
+      properties:
+        ok:
+          type: boolean
+        state:
+          type: string
+          enum: [committed, pending]
+          description: >-
+            `committed`: this POST's `finalize` resolved true, so the
+            release is now the current one clients see. `pending`: staged
+            only — the in-progress release was updated but is not yet
+            visible; a later POST with `finalize=true` commits it.
+        versionName:
+          type: string
+        versionCode:
+          type: integer
+        builds:
+          type: integer
+          description: Total number of APKs in the release so far (this POST plus any earlier ones with the same versionCode).
+        abis:
+          type: array
+          items:
+            type: string
+          description: ABIs of every build in the release so far.
+        abis_appended:
+          type: array
+          items:
+            type: string
+          description: ABIs this specific POST added. Present only when state is pending.
+
     Error:
       type: object
       description: Standard error body
@@ -2060,6 +2236,41 @@ components:
     NameUpdate:
       type: object
       properties:
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+
+    UserCreated:
+      type: object
+      description: >-
+        The `message` field plus an echo of the fields the created user was
+        given (not the full `User` model — no need to re-query it).
+      properties:
+        message:
+          type: string
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, user]
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+        must_change_password:
+          type: boolean
+
+    NameUpdateResult:
+      type: object
+      description: The `message` field plus the name fields as stored.
+      properties:
+        message:
+          type: string
         first_name:
           type: string
           nullable: true

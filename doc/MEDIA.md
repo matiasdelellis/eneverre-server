@@ -403,18 +403,18 @@ The RTSP relay (`:8554`) does **not** go through the proxy; expose it directly
 proxy (see [Metrics](#metrics)); a local Prometheus should scrape the service
 port directly rather than via Caddy.
 
-## Without recording
+## Recording is optional; live view isn't
 
-There is no "without the engine" mode: the engine is always started for
-cameras with a `source` URL. Omitting `[media]` only turns **recording** off —
-the live MSE feed and RTSP relay still run (live-only mode), and the
-`/recordings/*` endpoints answer 404. The raw camera `source` URL is never
-exposed to clients; the relay `rtsp://…:8554/{id}` (rotating credentials) is
-served instead.
+For any camera with a `source` URL, the engine is always on — live MSE and
+the RTSP relay run whether or not `[media]` is configured. The only thing
+`[media]` turns on is **recording** to disk (off by default): skip it, or
+leave `record` at its default, and that camera stays in live-only mode —
+still fully watchable, just not written to disk, so `/recordings/*` answers
+404 for it. Either way, clients never see the raw camera `source` URL; they
+always get the relay `rtsp://…:8554/{id}` with rotating credentials instead.
 
-Eneverre streams H264 or H265 (+AAC/G711) itself; H265 browser live plays only
-where the browser has an HEVC decoder (see [Codec support](#codec-support)). To
-serve H265 live on browsers **without** an HEVC decoder, another codec, or
-WebRTC, front the camera with an external streamer (go2rtc, lightNVR, a reverse
-proxy) and turn the built-in feeds off — set `mse = false` and `relay = false`
-per camera, or globally in `[media]`.
+If you want browser live for an H265 camera whose viewers lack an HEVC
+decoder, a different codec, or WebRTC, front the camera with an external
+streamer (go2rtc, lightNVR, a reverse proxy) and turn Eneverre's own feeds
+off for it — `mse = false` and `relay = false`, per camera or globally in
+`[media]` (see [Codec support](#codec-support)).
