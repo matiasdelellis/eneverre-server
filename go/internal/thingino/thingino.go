@@ -1,6 +1,6 @@
 // Package thingino makes the direct HTTP calls to Thingino cameras (PTZ move
-// and JPEG snapshot), porting app/services/thingino_service.py. A single shared
-// client with connection reuse stands in for the requests.Session.
+// and JPEG snapshot). A single shared client with connection reuse keeps the
+// connection pool warm across requests.
 package thingino
 
 import (

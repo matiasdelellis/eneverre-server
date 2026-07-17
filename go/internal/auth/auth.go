@@ -1,5 +1,5 @@
-// Package auth provides Werkzeug-compatible password hashing and the
-// Basic/Bearer authentication used by the API, porting app/auth.py.
+// Package auth provides Werkzeug-format password hashing and the Basic/Bearer
+// authentication used by the API.
 package auth
 
 import (

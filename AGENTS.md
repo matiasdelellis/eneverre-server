@@ -29,11 +29,6 @@ existing `data/eneverre.db` keeps working. INI parsing via `gopkg.in/ini.v1`.
 The web UI is vanilla JS, embedded with `go:embed`. The embedded media engine
 adds `gortsplib` (RTSP client) + `mediacommon` (fMP4) + `pion/*` (RTP/SDP).
 
-The service was ported from an earlier Python/FastAPI implementation, which has
-been removed. API behavior was verified against the Python version with a
-differential test (identical HTTP status across all endpoints; identical
-response bodies on every data-bearing route).
-
 ## Project documentation
 - [`README.md`](README.md) — user-facing intro, quick start, install recipe.
 - [`doc/example/README.md`](doc/example/README.md) — every INI key of
@@ -59,8 +54,7 @@ response bodies on every data-bearing route).
   platforms, and how to verify a download.
 - [`doc/openapi.yaml`](doc/openapi.yaml) — machine-readable API spec;
   update it when routes change (there is no auto-generation).
-- [`go/README.md`](go/README.md) — Go internals, layout, and the
-  endpoint-parity notes with the old Python service.
+- [`go/README.md`](go/README.md) — Go internals, layout, and endpoint notes.
 
 ## Layout
 All code lives under `go/` (module `eneverre`).
@@ -389,7 +383,7 @@ see request query strings and the more verbose media-engine traces
 - Gate auth at the top of the handler: `a.requireUser(w, r)` (Basic or Bearer)
   or `a.requireAdmin(w, r)`; both write the 401/403 and return nil on failure.
 - Respond with `writeJSON(w, status, v)` and `httpError(w, status, detail)`
-  (FastAPI-compatible `{"detail": "..."}` shape).
+  (the standard `{"detail": "..."}` error shape).
 - For camera responses, marshal `camera.Camera` (credentials are already
   excluded) and apply `WithEngineURLs` (the live `engine` is set on `App`
   via `SetMediaEngine` when `[media]` is configured) so URLs reflect the

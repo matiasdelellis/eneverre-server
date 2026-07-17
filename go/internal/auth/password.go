@@ -88,8 +88,8 @@ func scryptHash(method, salt, password string) string {
 	return hex.EncodeToString(dk)
 }
 
-// GeneratePasswordHash produces a Werkzeug-compatible pbkdf2:sha256 hash so the
-// value remains readable by both the Go and the original Python service.
+// GeneratePasswordHash produces a Werkzeug-format pbkdf2:sha256 hash, so hashes
+// interoperate with any existing data/eneverre.db.
 func GeneratePasswordHash(password string) string {
 	const iterations = 600000
 	salt := randSalt(16)

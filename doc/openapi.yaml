@@ -99,6 +99,45 @@ paths:
         '403':
           description: Admin required
 
+  /api/metrics:
+    get:
+      summary: Prometheus metrics
+      description: >-
+        Prometheus text-format metrics. Open to a scraper on loopback without
+        auth; any other client must authenticate. Enabled by default; when
+        `[server] metrics = false` the endpoint is not mounted and returns 404.
+        Camera metrics are aggregate counts with no per-camera id label. See
+        doc/MEDIA.md#metrics.
+      responses:
+        '200':
+          description: Metrics in Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Missing or invalid token (from a non-loopback client).
+        '404':
+          description: Metrics disabled ([server] metrics = false).
+
+  /api/metrics/json:
+    get:
+      summary: Metrics (JSON)
+      description: >-
+        The same metrics as /api/metrics rendered as JSON. Same auth model
+        (loopback bypass, else authenticated) and same 404 when disabled.
+      responses:
+        '200':
+          description: Metrics as a JSON object.
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Missing or invalid token (from a non-loopback client).
+        '404':
+          description: Metrics disabled ([server] metrics = false).
+
   /api/auth/login:
     post:
       summary: Login (username/password)
@@ -249,6 +288,168 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Camera'
+    post:
+      summary: Create a camera (admin)
+      description: >-
+        Adds a camera. Cameras live in the database (the `cameras.d/*.ini` files
+        are only a first-run seed), so a create takes effect immediately — the
+        media engine brings the new camera online without a restart. Requires an
+        admin token (403 for a non-admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CameraSpec'
+      responses:
+        '201':
+          description: The created camera, in the same public shape as GET /api/cameras.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Camera'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: A camera with that id already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '422':
+          description: Validation failure (bad id, missing source, invalid transport).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+  /api/cameras/probe:
+    post:
+      summary: Probe an RTSP source (admin)
+      description: >-
+        Tests an RTSP source URL for the "test connection" step of the add/edit
+        wizard, without creating anything. Always answers 200: on success the
+        detected codecs and dimensions, otherwise `{ok:false, error}` so the UI
+        can show the reason inline. Requires an admin token (403 for a
+        non-admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source]
+              properties:
+                source:
+                  type: string
+                  description: The camera's RTSP URL to probe.
+                transport:
+                  type: string
+                  enum: [auto, tcp, udp]
+                  default: auto
+      responses:
+        '200':
+          description: Probe result (success or failure — both are 200).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  codecs:
+                    type: array
+                    items:
+                      type: string
+                    description: Detected stream codecs (present when ok is true).
+                  width:
+                    type: integer
+                  height:
+                    type: integer
+                  error:
+                    type: string
+                    description: Failure reason (present when ok is false).
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/camera/{camera_id}:
+    put:
+      summary: Update a camera (admin)
+      description: >-
+        Replaces the stored config of an existing camera. The id is fixed by the
+        URL and cannot be changed (it is the recording path); any `id` in the
+        body is ignored. The media engine is reconfigured live (old pipeline torn
+        down, new one started) so source/transport/sink changes apply without a
+        restart. Requires an admin token (403 for a non-admin).
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CameraSpec'
+      responses:
+        '200':
+          description: The updated camera, in the same public shape as GET /api/cameras.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Camera'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Validation failure (missing source, invalid transport).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+    delete:
+      summary: Delete a camera (admin)
+      description: >-
+        Removes a camera: the DB row is deleted and the camera is detached from
+        the media engine and the in-memory set. Recorded segments already on disk
+        are left for retention to prune. Requires an admin token (403 for a
+        non-admin).
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: Camera deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/camera/{camera_id}/config:
+    get:
+      summary: Full stored camera config (admin)
+      description: >-
+        Returns the complete stored config of one camera, **including** the
+        source / backchannel / thingino credentials, so the edit form can prefill
+        them. This is intentionally separate from GET /api/cameras, whose public
+        model strips those secret fields and must never leak them; here the caller
+        is an authenticated admin editing a camera they configured. Requires an
+        admin token (403 for a non-admin).
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: The camera's stored config, credentials included.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraSpec'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /api/camera/{camera_id}/ptz/move:
     post:
@@ -358,9 +559,10 @@ paths:
       summary: JPEG snapshot of the camera
       description: >-
         Returns a still image for the camera. For Thingino cameras it proxies the
-        firmware snapshot (needs a configured thingino_api_key); for any other
-        camera it proxies the configured `snapshot_url` (the camera's own JPEG
-        endpoint). 404 when the camera has neither configured.
+        firmware snapshot (needs both `thingino_url` and `thingino_api_key`
+        configured); for any other camera it proxies the configured
+        `snapshot_url` (the camera's own JPEG endpoint). 404 when the camera has
+        neither configured.
       parameters:
         - $ref: '#/components/parameters/camera_id'
       responses:
@@ -567,7 +769,7 @@ paths:
         [start, start+duration], stitching consecutive segments gaplessly.
 
         **Embedded engine (gap fill):** coverage gaps within the window are
-        filled with a black "SIN GRABACIÓN" frame occupying the real gap time,
+        filled with a black "NO RECORDING" frame occupying the real gap time,
         so the clip is never silently trimmed and spans the full requested
         window. To make the spliced black frame decode alongside the recording
         (different SPS), the clip is emitted as **avc3** (H264 parameter sets
@@ -1568,15 +1770,20 @@ components:
         rtsp:
           type: string
           description: >-
-            RTSP URL. When the embedded media engine ([media]) is enabled, the
-            embedded relay URL with rotating credentials is returned; otherwise
-            the raw `source` INI value.
+            Embedded RTSP relay URL with rotating credentials
+            (`rtsp://<user>:<pass>@<host>:<port>/<id>`). `host` is `[media]
+            rtsp_host` when set, otherwise the host the client used to reach the
+            API. Present whenever the relay feature is on for the camera and a
+            host is resolvable; empty when the relay is disabled (`relay =
+            false`) or no host can be determined. The raw camera `source` is
+            never exposed.
         live_mse:
           type: string
           description: >-
             Same-origin MSE fMP4 path the web UI uses to play live
-            (`/api/camera/{id}/live/stream`). Set only when the embedded media
-            engine ([media]) is enabled.
+            (`/api/camera/{id}/live/stream`). Present by default (the MSE feed
+            does not require a [media] section); empty when the camera opts out
+            with `mse = false` or its codec is unsupported.
         width:
           type: integer
         height:
@@ -1599,9 +1806,6 @@ components:
             Current privacy state. When true the camera is paused: recording and
             transmission are stopped (and `live_mse`/`rtsp` are withheld), plus
             the firmware lens blackout on thingino cameras.
-        live:
-          type: string
-          description: Compatibility alias for `rtsp` (older clients).
         playback:
           type: boolean
           description: Compatibility alias for `capabilities.playback`.
@@ -1639,6 +1843,96 @@ components:
             otherwise G.711. Absent/empty when talk is false or the camera was
             unreachable at probe time (assume G.711).
 
+    CameraSpec:
+      type: object
+      description: >-
+        The full stored config of a camera — the create/update request body and
+        the GET /api/camera/{id}/config response. It carries the secret fields
+        (source, backchannel, snapshot_url, thingino credentials) that the public
+        Camera model omits. On create/update the boolean and numeric fields are
+        optional: an omitted key falls back to the same default the INI loader
+        applies (noted below), not to a zero value.
+      required: [id, source]
+      properties:
+        id:
+          type: string
+          description: >-
+            1–64 chars of letters, digits, '-' or '_', starting with a letter or
+            digit. Used as the recording subdirectory and throughout the API, so
+            it is immutable — ignored in an update body (the URL fixes it).
+        name:
+          type: string
+        comment:
+          type: string
+        location:
+          type: string
+        source:
+          type: string
+          description: The camera's RTSP URL (required). Must point at the camera itself.
+        backchannel:
+          type: string
+          description: >-
+            Optional direct RTSP URL to the camera's ONVIF Profile T two-way-audio
+            backchannel; its presence enables the `talk` capability.
+        snapshot_url:
+          type: string
+          description: >-
+            Optional HTTP(S) still-JPEG endpoint; its presence enables the
+            `thumbnail` capability for a non-thingino camera (proxied, no decode).
+        transport:
+          type: string
+          enum: [auto, tcp, udp]
+          default: auto
+          description: Per-camera source RTSP transport override.
+        record:
+          type: boolean
+          default: true
+          description: Opt this camera out of recording (only recorded when [media] record is on globally).
+        mse:
+          type: boolean
+          default: true
+          description: Opt this camera out of the live MSE feed.
+        relay:
+          type: boolean
+          default: true
+          description: Opt this camera out of the RTSP relay.
+        privacy:
+          type: boolean
+          default: true
+          description: Whether the runtime privacy toggle is offered; false marks an always-on camera.
+        playback:
+          type: boolean
+          default: false
+          description: Whether this camera advertises recordings to clients.
+        width:
+          type: integer
+          default: 16
+        height:
+          type: integer
+          default: 9
+        thingino_url:
+          type: string
+        thingino_api_key:
+          type: string
+          description: >-
+            Its presence (with thingino_url) enables the firmware snapshot and the
+            lens blackout used by privacy.
+        ptz:
+          type: boolean
+          default: false
+        home_x:
+          type: number
+          default: -1
+        home_y:
+          type: number
+          default: -1
+        privacy_x:
+          type: number
+          default: -1
+        privacy_y:
+          type: number
+          default: -1
+
     Recording:
       type: object
       properties:
@@ -1651,8 +1945,7 @@ components:
     Message:
       type: object
       description: >-
-        Status/error responses. OK responses use `message`; errors use `detail`
-        (FastAPI HTTPException-compatible shape).
+        Status/error responses. OK responses use `message`; errors use `detail`.
       properties:
         message:
           type: string
@@ -1696,7 +1989,7 @@ components:
           description: Optional release notes shown in the update dialog
     Error:
       type: object
-      description: FastAPI-compatible error body
+      description: Standard error body
       properties:
         detail:
           type: string

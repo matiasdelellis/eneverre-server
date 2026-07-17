@@ -1,7 +1,7 @@
-// Command eneverre is the Go port of the Eneverre NVR API. It is a
-// manufacturer-agnostic gateway: it serves a uniform camera list, mediates the
-// device-login flow, proxies PTZ/thumbnail/playback to upstreams, and serves
-// the static web UI. See AGENTS.md for the original Python layout.
+// Command eneverre is the Eneverre NVR API. It is a manufacturer-agnostic
+// gateway: it serves a uniform camera list, mediates the device-login flow,
+// proxies PTZ/thumbnail/playback to upstreams, and serves the static web UI.
+// See AGENTS.md for the architecture overview.
 package main
 
 import (

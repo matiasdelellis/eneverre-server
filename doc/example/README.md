@@ -24,7 +24,25 @@ for a fully commented template.
 host = 0.0.0.0
 port = 8080
 ; log_level = info        ; debug | info (default) | warn | error
+; read_timeout = 5m       ; HTTP request-body read timeout (time.ParseDuration)
+; metrics = true          ; expose /api/metrics + /api/metrics/json
+; cors_origins =          ; comma-separated Origin allowlist; empty = permissive
 ```
+
+`[server]` keys (all optional):
+
+ * **host / port:** Listen address. Default `0.0.0.0:8080`.
+ * **log_level:** `debug` | `info` (default) | `warn` | `error`. Overridden by
+   `--log-level` / `ENEVERRE_LOG_LEVEL`.
+ * **read_timeout:** Max time to read an HTTP request body (`time.ParseDuration`
+   format). Default `5m` — enough to publish a ~200 MiB APK over a slow link.
+   Precedence: this key > `ENEVERRE_READ_TIMEOUT` > `5m`.
+ * **metrics:** Prometheus metrics at `/api/metrics` (+ `/api/metrics/json`). On
+   by default; open to a loopback scraper and authenticated from anywhere else.
+   Set `false` to drop the endpoints entirely. See [`doc/MEDIA.md`](../MEDIA.md#metrics).
+ * **cors_origins:** Comma-separated browser CORS allowlist. Empty (default) is
+   permissive — any Origin is reflected, which is safe with same-origin UI +
+   Bearer-token auth. Set it to lock the browser surface to known front-ends.
 
 > **Admin user.** Eneverre does **not** read any username/password from this
 > file — all user management lives in `data/eneverre.db`. The first time the
@@ -41,12 +59,16 @@ port = 8080
 > forced change when creating a user or resetting a password.
 
 Optional sections (all commented out by default). `[media]` is the embedded
-media engine. The engine is always built for cameras with a `source`
-URL; with `[media]` it records per the per-camera `record` INI key
-(default true) and enforces `[media].retain`. **Without `[media]`** the
-engine runs in **live-only mode** (live MSE + RTSP relay, no disk write,
-`/recordings/*` answer 404) — useful when you only want the wall to
-work and retention is handled elsewhere:
+media engine. The engine is **always** built for cameras with a `source`
+URL, and the **live MSE feed + RTSP relay are on by default** (no `[media]`
+section needed — that is the point of the app). What `[media]` adds is
+**recording**, which is **off by default**: you turn it on globally with
+`[media] record = true` (and a writable `record_dir`), then opt individual
+cameras out with a per-camera `record = false`. With recording on the engine
+also enforces `[media] retain`. Until you set `record = true` — with or
+without a `[media]` section — the engine runs in **live-only mode** (live MSE
++ RTSP relay, no disk write, `/recordings/*` answer 404), useful when you only
+want the wall to work and retention is handled elsewhere:
 
 ```ini
 [auth]
@@ -66,21 +88,44 @@ refresh_token_ttl_days = 90
 ; long after it expires before the cleaner deletes it. 0 deletes expired
 ; tokens immediately (previous behaviour). Default 24.
 ;cleanup_grace_hours = 24
+; Security event log: when set, authentication failures are also written here
+; one line per event, for fail2ban/CrowdSec to tail. Empty (default) = no
+; dedicated file (events still go to the main log at WARN). See
+; doc/security-logging.md. Precedence: this key > ENEVERRE_SECURITY_LOG > "".
+;security_log = /var/log/eneverre/security.log
 
 [media]
-; Embedded media engine — records each camera, relays it over RTSP and
-; broadcasts it to browsers via MediaSource. One binary, no external streamer.
-; Every key is optional with sensible defaults; see [eneverre.ini](eneverre.ini)
-; for the full list (record_dir, record_path, segment_duration, retain,
-; rtsp_address, rtsp_host, transport, gap_message, etc.).
+; Embedded media engine — live MSE + RTSP relay (on by default) plus optional
+; recording (off by default; set record = true). One binary, no external
+; streamer. Every key is optional with sensible defaults; see
+; [eneverre.ini](eneverre.ini) for the fully commented list.
+;mse           = true         ; global toggle for the live MSE browser feed
+;relay         = true         ; global toggle for the RTSP relay
+;record        = false        ; global toggle for disk recording (turn on here)
 ;record_dir    = /var/lib/eneverre/recordings
-;rtsp_address  = :8554
+;index_path    = /var/lib/eneverre/recordings/index.db   ; segment index DB
+;cache_dir     = /var/lib/eneverre/cache                 ; gap-fill frame cache
+;segment_duration = 60s       ; min segment length
+;part_duration    = 1s        ; fMP4 fragment length (crash recovery-point)
+;max_part_size    = 50M       ; safety cap on a single fMP4 fragment (RAM valve)
 ;retain        = 240h         ; 0 = keep forever
+;rtsp_address  = :8554
 ;transport     = auto         ; auto | tcp | udp
+;gap_message   = NO RECORDING ; caption burned into gap-fill black frames
 ;rotate_hours  = 24           ; RTSP-relay credential rotation; 0 disables
 
 [events]
 webhook_secret = changeme    ; required to accept POST /api/camera/{id}/events
+;pre_seconds  = 5            ; widen each event's range this many seconds before
+;post_seconds = 5            ; ...and after the trigger (default 5 + 5)
+
+[updates]
+; Auto-update server for the Android clients. OFF unless storage_dir (or
+; ENEVERRE_UPDATES_DIR) is set — otherwise /api/app/* return 503.
+;storage_dir    = /var/lib/eneverre/app-updates
+;public_base_url = https://updates.example.com   ; base URL in the APK manifest
+;publish_token  = <32-byte-secret>               ; gate the publish endpoints
+;max_apk_size   = 100M                            ; hard cap on the upload body
 ```
 
 Motion events are pruned on the **same** retention window as recordings
@@ -95,6 +140,31 @@ the engine runs in live-only mode: `live_mse` and `rtsp` are still
 populated (so the wall works), but `/recordings/*` answer 404. See
 [`doc/MEDIA.md`](../MEDIA.md) for the full endpoint list, client
 integration notes, and the codec/coverage-gap semantics.
+
+## Command-line flags
+
+Everything above can also be pointed at from the command line; run
+`eneverre --help` for the authoritative list. Path flags override their
+`ENEVERRE_*` env vars, which override the built-in defaults.
+
+ * **`--data-dir <dir>`** — shortcut that roots config, cameras and DB at
+   `<dir>/eneverre.ini`, `<dir>/cameras.d`, `<dir>/eneverre.db` (e.g.
+   `--data-dir ./data-quincho` to run a second test environment).
+ * **`--config, -c <path>`** / **`--cameras-dir <dir>`** / **`--db <path>`** —
+   point at each file/dir individually (env: `ENEVERRE_CONFIG_PATH`,
+   `ENEVERRE_CAMERAS_DIR`, `ENEVERRE_DB_PATH`).
+ * **`--host` / `--port`** — override `[server] host`/`port`.
+ * **`--log-level <level>`** — `debug` | `info` | `warn` | `error`
+   (env: `ENEVERRE_LOG_LEVEL`).
+ * **`--no-cache`** — send `Cache-Control: no-store` on static UI assets, forcing
+   a fresh download every load (handy while editing the bundled UI).
+ * **`--reindex`** — rebuild the recording index from the segments on disk
+   before serving, then start normally. Use it once to recover from a lost or
+   corrupt `index.db`; it keeps existing rows and rebuilds only what is missing.
+   See [`doc/MEDIA.md`](../MEDIA.md) for the recovery model.
+ * **`--access-token-ttl-hours`** / **`--refresh-token-ttl-days`** — override the
+   `[auth]` token lifetimes.
+ * **`--version, -v`** / **`--help, -h`** — print version / usage and exit.
 
 ## cameras.d/<id>.ini
 

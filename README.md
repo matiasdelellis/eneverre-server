@@ -9,6 +9,9 @@ HTTP.
 [android]: https://github.com/matiasdelellis/eneverre-android
 [tv]: https://github.com/matiasdelellis/eneverre-tv
 
+Eneverre began as a rewrite of an earlier Python/FastAPI implementation, now
+fully replaced by this single Go binary.
+
 ## Why?
 
 Every NVR I tried is glued to a single brand or stack. Eneverre is the

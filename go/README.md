@@ -1,13 +1,12 @@
-# Eneverre API — Go port
+# Eneverre API
 
-A Go rewrite of the Eneverre NVR API (originally Python/FastAPI). It is
-drop-in compatible with the existing `data/eneverre.ini`, `data/cameras.d/`
-and `data/eneverre.db` — including the existing Werkzeug password hashes
-(both `scrypt` and `pbkdf2`).
+The Eneverre NVR API: a single static Go binary. It reads the existing
+`data/eneverre.ini`, `data/cameras.d/` and `data/eneverre.db` — including
+password hashes in the Werkzeug format (both `scrypt` and `pbkdf2`).
 
 ## Why Go
 
-- Single static binary, no virtualenv / Python runtime on the target host.
+- Single static binary — no interpreter or virtualenv on the target host.
 - Pure-Go SQLite (`modernc.org/sqlite`) — no CGO, cross-compiles cleanly.
 - Good fit for the proxy/gateway workload (PTZ, thumbnails, playback streaming).
 - The embedded media engine (`[media]`) adds in-process recording, RTSP
@@ -19,12 +18,24 @@ and `data/eneverre.db` — including the existing Werkzeug password hashes
 ```bash
 cd go
 go build -o eneverre .
-# run from the project root so ./data/* resolves like the Python app
+# run from the project root so ./data/* resolves as expected
 cd ..
 ./go/eneverre
 ```
 
-Config resolution matches the Python app (`app/config.py`):
+Run `./go/eneverre --help` for the full flag list (path flags override their
+`ENEVERRE_*` env vars, which override the defaults). Two operational flags worth
+calling out:
+
+- **`--reindex`** — rebuild the recording index from the segments on disk before
+  serving. Use it once to recover from a lost or corrupt `index.db`; it keeps
+  existing rows and rebuilds only what is missing (see
+  [`doc/MEDIA.md`](../doc/MEDIA.md) for the recovery model, including the
+  automatic on-startup recovery that runs without this flag).
+- **`--no-cache`** — serve the bundled UI assets with `Cache-Control: no-store`
+  so every load re-downloads them; handy while editing the embedded UI.
+
+Config resolution:
 
 | What        | Search order                                      | Env override            |
 |-------------|---------------------------------------------------|-------------------------|
@@ -110,8 +121,7 @@ password on first login before the app opens (the flag is UI-enforced; it does
 not block Basic-auth API calls). Admins can require the same change when
 creating a user or resetting a password; a self password change clears it. The
 listen address comes from
-`[server] host`/`port` (the Python `__main__` hardcoded `0.0.0.0:8080`; this
-port honors the config, defaulting to the same values). The server runs with
+`[server] host`/`port`, defaulting to `0.0.0.0:8080`. The server runs with
 explicit HTTP timeouts (`ReadHeaderTimeout` 5s, `ReadTimeout` 15s,
 `WriteTimeout` 30s, `IdleTimeout` 60s) so a slow/idle client cannot hold a
 connection open indefinitely; `WriteTimeout` is generous because the thumbnail
@@ -121,21 +131,21 @@ graceful `srv.Shutdown` (10s) followed by the embedded engine's
 clean stop doesn't drop the recording since the last segment rotation.
 
 ```bash
-go test ./...   # password-hash compatibility + server tests
+go test ./...   # password-hash + server tests
 go vet ./...
 ```
 
 ## Layout
 
 ```
-main.go                       server bootstrap (was app/main.py)
-internal/config               INI loading + path resolution (app/config.py)
-internal/store                SQLite open + schema/migrations + admin seed (app/db.py, app/db_init.py)
-internal/auth                 Werkzeug-compatible hashing + Basic/Bearer auth (app/auth.py)
-internal/camera               Camera model + INI loader (app/models/camera.py, services/camera_service.py)
-internal/streamauth           rotating credential store + RTSP URL builder (services/mediamtx_service.py)
-internal/thingino             PTZ move + JPEG snapshot HTTP calls (services/thingino_service.py)
-internal/events               event model + record/list/get/delete (models/event.py, services/events_service.py)
+main.go                       server bootstrap
+internal/config               INI loading + path resolution
+internal/store                SQLite open + schema/migrations + admin seed
+internal/auth                 Werkzeug-format hashing + Basic/Bearer auth
+internal/camera               Camera model + INI loader
+internal/streamauth           rotating credential store + RTSP URL builder
+internal/thingino             PTZ move + JPEG snapshot HTTP calls
+internal/events               event model + record/list/get/delete
 internal/updates              Android auto-update sidecar store
 internal/backchannel          ONVIF Profile T backchannel + G.711/RTP (push-to-talk)
 internal/media/               embedded media engine (active when [media] is configured)
@@ -148,7 +158,7 @@ internal/media/               embedded media engine (active when [media] is conf
   mtxi/                       MediaMTX-compatible mtxi box writer (gapless concat on playback)
   playback/                   VOD muxer: /get with gap fill + HLS VOD playlist
   retention/                  periodic cleaner (batched delete + dir prune)
-internal/server               HTTP routes + handlers (app/routers/*)
+internal/server               HTTP routes + handlers
   server.go                   App + mux + handler registry + deprecatedAlias
   handlers_auth.go            login/logout/refresh, device login
   handlers_events.go          webhook + list/delete events
@@ -158,16 +168,15 @@ internal/server               HTTP routes + handlers (app/routers/*)
   handlers_updates.go         Android auto-update publish + download
 ```
 
-## Endpoint parity
+## Endpoints
 
-All REST endpoints from `app/routers/` are ported and exercised:
-health, login/logout/refresh, cameras, ptz (move/home/recalibrate), privacy
+The REST surface is implemented and exercised: health, login/logout/refresh,
+cameras (list + admin CRUD + probe), ptz (move/home/recalibrate), privacy
 (lens blackout), thumbnail, the device-login flow, events (webhook + list +
 delete), and the full users CRUD (self + admin routes, with `me` taking
-precedence over `{username}`). PTZ home/recalibrate and privacy are
-Go-side additions beyond the original Python surface. The original
-external-MediaMTX proxy (`POST /api/auth` + `playback/{list,get}` →
-MediaMTX control API) was removed when the embedded engine replaced it.
+precedence over `{username}`). An earlier external-MediaMTX proxy
+(`POST /api/auth` + `playback/{list,get}` → MediaMTX control API) was removed
+when the embedded engine replaced it.
 
 The embedded media engine (`[media]`) is now the only streaming mode and
 adds a separate surface of its own, mounted under `/api/camera/{id}/`:
@@ -180,16 +189,16 @@ adds a separate surface of its own, mounted under `/api/camera/{id}/`:
   the canonical `/recordings/*` routes.
 - `GET /api/recordings/paths` — camera ids that have recordings.
 
-A Go-side addition beyond the Python surface is `GET /api/metrics` (+
-`/api/metrics/json`): Prometheus instrumentation, open to a local scraper over
-loopback and authenticated otherwise. Camera metrics are aggregate counts with
-no per-camera `id` label. See [`doc/MEDIA.md`](../doc/MEDIA.md#metrics).
+`GET /api/metrics` (+ `/api/metrics/json`) exposes Prometheus instrumentation,
+open to a local scraper over loopback and authenticated otherwise. Camera
+metrics are aggregate counts with no per-camera `id` label. See
+[`doc/MEDIA.md`](../doc/MEDIA.md#metrics).
 
 Full endpoint list, payload shapes, client integration notes and the
 codec/coverage-gap semantics are in
 [`doc/MEDIA.md`](../doc/MEDIA.md).
 
-Behavioral details preserved: Thingino credentials stripped from camera
+Behavioral details worth noting: Thingino credentials stripped from camera
 responses, INI keys are case-insensitive (`home_Y` → `home_y`), webhook
 accepts arbitrary bodies and records a `webhook:raw (...)` source on parse
 failure, timestamps accept unix-or-RFC3339 and serialize as RFC3339 UTC,
@@ -229,14 +238,13 @@ accordingly (e.g. higher) during the rollout.
 
 ## Out of scope
 
-The previous Python implementation has been removed; this Go service is the
-whole API. A few peripheral pieces were intentionally left out:
+This Go service is the whole API. A few peripheral pieces are intentionally
+left out:
 
 - **ONVIF watcher** and the **CLI tools** (user management) — out of
   scope by request. The motion-event ingestion still works: any
   ONVIF/motion source can POST to the events webhook (`POST
   /api/camera/{id}/events`), which needs no shared code.
-- **Auto-generated OpenAPI/Swagger** — FastAPI served these from the running
-  app; the Go service does not. A hand-maintained spec lives at
-  [`doc/openapi.yaml`](../doc/openapi.yaml) instead — update it when routes
-  change.
+- **Auto-generated OpenAPI/Swagger** — not served from the running app. A
+  hand-maintained spec lives at [`doc/openapi.yaml`](../doc/openapi.yaml)
+  instead — update it when routes change.

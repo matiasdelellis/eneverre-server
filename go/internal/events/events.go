@@ -1,6 +1,5 @@
-// Package events records and queries motion events, porting
-// app/models/event.py and app/services/events_service.py. Timestamps are
-// stored as unix seconds and serialized as RFC3339 UTC strings on the wire.
+// Package events records and queries motion events. Timestamps are stored as
+// unix seconds and serialized as RFC3339 UTC strings on the wire.
 package events
 
 import (
@@ -22,8 +21,7 @@ type Event struct {
 	CreatedAt int64
 }
 
-// MarshalJSON renders timestamps as RFC3339 UTC strings, matching the Python
-// field serializer.
+// MarshalJSON renders timestamps as RFC3339 UTC strings.
 func (e Event) MarshalJSON() ([]byte, error) {
 	var src *string
 	if e.Source.Valid {

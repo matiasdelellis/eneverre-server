@@ -8,8 +8,8 @@ import (
 )
 
 // cors handles CORS and preflight OPTIONS. `allowed` is the Origin allowlist:
-// when empty it preserves the historical permissive behavior (reflect any
-// Origin with credentials, matching the old FastAPI config); when non-empty
+// when empty it preserves the default permissive behavior (reflect any
+// Origin with credentials); when non-empty
 // only those Origins get CORS headers, so a hostile page can't ride a browser
 // session against the API. A request with no Origin (same-origin, curl, the
 // native apps) is unaffected either way.

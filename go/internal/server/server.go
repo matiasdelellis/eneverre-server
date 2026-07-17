@@ -1,5 +1,5 @@
-// Package server wires the HTTP routes and holds the application state,
-// porting app/main.py and the app/routers package onto net/http.
+// Package server wires the HTTP routes and holds the application state on
+// net/http.
 package server
 
 import (
@@ -580,7 +580,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// httpError mirrors FastAPI's HTTPException body shape: {"detail": "..."}.
+// httpError writes the API's standard error body shape: {"detail": "..."}.
 func httpError(w http.ResponseWriter, status int, detail string) {
 	writeJSON(w, status, map[string]string{"detail": detail})
 }

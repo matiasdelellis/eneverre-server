@@ -1,5 +1,4 @@
-// Package config loads and caches the eneverre INI configuration, mirroring
-// the lookup behavior of the original app/config.py.
+// Package config loads and caches the eneverre INI configuration.
 package config
 
 import (
@@ -14,8 +13,7 @@ import (
 	"gopkg.in/ini.v1"
 )
 
-// Search paths, in priority order. The first existing file wins. These match
-// the tuples in app/config.py.
+// Search paths, in priority order. The first existing file wins.
 var (
 	configPaths = []string{"/etc/eneverre/eneverre.ini", "./data/eneverre.ini"}
 	camerasDirs = []string{"/etc/eneverre/cameras.d", "./data/cameras.d"}

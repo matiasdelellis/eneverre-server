@@ -1,5 +1,4 @@
-// Package camera defines the Camera model and loads the per-camera INI files,
-// porting app/models/camera.py and app/services/camera_service.py.
+// Package camera defines the Camera model and loads the per-camera INI files.
 package camera
 
 import (
@@ -40,8 +39,7 @@ type Capabilities struct {
 }
 
 // Camera is the public-facing camera model. The Thingino credential fields are
-// tagged json:"-" so marshaling a Camera is equivalent to the Python public()
-// helper that strips them.
+// tagged json:"-" so marshaling a Camera never leaks them.
 type Camera struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`

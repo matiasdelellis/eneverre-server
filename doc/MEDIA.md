@@ -207,7 +207,7 @@ part_duration    = 1s          ; recovery-point objective (crash loses ≤ this)
 ;max_part_size   = 50M         ; force a part out past this size (K/M/G, base 1024)
 retain           = 240h        ; 0 = keep forever
 rtsp_address     = :8554       ; RTSP relay listen address
-;rtsp_host       = nvr.example.com  ; public host; only then is `rtsp` exposed
+;rtsp_host       = nvr.example.com  ; pin the public host in the `rtsp` URL (else the request host)
 transport        = auto        ; source transport: auto (default) | tcp | udp
 ;rotate_hours    = 24          ; stream/relay credential rotation
 ```
@@ -326,11 +326,13 @@ Bearer (or Basic) auth.
   fetch it with the Bearer token and query `live/info` first for the codec
   `mime`. ~1-2s latency.
 - **Apps / RTSP**: use `camera.rtsp` (the relay `rtsp://…:8554/{id}`), present
-  only when `[media] rtsp_host` is set. Standard RTSP; the embedded creds
-  rotate, so re-read `/api/cameras` for a fresh URL.
-- Without `[media]` the camera is returned as-is from the INI and the live
-  view is unavailable (the wall shows "No live stream" — the embedded
-  engine is the only streaming surface Eneverre serves itself).
+  whenever the relay feature is on and a host is resolvable — `rtsp_host` when
+  set, otherwise the host the client used to reach the API. Standard RTSP; the
+  embedded creds rotate, so re-read `/api/cameras` for a fresh URL.
+- Live view does **not** require a `[media]` section: the MSE feed and RTSP
+  relay are on by default (that is what `[media]` makes optional — recording).
+  A camera drops off the live surface only when it has no `source`, or its
+  codec is unsupported, or you opt it out with `mse = false` / `relay = false`.
 
 **Recordings / timeline**
 - `recordings/timeline` → draw the recorded extent; `recordings/gaps` → mark gaps.

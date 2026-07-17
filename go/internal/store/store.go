@@ -1,6 +1,5 @@
-// Package store opens the SQLite database and bootstraps its schema, porting
-// app/db.py and app/db_init.py. It uses the pure-Go modernc.org/sqlite driver
-// (no CGO).
+// Package store opens the SQLite database and bootstraps its schema. It uses
+// the pure-Go modernc.org/sqlite driver (no CGO).
 package store
 
 import (
