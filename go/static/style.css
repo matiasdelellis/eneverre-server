@@ -1563,8 +1563,11 @@ button.icon-btn {
   width: 100%;
 }
 .users-form button[type=submit] { align-self: flex-start; }
-.users-inline-status { font-size: 13px; }
-.users-inline-status.ok { color: var(--good); }
+
+/* "My account" name/password rows: a value (optional) plus the button that
+   opens the corresponding dialog/modal. */
+.users-field-row { display: flex; align-items: center; gap: 12px; margin: 0; }
+.users-field-row > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 button.primary {
   background: var(--accent) var(--accent-grad);

@@ -6,8 +6,9 @@ import { blankToNull, displayName } from "../util/format.js";
 import { alertModal, confirmModal, promptModal } from "../ui/dialog.js";
 import { trapFocus } from "../util/focus-trap.js";
 
-// Focus-trap release for the open user-edit modal (null when closed).
+// Focus-trap release for the open user-edit / my-password modals (null when closed).
 let userEditRelease = null;
+let myPasswordRelease = null;
 import { refreshUserMenu, closeUserMenu } from "../ui/user-menu.js";
 import { moveGlobalControlsTo, closeOverlayViews, backLabel } from "./app-shell.js";
 import { t } from "../i18n.js";
@@ -62,11 +63,7 @@ export function enterUsersView(mode = "account") {
       username: meData ? meData.username : "",
       role: meData ? meData.role : "",
     });
-    const nameForm = document.getElementById("my-name-form");
-    if (nameForm) {
-      nameForm.elements.first_name.value = meData && meData.first_name ? meData.first_name : "";
-      nameForm.elements.last_name.value = meData && meData.last_name ? meData.last_name : "";
-    }
+    renderMyName(meData);
     tasks.push(loadMySessions());
   }
   Promise.allSettled(tasks);
@@ -80,6 +77,12 @@ export function exitUsersView() {
   moveGlobalControlsTo(document.querySelector("#app .app-main header.topbar"));
   document.getElementById("app").hidden = false;
   closeUserEditModal();
+  closeMyPasswordModal();
+}
+
+function renderMyName(meData) {
+  const el = document.getElementById("my-name-display");
+  if (el) el.textContent = (meData && displayName(meData)) || "—";
 }
 
 function setUsersStatus(msg, kind) {
@@ -375,6 +378,61 @@ function renderSessionRow(s, isExpired) {
   return row;
 }
 
+// "Update name" (My account): same 2-field promptModal already used by
+// admins to rename other users (see onUserActionClick, act === "name"), but
+// hitting the /me endpoint and refreshing our own cached user + topbar menu.
+async function openMyNameModal() {
+  const meData = me();
+  const result = await promptModal(t("users.my_name"), {
+    title: t("users.my_name"),
+    inputLabel: t("users.first_name"),
+    inputValue: meData && meData.first_name ? meData.first_name : "",
+    input2Label: t("users.last_name"),
+    input2Value: meData && meData.last_name ? meData.last_name : "",
+    okLabel: t("users.save"),
+  });
+  if (result === null) return;
+  try {
+    const data = await api("/api/users/me/name", {
+      method: "PUT",
+      body: JSON.stringify({
+        first_name: blankToNull(result.first),
+        last_name: blankToNull(result.second),
+      }),
+    });
+    const u = loadJson(USER_KEY);
+    if (u) {
+      u.first_name = data.first_name || null;
+      u.last_name = data.last_name || null;
+      saveJson(USER_KEY, u);
+      refreshUserMenu({ ...u, displayName: displayName(u) || u.username });
+    }
+    renderMyName(me());
+    setUsersStatus(t("users.name_updated"), "ok");
+  } catch (err) {
+    setUsersStatus(err.message || String(err));
+  }
+}
+
+// "Update password" (My account): promptModal only supports plain-text
+// inputs (max two), so a dedicated modal (#my-password-modal, styled like
+// #user-edit-modal) carries the three password fields instead.
+function openMyPasswordModal() {
+  const modal = document.getElementById("my-password-modal");
+  const form = document.getElementById("my-pass-form");
+  form.reset();
+  document.getElementById("my-pass-status").hidden = true;
+  modal.hidden = false;
+  if (myPasswordRelease) myPasswordRelease();
+  myPasswordRelease = trapFocus(modal);
+  form.elements.current_password.focus();
+}
+
+function closeMyPasswordModal() {
+  document.getElementById("my-password-modal").hidden = true;
+  if (myPasswordRelease) { myPasswordRelease(); myPasswordRelease = null; }
+}
+
 async function submitMyPassword(e) {
   e.preventDefault();
   const form = e.target;
@@ -385,7 +443,6 @@ async function submitMyPassword(e) {
   const confirmPw = fd.get("confirm_password");
   if (newPw !== confirmPw) {
     status.textContent = t("users.password_mismatch");
-    status.className = "error users-inline-status";
     status.hidden = false;
     return;
   }
@@ -399,48 +456,10 @@ async function submitMyPassword(e) {
         new_password: newPw,
       }),
     });
-    form.reset();
-    status.textContent = t("users.password_updated");
-    status.className = "ok users-inline-status";
-    status.hidden = false;
+    closeMyPasswordModal();
+    setUsersStatus(t("users.password_updated"), "ok");
   } catch (err) {
     status.textContent = err.message || String(err);
-    status.className = "error users-inline-status";
-    status.hidden = false;
-  } finally {
-    submit.disabled = false;
-  }
-}
-
-async function submitMyName(e) {
-  e.preventDefault();
-  const form = e.target;
-  const status = document.getElementById("my-name-status");
-  status.hidden = true;
-  const fd = new FormData(form);
-  const submit = form.querySelector("button[type=submit]");
-  submit.disabled = true;
-  try {
-    const data = await api("/api/users/me/name", {
-      method: "PUT",
-      body: JSON.stringify({
-        first_name: blankToNull(fd.get("first_name")),
-        last_name: blankToNull(fd.get("last_name")),
-      }),
-    });
-    const u = loadJson(USER_KEY);
-    if (u) {
-      u.first_name = data.first_name || null;
-      u.last_name = data.last_name || null;
-      saveJson(USER_KEY, u);
-      refreshUserMenu({ ...u, displayName: displayName(u) || u.username });
-    }
-    status.textContent = t("users.name_updated");
-    status.className = "ok users-inline-status";
-    status.hidden = false;
-  } catch (err) {
-    status.textContent = err.message || String(err);
-    status.className = "error users-inline-status";
     status.hidden = false;
   } finally {
     submit.disabled = false;
@@ -454,12 +473,20 @@ export function initUsers() {
   document.getElementById("users-new")?.addEventListener("click", openUserEditModal);
   document.getElementById("user-edit-cancel")?.addEventListener("click", closeUserEditModal);
   document.getElementById("user-edit-form")?.addEventListener("submit", submitNewUser);
+  document.getElementById("my-name-btn")?.addEventListener("click", openMyNameModal);
+  document.getElementById("my-pass-btn")?.addEventListener("click", openMyPasswordModal);
+  document.getElementById("my-pass-cancel")?.addEventListener("click", closeMyPasswordModal);
   document.getElementById("my-pass-form")?.addEventListener("submit", submitMyPassword);
-  document.getElementById("my-name-form")?.addEventListener("submit", submitMyName);
   const modal = document.getElementById("user-edit-modal");
   if (modal) {
     modal.addEventListener("click", (e) => {
       if (e.target === modal) closeUserEditModal();
+    });
+  }
+  const pwModal = document.getElementById("my-password-modal");
+  if (pwModal) {
+    pwModal.addEventListener("click", (e) => {
+      if (e.target === pwModal) closeMyPasswordModal();
     });
   }
 }

@@ -206,31 +206,15 @@
         <p class="muted" id="me-signed-in-as"></p>
 
         <h3 data-i18n="users.my_name">My name</h3>
-        <form id="my-name-form" class="users-form">
-          <label><span data-i18n="users.first_name">First name</span>
-            <input name="first_name" autocomplete="given-name" />
-          </label>
-          <label><span data-i18n="users.last_name">Last name</span>
-            <input name="last_name" autocomplete="family-name" />
-          </label>
-          <button type="submit" data-i18n="users.update_name">Update name</button>
-          <p id="my-name-status" class="muted users-inline-status" hidden></p>
-        </form>
+        <p class="users-field-row">
+          <span id="my-name-display" class="muted"></span>
+          <button type="button" id="my-name-btn" class="ghost" data-i18n="users.update_name">Update name</button>
+        </p>
 
         <h3 data-i18n="users.change_password">Change my password</h3>
-        <form id="my-pass-form" class="users-form">
-          <label><span data-i18n="users.current_password">Current password</span>
-            <input name="current_password" type="password" autocomplete="current-password" required />
-          </label>
-          <label><span data-i18n="users.new_password">New password</span>
-            <input name="new_password" type="password" autocomplete="new-password" required />
-          </label>
-          <label><span data-i18n="users.confirm_password">Confirm new password</span>
-            <input name="confirm_password" type="password" autocomplete="new-password" required />
-          </label>
-          <button type="submit" data-i18n="users.update_password">Update password</button>
-          <p id="my-pass-status" class="muted users-inline-status" hidden></p>
-        </form>
+        <p class="users-field-row">
+          <button type="button" id="my-pass-btn" class="ghost" data-i18n="users.update_password">Update password</button>
+        </p>
 
         <h3 data-i18n="users.active_sessions">Active sessions</h3>
         <p class="muted" data-i18n="users.sessions_hint">Revoke a session to immediately invalidate its token.</p>
@@ -244,6 +228,28 @@
       </section>
     </div>
   </section>
+
+  <div id="my-password-modal" class="user-edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="my-password-title">
+    <div class="user-edit-card">
+      <h2 id="my-password-title" data-i18n="users.change_password">Change my password</h2>
+      <form id="my-pass-form" class="users-form">
+        <label><span data-i18n="users.current_password">Current password</span>
+          <input name="current_password" type="password" autocomplete="current-password" required />
+        </label>
+        <label><span data-i18n="users.new_password">New password</span>
+          <input name="new_password" type="password" autocomplete="new-password" required />
+        </label>
+        <label><span data-i18n="users.confirm_password">Confirm new password</span>
+          <input name="confirm_password" type="password" autocomplete="new-password" required />
+        </label>
+        <p id="my-pass-status" class="error" hidden></p>
+        <div class="user-edit-actions">
+          <button type="button" id="my-pass-cancel" class="ghost" data-i18n="user-edit.cancel">Cancel</button>
+          <button type="submit" class="primary" data-i18n="users.save">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <div id="user-edit-modal" class="user-edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="user-edit-title">
     <div class="user-edit-card">
