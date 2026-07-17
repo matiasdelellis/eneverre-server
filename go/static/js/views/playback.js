@@ -2,6 +2,7 @@ import { $, $$, makeMsg } from "../util/dom.js";
 import { token, apiFetch } from "../api.js";
 import { getState } from "../state.js";
 import { icon } from "../ui/icons.js";
+import { toast } from "../ui/toast.js";
 import { Timeline } from "../../timeline.js";
 import { t, getLang } from "../i18n.js";
 
@@ -601,6 +602,67 @@ export function setupPlaybackBar() {
       pbTimeline.draw();
       startVodPlayback(pbCams, clamped);
     });
+  }
+
+  // ----- Share this moment -----
+  // Unlike the rest of playback, the timeline cursor is intentionally NOT
+  // mirrored into the URL as it moves; this button is the one place a precise
+  // moment (current filter + cursor) is turned into a shareable link.
+  const shareBtn = $("#pb-share");
+  if (shareBtn) {
+    shareBtn.addEventListener("click", () => {
+      if (!pbTimeline) return;
+      shareMoment(Math.floor(pbTimeline.getCurrent() / 1000));
+    });
+  }
+}
+
+// buildShareLink builds an absolute URL that reopens the current playback view
+// (camera or location filter, or all cameras) positioned at wall-clock `tSec`.
+// Consumed by app-shell's parseUrlState/applyUrlState on load.
+function buildShareLink(tSec) {
+  const { wallFilter } = getState();
+  const u = new URL(window.location.href);
+  u.search = "";
+  u.searchParams.set("view", "playback");
+  if (wallFilter.type === "cam") u.searchParams.set("cam", wallFilter.value);
+  else if (wallFilter.type === "loc") u.searchParams.set("loc", wallFilter.value);
+  u.searchParams.set("t", String(tSec));
+  return u.toString();
+}
+
+async function shareMoment(tSec) {
+  const link = buildShareLink(tSec);
+  // The async Clipboard API needs a secure context (https / localhost). Fall
+  // back to a hidden-textarea copy, then to a prompt the user can copy from.
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(link);
+      toast(t("pb.share_copied"), { type: "success" });
+      return;
+    }
+  } catch {}
+  if (legacyCopy(link)) {
+    toast(t("pb.share_copied"), { type: "success" });
+    return;
+  }
+  window.prompt(t("pb.share_prompt"), link);
+}
+
+function legacyCopy(text) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
   }
 }
 

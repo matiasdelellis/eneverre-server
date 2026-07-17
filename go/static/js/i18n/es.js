@@ -65,6 +65,9 @@ export default {
   "pb.jump": "Ir a fecha/hora",
   "pb.speed": "Velocidad de reproducción",
   "pb.live": "Directo",
+  "pb.share": "Compartir este momento",
+  "pb.share_copied": "Enlace copiado al portapapeles",
+  "pb.share_prompt": "Copiá este enlace para compartir el momento:",
 
   // Etiquetas del canvas de la línea de tiempo (dibujadas por timeline.js
   // vía opciones inyectadas).

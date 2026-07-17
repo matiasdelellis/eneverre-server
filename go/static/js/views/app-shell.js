@@ -8,7 +8,7 @@ import { api, token, setOnUnauthorized } from "../api.js";
 import { t } from "../i18n.js";
 import {
   getState, setViewMode as setViewModeState, setWallFilter, setWallFilterBeforeCam,
-  setSidebarCollapsed, resetOnLogout,
+  setSidebarCollapsed, resetOnLogout, on,
 } from "../state.js";
 import { closeUserMenu, refreshUserMenu } from "../ui/user-menu.js";
 import { showLogin } from "./login.js";
@@ -113,33 +113,96 @@ function parseDeviceNameFromUrl() {
   return raw.length > 120 ? raw.slice(0, 120) : raw;
 }
 
+// Guard flag: true while we are pushing state INTO the app from the URL
+// (initial load / popstate). It suppresses syncUrl() so applying URL state
+// doesn't turn around and write a fresh history entry (which would clobber
+// the entry we're navigating to and break back/forward).
+let applyingUrl = false;
+
+// parseUrlState reads the navigable state from the query string:
+//   ?view=live|playback   view mode (default live)
+//   ?cam=<id>             single-camera filter
+//   ?loc=<name>           location filter (cam wins if both present)
+//   ?t=<unix>             playback cursor, seconds or ms (only from a shared
+//                         "this moment" link — normal navigation never writes it)
+// Returns null when the URL carries no navigable state (bare "/"), so the
+// caller can fall back to the stored session state on first load.
 function parseUrlState() {
   const params = new URLSearchParams(window.location.search);
-  const cam = (params.get("cam") || "").trim();
-  const tRaw = (params.get("t") || "").trim();
   const viewRaw = (params.get("view") || "").trim().toLowerCase();
-  const view = (viewRaw === "live" || viewRaw === "playback") ? viewRaw : "live";
-  if (!cam || !tRaw) return null;
-  let t = parseInt(tRaw, 10);
-  if (!Number.isFinite(t) || t <= 0) return null;
-  if (t > 1e12) t = Math.floor(t / 1000);
-  return { view, cam, t };
+  const view = viewRaw === "playback" ? "playback" : "live";
+  const cam = (params.get("cam") || "").trim();
+  const loc = (params.get("loc") || "").trim();
+  let filter = { type: "all" };
+  if (cam) filter = { type: "cam", value: cam };
+  else if (loc) filter = { type: "loc", value: loc };
+  let t = null;
+  const tRaw = (params.get("t") || "").trim();
+  if (tRaw) {
+    let n = parseInt(tRaw, 10);
+    if (Number.isFinite(n) && n > 0) {
+      if (n > 1e12) n = Math.floor(n / 1000);
+      t = n;
+    }
+  }
+  if (filter.type === "all" && view === "live" && t == null) return null;
+  return { view, filter, t };
 }
 
 async function applyUrlState(state) {
-  // Lazy import to avoid cycle (playback imports from app-shell for setViewMode).
-  const { setPreservedPbState } = await import("./playback.js");
-  setPreservedPbState({
-    selectedMsec: state.t * 1000,
-    intervalMsec: PB_DEFAULT_INTERVAL,
-  });
-  setWallFilter({ type: "cam", value: state.cam });
-  setViewMode(state.view);
+  // Applying is guarded so the resulting wallFilter/viewMode events don't
+  // push a new history entry — the URL already reflects this state (it's
+  // either the address the user opened or the entry popstate restored).
+  applyingUrl = true;
+  try {
+    if (state.t != null) {
+      // Lazy import to avoid cycle (playback imports from app-shell for setViewMode).
+      const { setPreservedPbState } = await import("./playback.js");
+      setPreservedPbState({
+        selectedMsec: state.t * 1000,
+        intervalMsec: PB_DEFAULT_INTERVAL,
+      });
+    }
+    setWallFilter(state.filter);
+    setViewMode(state.view);
+  } finally {
+    applyingUrl = false;
+  }
+}
+
+// currentUrlParams builds the URL that reflects the current navigation state
+// (wall filter + view mode). It never emits `t`: the playback cursor only
+// enters the URL through the explicit "share this moment" button, never
+// through ordinary navigation.
+function currentUrlParams() {
+  const { wallFilter, viewMode } = getState();
   const u = new URL(window.location.href);
-  u.searchParams.set("view", state.view);
-  u.searchParams.set("cam", state.cam);
-  u.searchParams.set("t", String(state.t));
-  history.replaceState(null, "", u.toString());
+  u.searchParams.delete("view");
+  u.searchParams.delete("cam");
+  u.searchParams.delete("loc");
+  u.searchParams.delete("t");
+  if (viewMode === "playback") u.searchParams.set("view", "playback");
+  if (wallFilter.type === "cam") u.searchParams.set("cam", wallFilter.value);
+  else if (wallFilter.type === "loc") u.searchParams.set("loc", wallFilter.value);
+  return u;
+}
+
+// writeUrl reflects the current state into the address bar. `push` adds a
+// history entry (ordinary navigation, so back/forward works); otherwise it
+// replaces in place (boot normalization). No-op when the URL is unchanged.
+function writeUrl(push) {
+  const u = currentUrlParams();
+  if (u.toString() === window.location.href) return;
+  if (push) history.pushState(null, "", u.toString());
+  else history.replaceState(null, "", u.toString());
+}
+
+// syncUrl is subscribed to wallFilter/viewMode changes: every camera/location
+// selection or Live<->Playback switch becomes a bookmarkable, back/forward-able
+// URL. Suppressed while applyingUrl is set (change came from the URL itself).
+function syncUrl() {
+  if (applyingUrl || $("#app").hidden) return;
+  writeUrl(true);
 }
 
 export async function showApp() {
@@ -179,8 +242,14 @@ export async function showApp() {
   if (urlState) {
     applyUrlState(urlState);
   } else {
+    // No navigable URL state: restore the last view mode from the session and
+    // keep the wall filter loaded from localStorage, then reflect that restored
+    // state into the address bar (replaceState, so no spurious history entry).
     const saved = sessionGet(VIEW_KEY);
+    applyingUrl = true;
     setViewMode(saved === "playback" ? "playback" : "live");
+    applyingUrl = false;
+    writeUrl(false);
   }
 }
 
@@ -267,10 +336,14 @@ function initTopbar() {
 }
 
 function initDeepLinks() {
+  // Reflect every camera/location selection and Live<->Playback switch into the
+  // URL so any view can be bookmarked (and reached with back/forward).
+  on("wallFilter", syncUrl);
+  on("viewMode", syncUrl);
   window.addEventListener("popstate", () => {
     if ($("#app").hidden) return;
-    const state = parseUrlState();
-    if (!state) return;
+    // A bare "/" (no navigable params) means "all cameras, live".
+    const state = parseUrlState() || { view: "live", filter: { type: "all" }, t: null };
     applyUrlState(state);
   });
 }

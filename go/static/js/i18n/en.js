@@ -65,6 +65,9 @@ export default {
   "pb.jump": "Jump to date/time",
   "pb.speed": "Playback speed",
   "pb.live": "Live",
+  "pb.share": "Share this moment",
+  "pb.share_copied": "Link copied to clipboard",
+  "pb.share_prompt": "Copy this link to share the moment:",
 
   // Timeline canvas labels (drawn by timeline.js via injected options).
   "pb.tl_live": "LIVE",
