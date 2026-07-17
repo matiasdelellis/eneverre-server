@@ -109,10 +109,15 @@ type App struct {
 	privacyOpsMu sync.Mutex
 	privacyOps   map[string]*sync.Mutex
 
-	// updates holds the per-track auto-update stores (keys: "tv", "phone").
-	// Empty when the [updates] section is not configured; in that case the
-	// /api/app/* endpoints answer 503.
-	updates map[string]*updates.Store
+	// updatesRoot is the configured auto-update storage root, empty when
+	// the [updates] section is not configured (in which case the
+	// /api/app/* endpoints answer 503). Read-only handlers construct a
+	// transient *updates.Store from it directly; updatesRegistry is used
+	// by the publish handler, which needs a *Store shared across requests
+	// to the same track so its internal mutex serializes concurrent
+	// publishes.
+	updatesRoot     string
+	updatesRegistry *updates.Registry
 
 	// talk tracks the live two-way-audio backchannel session per camera id.
 	// A camera is present in the map (possibly with a nil placeholder during
@@ -151,9 +156,9 @@ const (
 // served for static assets; pass "" to use the default ("no-cache").
 // accessTTL/refreshTTL are the token lifetimes in seconds (already resolved by
 // the caller with flag/env/config precedence); pass <= 0 to fall back to the
-// built-in defaults. updateStores are the per-track auto-update stores; pass
-// nil when the feature is not configured.
-func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *camera.Store, cameras []camera.Camera, staticFS fs.FS, staticCacheControl string, accessTTL, refreshTTL int64, updateStores map[string]*updates.Store) *App {
+// built-in defaults. updatesRegistry is the auto-update track registry; pass
+// nil when the feature is not configured (its Root() is then read as "").
+func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *camera.Store, cameras []camera.Camera, staticFS fs.FS, staticCacheControl string, accessTTL, refreshTTL int64, updatesRegistry *updates.Registry) *App {
 	if staticCacheControl == "" {
 		staticCacheControl = "no-cache"
 	}
@@ -162,6 +167,12 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 	}
 	if refreshTTL <= 0 {
 		refreshTTL = int64(DefaultRefreshTTLDays) * 86400
+	}
+	updatesRoot := ""
+	if updatesRegistry != nil {
+		updatesRoot = updatesRegistry.Root()
+	} else {
+		updatesRegistry = updates.NewRegistry("")
 	}
 	a := &App{
 		cfg:                cfg,
@@ -179,7 +190,8 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		proxyTrust:         newProxyTrust(cfg.TrustedProxies()),
 		privacy:            make(map[string]bool),
 		privacyOps:         make(map[string]*sync.Mutex),
-		updates:            updateStores,
+		updatesRoot:        updatesRoot,
+		updatesRegistry:    updatesRegistry,
 		talk:               make(map[string]*backchannel.Session),
 		talkCodecs:         make(map[string][]string),
 		startedAt:          time.Now(),
@@ -540,14 +552,15 @@ func (a *App) Handler() http.Handler {
 	// /api/camera/ prefix above. Remove once no client uses it.
 	mux.HandleFunc("GET /api/cameras/{cam_id}/events", deprecatedAlias("/api/camera/{cam_id}/events", a.handleListEvents))
 
-	// auto-update (Android TV + phone). Each track is independent: a publish
-	// on one does not touch the other. Endpoints answer 503 when the [updates]
-	// section is not configured.
-	for _, track := range updateTracks {
-		mux.HandleFunc("GET /api/app/"+track+"/update", a.handleAppUpdate(track))
-		mux.HandleFunc("POST /api/admin/app/updates/"+track, a.handleAppUpdatesPublish(track))
-		mux.HandleFunc("GET /api/app/updates/"+track+"/{filename}", a.handleAppUpdateFile(track))
-	}
+	// auto-update. Track is an arbitrary operator/CI-chosen identifier — the
+	// server has no fixed track list, so publishing to a new track name is
+	// enough to start serving it. Each track is independent: a publish on
+	// one does not touch another. Endpoints answer 503 when the [updates]
+	// section is not configured, and 400 when the track name fails
+	// validTrack (see handlers_updates.go).
+	mux.HandleFunc("GET /api/app/{track}/update", a.handleAppUpdate)
+	mux.HandleFunc("POST /api/admin/app/updates/{track}", a.handleAppUpdatesPublish)
+	mux.HandleFunc("GET /api/app/updates/{track}/{filename}", a.handleAppUpdateFile)
 
 	// users
 	mux.HandleFunc("GET /api/users", a.handleListUsers)

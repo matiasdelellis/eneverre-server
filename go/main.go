@@ -174,20 +174,14 @@ func main() {
 	refreshDays := resolveIntOption(opts.refreshTTLDays, "ENEVERRE_REFRESH_TOKEN_TTL_DAYS",
 		cfg.Auth.GetInt("refresh_token_ttl_days", server.DefaultRefreshTTLDays))
 
-	// Auto-update stores: one per client track, sharing the configured
-	// storage root. When the [updates] section is absent and no env var
-	// overrides, UpdatesStorageDir returns "" and the stores are disabled
-	// (their Enabled() reports false), so the /api/app/* endpoints answer
+	// Auto-update registry: tracks are not fixed at startup — any
+	// operator/CI-chosen track name is created on demand, sharing the
+	// configured storage root. When the [updates] section is absent and no
+	// env var overrides, UpdatesStorageDir returns "" and every track's
+	// Store reports Enabled() == false, so the /api/app/* endpoints answer
 	// 503 instead of 404. This lets operators opt in without code changes.
 	updatesRoot := cfg.UpdatesStorageDir()
-	updateStores := map[string]*updates.Store{}
-	for _, track := range []string{"tv", "phone"} {
-		s := updates.NewStore(updatesRoot, track)
-		if err := s.Ensure(); err != nil {
-			fatal("updates directory init failed", "track", track, "dir", s.Dir(), "err", err)
-		}
-		updateStores[track] = s
-	}
+	updatesRegistry := updates.NewRegistry(updatesRoot)
 	if updatesRoot != "" {
 		slog.Info("auto-update enabled", "storage_dir", updatesRoot, "public_base_url", cfg.UpdatesPublicBaseURL())
 	} else {
@@ -220,7 +214,7 @@ func main() {
 	engine.Start(cams)
 
 	app := server.New(cfg, db, creds, camStore, cams, uiFS, opts.staticCacheControl,
-		int64(accessHours)*3600, int64(refreshDays)*86400, updateStores)
+		int64(accessHours)*3600, int64(refreshDays)*86400, updatesRegistry)
 	app.SetMediaEngine(engine)
 	app.SetVersion(version)
 

@@ -19,37 +19,40 @@ import (
 	"eneverre/internal/updates"
 )
 
-// withUpdatesApp builds an App with two update stores pointing at temp dirs
-// and an optional publish token. Other App fields are zero (no DB, no
-// cameras, no static fs) — these tests only exercise the update endpoints.
+// withUpdatesApp builds an App backed by an updates.Registry rooted at a
+// temp dir, with an optional publish token. Other App fields are zero (no
+// DB, no cameras, no static fs) — these tests only exercise the update
+// endpoints. Tracks are not pre-created: the registry lazily creates one
+// per track name on first use, exactly like the real server.
 func withUpdatesApp(t *testing.T, publishToken string) (*App, string) {
 	t.Helper()
 	root := t.TempDir()
-	stores := map[string]*updates.Store{
-		"tv":    updates.NewStore(root, "tv"),
-		"phone": updates.NewStore(root, "phone"),
-	}
-	for _, s := range stores {
-		if err := s.Ensure(); err != nil {
-			t.Fatalf("Ensure: %v", err)
-		}
-	}
 	cfg := &config.Config{Updates: config.Section{}}
 	if publishToken != "" {
 		cfg.Updates["publish_token"] = publishToken
 	}
-	a := &App{cfg: cfg, updates: stores}
+	a := &App{cfg: cfg, updatesRoot: root, updatesRegistry: updates.NewRegistry(root)}
 	return a, root
 }
 
-// doPublish posts a minimal valid APK to the publish endpoint. The APK is
-// sent as `apk_universal` so the multi-ABI form path is exercised. Returns
-// the response (the caller inspects status / body).
+// withTrack sets the {track} path parameter on r the way the real mux
+// would after matching "GET /api/app/{track}/update" etc. Handlers now
+// read the track via r.PathValue("track") instead of a closure parameter,
+// so tests that call a handler directly (bypassing the mux) must set this
+// themselves.
+func withTrack(r *http.Request, track string) *http.Request {
+	r.SetPathValue("track", track)
+	return r
+}
+
+// doPublish posts a minimal valid build artifact to the publish endpoint.
+// The file is sent as `build_universal` so the multi-variant form path is
+// exercised. Returns the response (the caller inspects status / body).
 func doPublish(t *testing.T, a *App, track, authHeader string) *httptest.ResponseRecorder {
 	t.Helper()
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
-	fw, err := mw.CreateFormFile("apk_universal", "eneverre-tv-universal-1.0.0.apk")
+	fw, err := mw.CreateFormFile("build_universal", "eneverre-tv-universal-1.0.0.apk")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,12 +71,12 @@ func doPublish(t *testing.T, a *App, track, authHeader string) *httptest.Respons
 		r.Header.Set("Authorization", authHeader)
 	}
 	rec := httptest.NewRecorder()
-	a.handleAppUpdatesPublish(track)(rec, r)
+	a.handleAppUpdatesPublish(rec, withTrack(r, track))
 	return rec
 }
 
 func TestPublish_NoTokenConfigured_RejectsAllAuth(t *testing.T) {
-	a, _ := withUpdatesApp(t, "") // no token → publish must be disabled
+	a, root := withUpdatesApp(t, "") // no token → publish must be disabled
 	// No auth header at all.
 	rec := doPublish(t, a, "tv", "")
 	if rec.Code != http.StatusServiceUnavailable {
@@ -94,7 +97,7 @@ func TestPublish_NoTokenConfigured_RejectsAllAuth(t *testing.T) {
 		t.Fatalf("bearer must be rejected when no token: got %d %s", rec.Code, rec.Body.String())
 	}
 	// No directory was created — feature is off, not "on with a default token".
-	if _, err := os.Stat(filepath.Join(t.TempDir(), "tv", "manifest.json")); err == nil {
+	if _, err := os.Stat(filepath.Join(root, "tv", "manifest.json")); err == nil {
 		t.Fatal("manifest should not have been written")
 	}
 }
@@ -136,7 +139,11 @@ func TestPublish_TokenConfigured_AcceptsCorrectToken(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	// Verify the manifest is on disk and the SHA-256 matches.
-	manifest, err := a.updates["tv"].Get()
+	store, err := a.updatesRegistry.Get("tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := store.Get()
 	if err != nil {
 		t.Fatalf("manifest not written: %v", err)
 	}
@@ -150,7 +157,7 @@ func TestPublish_TokenConfigured_AcceptsCorrectToken(t *testing.T) {
 	}
 	// And the file is there.
 	if _, err := os.Stat(filepath.Join(root, "tv", got.Filename)); err != nil {
-		t.Fatalf("APK missing: %v", err)
+		t.Fatalf("build file missing: %v", err)
 	}
 }
 
@@ -197,6 +204,89 @@ func TestBearingTokenParse(t *testing.T) {
 	}
 }
 
+func TestValidTrack(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"tv", true},
+		{"phone", true},
+		{"tablet", true},
+		{"ios", true},
+		{"web-beta", true},
+		{"android_tv_2", true},
+		{"", false},
+		{"-leading-dash", false},
+		{"Track", false}, // uppercase not allowed
+		{"has space", false},
+		{"has/slash", false},
+		{"../escape", false},
+		{strings.Repeat("a", 41), false}, // too long
+		{strings.Repeat("a", 40), true},  // exactly at the limit
+	}
+	for _, tc := range cases {
+		if got := validTrack(tc.in); got != tc.want {
+			t.Errorf("validTrack(%q): got %v want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestPublish_NewTrack_NoConfigChangeNeeded is the regression test for the
+// actual motivating request: the server has no fixed track allowlist, so
+// publishing to a brand-new track name (here "tablet", which never existed
+// in any prior config or code) must work out of the box, and the manifest
+// + download must both be reachable afterwards.
+func TestPublish_NewTrack_NoConfigChangeNeeded(t *testing.T) {
+	const token = "tok"
+	a, root := withUpdatesApp(t, token)
+
+	rec := doPublish(t, a, "tablet", "Bearer "+token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish to new track: %d %s", rec.Code, rec.Body.String())
+	}
+
+	g := httptest.NewRequest(http.MethodGet, "/api/app/tablet/update", nil)
+	gre := httptest.NewRecorder()
+	a.handleAppUpdate(gre, withTrack(g, "tablet"))
+	if gre.Code != http.StatusOK {
+		t.Fatalf("GET new track: %d %s", gre.Code, gre.Body.String())
+	}
+	var body struct {
+		Builds []struct {
+			Filename string `json:"filename"`
+			URL      string `json:"url"`
+		} `json:"builds"`
+	}
+	if err := json.Unmarshal(gre.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Builds) != 1 {
+		t.Fatalf("expected 1 build, got %+v", body)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tablet", body.Builds[0].Filename)); err != nil {
+		t.Fatalf("build file for new track missing on disk: %v", err)
+	}
+
+	// Download it too.
+	fr := httptest.NewRequest(http.MethodGet, "/api/app/updates/tablet/"+body.Builds[0].Filename, nil)
+	fr.SetPathValue("filename", body.Builds[0].Filename)
+	frr := httptest.NewRecorder()
+	a.handleAppUpdateFile(frr, withTrack(fr, "tablet"))
+	if frr.Code != http.StatusOK {
+		t.Fatalf("download from new track: %d %s", frr.Code, frr.Body.String())
+	}
+}
+
+func TestUpdate_InvalidTrackName_Returns400(t *testing.T) {
+	a, _ := withUpdatesApp(t, "tok")
+	g := httptest.NewRequest(http.MethodGet, "/api/app/../escape/update", nil)
+	gre := httptest.NewRecorder()
+	a.handleAppUpdate(gre, withTrack(g, "../escape"))
+	if gre.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid track, got %d: %s", gre.Code, gre.Body.String())
+	}
+}
+
 // quick manifest response sanity check: with a configured token, the GET
 // endpoint remains anonymous — the token is publish-only.
 func TestGet_RemainsAnonymousWhenTokenSet(t *testing.T) {
@@ -208,7 +298,7 @@ func TestGet_RemainsAnonymousWhenTokenSet(t *testing.T) {
 	// Now GET with no auth header.
 	r := httptest.NewRequest(http.MethodGet, "/api/app/tv/update", nil)
 	rec := httptest.NewRecorder()
-	a.handleAppUpdate("tv")(rec, r)
+	a.handleAppUpdate(rec, withTrack(r, "tv"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 on anonymous GET, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -241,7 +331,7 @@ func TestGet_RemainsAnonymousWhenTokenSet(t *testing.T) {
 	}
 }
 
-// doPublishLarge posts an APK of the given size, generated as a
+// doPublishLarge posts a build artifact of the given size, generated as a
 // deterministic pseudorandom byte stream so the SHA-256 is predictable.
 // The body is built with a real multipart.Writer so the parser exercises
 // the same code path as a real CI upload.
@@ -250,10 +340,10 @@ func doPublishLarge(t *testing.T, a *App, track, authHeader string, apkSize int)
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
 
-	// Writer goroutine: feeds the apk body and the small form fields.
+	// Writer goroutine: feeds the build body and the small form fields.
 	go func() {
 		defer pw.Close()
-		fw, err := mw.CreateFormFile("apk_universal", "eneverre-tv-universal-1.0.0.apk")
+		fw, err := mw.CreateFormFile("build_universal", "eneverre-tv-universal-1.0.0.apk")
 		if err != nil {
 			pw.CloseWithError(err)
 			return
@@ -290,7 +380,7 @@ func doPublishLarge(t *testing.T, a *App, track, authHeader string, apkSize int)
 	}
 	r.ContentLength = -1 // chunked / unknown
 	rec := httptest.NewRecorder()
-	a.handleAppUpdatesPublish(track)(rec, r)
+	a.handleAppUpdatesPublish(rec, withTrack(r, track))
 
 	// Recompute the expected SHA-256 with the same generator (avoids
 	// holding 20 MiB in memory just to assert the hash).
@@ -313,7 +403,7 @@ func doPublishLarge(t *testing.T, a *App, track, authHeader string, apkSize int)
 	return rec, expected
 }
 
-func TestPublish_LargeAPK_StreamsAndHashes(t *testing.T) {
+func TestPublish_LargeBuild_StreamsAndHashes(t *testing.T) {
 	a, root := withUpdatesApp(t, "tok")
 	const size = 20 << 20 // 20 MiB — enough to confirm streaming, fast enough to run in tests
 	rec, expected := doPublishLarge(t, a, "tv", "Bearer tok", size)
@@ -321,18 +411,22 @@ func TestPublish_LargeAPK_StreamsAndHashes(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		OK     bool     `json:"ok"`
-		Builds int      `json:"builds"`
-		ABIs   []string `json:"abis"`
+		OK       bool     `json:"ok"`
+		Builds   int      `json:"builds"`
+		Variants []string `json:"variants"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if !body.OK || body.Builds != 1 || len(body.ABIs) != 1 || body.ABIs[0] != "universal" {
+	if !body.OK || body.Builds != 1 || len(body.Variants) != 1 || body.Variants[0] != "universal" {
 		t.Fatalf("unexpected body: %+v", body)
 	}
 	// Look up the build in the on-disk manifest and verify the hash.
-	manifest, err := a.updates["tv"].Get()
+	store, err := a.updatesRegistry.Get("tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := store.Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +441,7 @@ func TestPublish_LargeAPK_StreamsAndHashes(t *testing.T) {
 	fp := filepath.Join(root, "tv", got.Filename)
 	fi, err := os.Stat(fp)
 	if err != nil {
-		t.Fatalf("APK not on disk: %v", err)
+		t.Fatalf("build file not on disk: %v", err)
 	}
 	if fi.Size() != int64(size) {
 		t.Fatalf("size mismatch: got %d want %d", fi.Size(), size)
@@ -365,7 +459,7 @@ func TestPublish_LargeAPK_StreamsAndHashes(t *testing.T) {
 		t.Fatalf("disk hash != manifest hash: %s vs %s", disk, got.SHA256)
 	}
 	// No temp file should have been left behind.
-	if matches, _ := filepath.Glob(filepath.Join(os.TempDir(), "eneverre-upload-*.apk.tmp")); len(matches) > 0 {
+	if matches, _ := filepath.Glob(filepath.Join(os.TempDir(), "eneverre-upload-*.build.tmp")); len(matches) > 0 {
 		t.Errorf("temp file leaked: %v", matches)
 	}
 }
@@ -396,16 +490,16 @@ func TestPublish_MaxSizeAcceptsUnits(t *testing.T) {
 	}
 }
 
-func TestPublish_MultiABI_EndToEnd(t *testing.T) {
+func TestPublish_MultiVariant_EndToEnd(t *testing.T) {
 	a, root := withUpdatesApp(t, "tok")
 
-	// Build a multipart body with three apk_<abi> files, in a
+	// Build a multipart body with three build_<variant> files, in a
 	// deterministic order. Iterating a Go map would be random, which
 	// would make the test flaky.
 	type entry struct {
-		abi  string
-		p    []byte
-		name string
+		variant string
+		p       []byte
+		name    string
 	}
 	parts := []entry{
 		{"arm64-v8a", []byte("arm64-bytes-1234567890"), "eneverre-tv-arm64-v8a-1.0.0.apk"},
@@ -414,13 +508,13 @@ func TestPublish_MultiABI_EndToEnd(t *testing.T) {
 	}
 	payloads := make(map[string][]byte, len(parts))
 	for _, e := range parts {
-		payloads[e.abi] = e.p
+		payloads[e.variant] = e.p
 	}
 
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
 	for _, e := range parts {
-		fw, err := mw.CreateFormFile("apk_"+e.abi, e.name)
+		fw, err := mw.CreateFormFile("build_"+e.variant, e.name)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -437,14 +531,14 @@ func TestPublish_MultiABI_EndToEnd(t *testing.T) {
 	r.Header.Set("Content-Type", mw.FormDataContentType())
 	r.Header.Set("Authorization", "Bearer tok")
 	rec := httptest.NewRecorder()
-	a.handleAppUpdatesPublish("tv")(rec, r)
+	a.handleAppUpdatesPublish(rec, withTrack(r, "tv"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		OK     bool     `json:"ok"`
-		Builds int      `json:"builds"`
-		ABIs   []string `json:"abis"`
+		OK       bool     `json:"ok"`
+		Builds   int      `json:"builds"`
+		Variants []string `json:"variants"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -452,17 +546,17 @@ func TestPublish_MultiABI_EndToEnd(t *testing.T) {
 	if !resp.OK || resp.Builds != 3 {
 		t.Fatalf("unexpected body: %+v", resp)
 	}
-	wantABIs := []string{"arm64-v8a", "armeabi-v7a", "universal"}
-	for i, a := range resp.ABIs {
-		if a != wantABIs[i] {
-			t.Errorf("ABIs[%d]: got %q want %q", i, a, wantABIs[i])
+	wantVariants := []string{"arm64-v8a", "armeabi-v7a", "universal"}
+	for i, v := range resp.Variants {
+		if v != wantVariants[i] {
+			t.Errorf("Variants[%d]: got %q want %q", i, v, wantVariants[i])
 		}
 	}
 
-	// GET returns builds array with per-ABI URLs.
+	// GET returns builds array with per-variant URLs.
 	g := httptest.NewRequest(http.MethodGet, "/api/app/tv/update", nil)
 	gre := httptest.NewRecorder()
-	a.handleAppUpdate("tv")(gre, g)
+	a.handleAppUpdate(gre, withTrack(g, "tv"))
 	if gre.Code != http.StatusOK {
 		t.Fatalf("GET: %d %s", gre.Code, gre.Body.String())
 	}
@@ -471,11 +565,11 @@ func TestPublish_MultiABI_EndToEnd(t *testing.T) {
 		VersionCode int    `json:"versionCode"`
 		Mandatory   bool   `json:"mandatory"`
 		Builds      []struct {
-			ABI         string `json:"abi"`
-			APKFilename string `json:"apkFilename"`
-			Size        int64  `json:"size"`
-			SHA256      string `json:"sha256"`
-			URL         string `json:"url"`
+			Variant  string `json:"variant"`
+			Filename string `json:"filename"`
+			Size     int64  `json:"size"`
+			SHA256   string `json:"sha256"`
+			URL      string `json:"url"`
 		} `json:"builds"`
 	}
 	if err := json.Unmarshal(gre.Body.Bytes(), &getBody); err != nil {
@@ -488,44 +582,45 @@ func TestPublish_MultiABI_EndToEnd(t *testing.T) {
 		t.Fatalf("expected 3 builds, got %d", len(getBody.Builds))
 	}
 	for i, b := range getBody.Builds {
-		if b.ABI != wantABIs[i] {
-			t.Errorf("build[%d].abi: got %q want %q", i, b.ABI, wantABIs[i])
+		if b.Variant != wantVariants[i] {
+			t.Errorf("build[%d].variant: got %q want %q", i, b.Variant, wantVariants[i])
 		}
-		want := sha256Hex(payloads[b.ABI])
+		want := sha256Hex(payloads[b.Variant])
 		if b.SHA256 != want {
 			t.Errorf("build[%d].sha256: got %s want %s", i, b.SHA256, want)
 		}
-		if b.Size != int64(len(payloads[b.ABI])) {
-			t.Errorf("build[%d].size: got %d want %d", i, b.Size, len(payloads[b.ABI]))
+		if b.Size != int64(len(payloads[b.Variant])) {
+			t.Errorf("build[%d].size: got %d want %d", i, b.Size, len(payloads[b.Variant]))
 		}
-		expectedURL := "/api/app/updates/tv/" + b.APKFilename
+		expectedURL := "/api/app/updates/tv/" + b.Filename
 		if !strings.HasSuffix(b.URL, expectedURL) {
 			t.Errorf("build[%d].url: got %q, want suffix %q", i, b.URL, expectedURL)
 		}
 	}
 
-	// Download each APK and verify content + hash.
+	// Download each build file and verify content + hash.
 	for _, b := range getBody.Builds {
-		fp := filepath.Join(root, "tv", b.APKFilename)
-		body, err := os.ReadFile(fp)
+		fp := filepath.Join(root, "tv", b.Filename)
+		content, err := os.ReadFile(fp)
 		if err != nil {
-			t.Errorf("%s missing on disk: %v", b.APKFilename, err)
+			t.Errorf("%s missing on disk: %v", b.Filename, err)
 			continue
 		}
-		if hex.EncodeToString(sha256New(body)) != b.SHA256 {
-			t.Errorf("%s: hash mismatch", b.APKFilename)
+		if hex.EncodeToString(sha256New(content)) != b.SHA256 {
+			t.Errorf("%s: hash mismatch", b.Filename)
 		}
-		if !bytes.Equal(body, payloads[b.ABI]) {
-			t.Errorf("%s: content mismatch", b.APKFilename)
+		if !bytes.Equal(content, payloads[b.Variant]) {
+			t.Errorf("%s: content mismatch", b.Filename)
 		}
 	}
 
 	// Old build (not in Builds list) returns 404 from the download endpoint.
 	// (We never published one, but we can verify a random unknown name is 404.)
 	fr := httptest.NewRequest(http.MethodGet, "/api/app/updates/tv/never-published.apk", nil)
+	fr.SetPathValue("filename", "never-published.apk")
 	fr.Header.Set("Authorization", "Bearer tok")
 	frr := httptest.NewRecorder()
-	a.handleAppUpdateFile("tv")(frr, fr)
+	a.handleAppUpdateFile(frr, withTrack(fr, "tv"))
 	if frr.Code != http.StatusNotFound {
 		t.Errorf("unknown filename: got %d want 404", frr.Code)
 	}
@@ -541,11 +636,12 @@ func sha256New(b []byte) []byte {
 	return sum[:]
 }
 
-// doPublishOneABIPost sends a single ABI's POST with optional finalize.
-// Used to simulate the per-ABI CI workflow (one POST per ABI). versionName
-// and versionCode are taken from the args; if versionCode is empty, 20000
-// is used (the value the multi-ABI flow tests expect).
-func doPublishOneABIPost(t *testing.T, a *App, track, authHeader, abi, filename string, payload []byte, finalize, versionName, versionCode string) *httptest.ResponseRecorder {
+// doPublishOneVariantPost sends a single variant's POST with optional
+// finalize. Used to simulate the per-variant CI workflow (one POST per
+// variant). versionName and versionCode are taken from the args; if
+// versionCode is empty, 20000 is used (the value the multi-variant flow
+// tests expect).
+func doPublishOneVariantPost(t *testing.T, a *App, track, authHeader, variant, filename string, payload []byte, finalize, versionName, versionCode string) *httptest.ResponseRecorder {
 	t.Helper()
 	if versionName == "" {
 		versionName = "2.0.0"
@@ -555,7 +651,7 @@ func doPublishOneABIPost(t *testing.T, a *App, track, authHeader, abi, filename 
 	}
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
-	fw, err := mw.CreateFormFile("apk_"+abi, filename)
+	fw, err := mw.CreateFormFile("build_"+variant, filename)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,26 +671,26 @@ func doPublishOneABIPost(t *testing.T, a *App, track, authHeader, abi, filename 
 		r.Header.Set("Authorization", authHeader)
 	}
 	rec := httptest.NewRecorder()
-	a.handleAppUpdatesPublish(track)(rec, r)
+	a.handleAppUpdatesPublish(rec, withTrack(r, track))
 	return rec
 }
 
-func TestPublish_MultiPOST_PerABI_Finalize(t *testing.T) {
+func TestPublish_MultiPOST_PerVariant_Finalize(t *testing.T) {
 	const token = "tok"
 	a, root := withUpdatesApp(t, token)
 
 	// POST 1: arm64, finalize=false (stage)
-	rec := doPublishOneABIPost(t, a, "tv", "Bearer "+token,
+	rec := doPublishOneVariantPost(t, a, "tv", "Bearer "+token,
 		"arm64-v8a", "eneverre-tv-arm64-2.0.0.apk", []byte("arm64-bytes"), "false", "", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("post1: %d %s", rec.Code, rec.Body.String())
 	}
 	var r1 struct {
-		OK           bool     `json:"ok"`
-		State        string   `json:"state"`
-		Builds       int      `json:"builds"`
-		ABIs         []string `json:"abis"`
-		ABIsAppended []string `json:"abis_appended"`
+		OK               bool     `json:"ok"`
+		State            string   `json:"state"`
+		Builds           int      `json:"builds"`
+		Variants         []string `json:"variants"`
+		VariantsAppended []string `json:"variants_appended"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &r1); err != nil {
 		t.Fatal(err)
@@ -602,28 +698,28 @@ func TestPublish_MultiPOST_PerABI_Finalize(t *testing.T) {
 	if r1.State != "pending" {
 		t.Errorf("state: got %q want pending", r1.State)
 	}
-	if r1.Builds != 1 || len(r1.ABIs) != 1 || r1.ABIs[0] != "arm64-v8a" {
+	if r1.Builds != 1 || len(r1.Variants) != 1 || r1.Variants[0] != "arm64-v8a" {
 		t.Errorf("post1 unexpected: %+v", r1)
 	}
 
 	// GET should still return 204 — the staged release is invisible.
 	g := httptest.NewRequest(http.MethodGet, "/api/app/tv/update", nil)
 	gre := httptest.NewRecorder()
-	a.handleAppUpdate("tv")(gre, g)
+	a.handleAppUpdate(gre, withTrack(g, "tv"))
 	if gre.Code != http.StatusNoContent {
 		t.Fatalf("GET during pending: %d", gre.Code)
 	}
 
 	// POST 2: armv7, finalize=false (stage)
-	rec = doPublishOneABIPost(t, a, "tv", "Bearer "+token,
+	rec = doPublishOneVariantPost(t, a, "tv", "Bearer "+token,
 		"armeabi-v7a", "eneverre-tv-armv7-2.0.0.apk", []byte("armv7-bytes"), "false", "", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("post2: %d %s", rec.Code, rec.Body.String())
 	}
 	var r2 struct {
-		State  string   `json:"state"`
-		Builds int      `json:"builds"`
-		ABIs   []string `json:"abis"`
+		State    string   `json:"state"`
+		Builds   int      `json:"builds"`
+		Variants []string `json:"variants"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &r2); err != nil {
 		t.Fatal(err)
@@ -636,15 +732,15 @@ func TestPublish_MultiPOST_PerABI_Finalize(t *testing.T) {
 	}
 
 	// POST 3: universal, finalize=true (commit)
-	rec = doPublishOneABIPost(t, a, "tv", "Bearer "+token,
+	rec = doPublishOneVariantPost(t, a, "tv", "Bearer "+token,
 		"universal", "eneverre-tv-universal-2.0.0.apk", []byte("universal-bytes"), "true", "", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("post3: %d %s", rec.Code, rec.Body.String())
 	}
 	var r3 struct {
-		State  string   `json:"state"`
-		Builds int      `json:"builds"`
-		ABIs   []string `json:"abis"`
+		State    string   `json:"state"`
+		Builds   int      `json:"builds"`
+		Variants []string `json:"variants"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &r3); err != nil {
 		t.Fatal(err)
@@ -659,16 +755,16 @@ func TestPublish_MultiPOST_PerABI_Finalize(t *testing.T) {
 	// GET should now return the committed manifest.
 	g = httptest.NewRequest(http.MethodGet, "/api/app/tv/update", nil)
 	gre = httptest.NewRecorder()
-	a.handleAppUpdate("tv")(gre, g)
+	a.handleAppUpdate(gre, withTrack(g, "tv"))
 	if gre.Code != http.StatusOK {
 		t.Fatalf("GET after commit: %d", gre.Code)
 	}
 	var manifest struct {
 		VersionCode int `json:"versionCode"`
 		Builds      []struct {
-			ABI         string `json:"abi"`
-			APKFilename string `json:"apkFilename"`
-			SHA256      string `json:"sha256"`
+			Variant  string `json:"variant"`
+			Filename string `json:"filename"`
+			SHA256   string `json:"sha256"`
 		} `json:"builds"`
 	}
 	if err := json.Unmarshal(gre.Body.Bytes(), &manifest); err != nil {
@@ -677,19 +773,19 @@ func TestPublish_MultiPOST_PerABI_Finalize(t *testing.T) {
 	if manifest.VersionCode != 20000 || len(manifest.Builds) != 3 {
 		t.Errorf("manifest: %+v", manifest)
 	}
-	wantABIs := []string{"arm64-v8a", "armeabi-v7a", "universal"}
+	wantVariants := []string{"arm64-v8a", "armeabi-v7a", "universal"}
 	for i, b := range manifest.Builds {
-		if b.ABI != wantABIs[i] {
-			t.Errorf("builds[%d].abi: got %q want %q", i, b.ABI, wantABIs[i])
+		if b.Variant != wantVariants[i] {
+			t.Errorf("builds[%d].variant: got %q want %q", i, b.Variant, wantVariants[i])
 		}
 	}
 
-	// All three APKs on disk, downloadable.
+	// All three build files on disk, downloadable.
 	for _, b := range manifest.Builds {
-		fp := filepath.Join(root, "tv", b.APKFilename)
+		fp := filepath.Join(root, "tv", b.Filename)
 		f, err := os.Open(fp)
 		if err != nil {
-			t.Errorf("%s not on disk: %v", b.APKFilename, err)
+			t.Errorf("%s not on disk: %v", b.Filename, err)
 			continue
 		}
 		f.Close()
@@ -699,9 +795,9 @@ func TestPublish_MultiPOST_PerABI_Finalize(t *testing.T) {
 func TestPublish_FinalizeDefaultsToTrue(t *testing.T) {
 	const token = "tok"
 	a, _ := withUpdatesApp(t, token)
-	// Send a POST without the finalize field. The single APK should be
+	// Send a POST without the finalize field. The single build should be
 	// committed immediately (state=committed).
-	rec := doPublishOneABIPost(t, a, "tv", "Bearer "+token,
+	rec := doPublishOneVariantPost(t, a, "tv", "Bearer "+token,
 		"arm64-v8a", "eneverre-tv-arm64.apk", []byte("arm64"), "", "", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("post: %d %s", rec.Code, rec.Body.String())
@@ -721,24 +817,28 @@ func TestPublish_VersionCodeMismatchStartsFresh(t *testing.T) {
 	const token = "tok"
 	a, _ := withUpdatesApp(t, token)
 	// Stage v1 with arm64.
-	rec := doPublishOneABIPost(t, a, "tv", "Bearer "+token,
+	rec := doPublishOneVariantPost(t, a, "tv", "Bearer "+token,
 		"arm64-v8a", "eneverre-tv-arm64-1.0.0.apk", []byte("v1"), "false", "1.0.0", "10000")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("post1: %d", rec.Code)
 	}
-	// New POST with v2 and a different ABI. The versionCode differs,
+	// New POST with v2 and a different variant. The versionCode differs,
 	// so the previous active release is discarded and a new one starts.
-	rec = doPublishOneABIPost(t, a, "tv", "Bearer "+token,
+	rec = doPublishOneVariantPost(t, a, "tv", "Bearer "+token,
 		"armeabi-v7a", "eneverre-tv-armv7-2.0.0.apk", []byte("v2"), "true", "2.0.0", "20000")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("post2: %d %s", rec.Code, rec.Body.String())
 	}
 	// The committed manifest should have only the v2 build.
-	manifest, _ := a.updates["tv"].Get()
+	store, err := a.updatesRegistry.Get("tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := store.Get()
 	if manifest.VersionCode != 20000 {
 		t.Errorf("versionCode: got %d want 20000", manifest.VersionCode)
 	}
-	if len(manifest.Builds) != 1 || manifest.Builds[0].ABI != "armeabi-v7a" {
+	if len(manifest.Builds) != 1 || manifest.Builds[0].Variant != "armeabi-v7a" {
 		t.Errorf("builds: %+v", manifest.Builds)
 	}
 }
@@ -786,8 +886,8 @@ func TestManifestResponse_PublicBaseURL_OverridesRequest(t *testing.T) {
 	m := &updates.Manifest{
 		VersionName: "1.0.0",
 		VersionCode: 10000,
-		Builds: []updates.APKBuild{
-			{ABI: "arm64-v8a", Filename: "app-arm64.apk", Size: 100, SHA256: "abc"},
+		Builds: []updates.Build{
+			{Variant: "arm64-v8a", Filename: "app-arm64.apk", Size: 100, SHA256: "abc"},
 		},
 	}
 	// Even when the request is plain HTTP, the configured base URL
@@ -803,7 +903,7 @@ func TestManifestResponse_PublicBaseURL_OverridesRequest(t *testing.T) {
 func TestManifestResponse_EmptyPublicBaseURL_FallsBackToRequest(t *testing.T) {
 	m := &updates.Manifest{
 		VersionName: "1.0.0", VersionCode: 10000,
-		Builds: []updates.APKBuild{{ABI: "arm64-v8a", Filename: "app.apk", Size: 1, SHA256: "x"}},
+		Builds: []updates.Build{{Variant: "arm64-v8a", Filename: "app.apk", Size: 1, SHA256: "x"}},
 	}
 	r := httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("X-Forwarded-Proto", "https")

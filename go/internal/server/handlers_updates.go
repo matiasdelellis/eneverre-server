@@ -11,62 +11,71 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"eneverre/internal/updates"
 )
 
-// Supported client tracks. Each track has its own subdirectory under the
-// configured updates storage dir and its own triple of routes.
-var updateTracks = []string{"tv", "phone"}
+// trackNameRe bounds what counts as a valid track identifier: lowercase
+// alphanumeric plus `-`/`_`, starting with an alphanumeric, up to 40 chars.
+// Tracks are not pre-declared anywhere in config — any name matching this
+// pattern is accepted, and the first publish to it starts serving it. The
+// restriction exists only to keep the track name safe as a subdirectory
+// name (no path traversal, no surprising characters) and reasonably tidy.
+var trackNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
+
+func validTrack(track string) bool {
+	return trackNameRe.MatchString(track)
+}
 
 // handleAppUpdate returns the current manifest for a track, or 204 No Content
 // when no publish has happened yet. The response shape is a JSON object with
-// a `builds` array — one entry per APK in the current release. The URL for
-// each build is auto-generated from the request's host (or the configured
-// public_base_url). See doc/UPDATES.md.
-func (a *App) handleAppUpdate(track string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := a.updates[track]
-		if !ok {
-			httpError(w, http.StatusNotFound, "Unknown track: "+track)
-			return
-		}
-		if !store.Enabled() {
-			httpError(w, http.StatusServiceUnavailable, "Auto-update is not configured on this server")
-			return
-		}
-		m, err := store.Get()
-		if err != nil {
-			if errors.Is(err, updates.ErrNotFound) {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			slog.Error("updates get failed", "track", track, "err", err)
-			httpError(w, http.StatusInternalServerError, "Failed to read update manifest")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, manifestResponse(m, track, a.cfg.UpdatesPublicBaseURL(), publicURLForRequest(r)))
+// a `builds` array — one entry per build artifact in the current release.
+// The URL for each build is auto-generated from the request's host (or the
+// configured public_base_url). See doc/UPDATES.md.
+func (a *App) handleAppUpdate(w http.ResponseWriter, r *http.Request) {
+	track := r.PathValue("track")
+	if !validTrack(track) {
+		httpError(w, http.StatusBadRequest, "Invalid track name: "+track)
+		return
 	}
+	store := updates.NewStore(a.updatesRoot, track)
+	if !store.Enabled() {
+		httpError(w, http.StatusServiceUnavailable, "Auto-update is not configured on this server")
+		return
+	}
+	m, err := store.Get()
+	if err != nil {
+		if errors.Is(err, updates.ErrNotFound) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		slog.Error("updates get failed", "track", track, "err", err)
+		httpError(w, http.StatusInternalServerError, "Failed to read update manifest")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, manifestResponse(m, track, a.cfg.UpdatesPublicBaseURL(), publicURLForRequest(r)))
 }
 
-// apiBuild is the per-APK entry in the GET response. The `url` field is
-// computed at request time; the rest mirrors the on-disk APKBuild.
+// apiBuild is the per-build entry in the GET response. The `url` field is
+// computed at request time; the rest mirrors the on-disk Build.
 type apiBuild struct {
-	ABI         string `json:"abi"`
-	APKFilename string `json:"apkFilename"`
+	Variant     string `json:"variant"`
+	Filename    string `json:"filename"`
 	Size        int64  `json:"size"`
 	SHA256      string `json:"sha256"`
+	ContentType string `json:"contentType,omitempty"`
 	URL         string `json:"url"`
 }
 
-// apiManifest is the JSON body the Android clients consume. Every APK in
+// apiManifest is the JSON body clients consume. Every build artifact in
 // the current release is a first-class entry in builds; there is no
-// single-APK convenience field — clients that only know about one APK
-// must pick from the array.
+// single-build convenience field — clients that only know about one
+// variant must pick from the array.
 type apiManifest struct {
 	VersionName  string     `json:"versionName"`
 	VersionCode  int        `json:"versionCode"`
@@ -92,10 +101,11 @@ func manifestResponse(m *updates.Manifest, track, configuredBase, requestBase st
 	}
 	for _, b := range m.Builds {
 		out.Builds = append(out.Builds, apiBuild{
-			ABI:         b.ABI,
-			APKFilename: b.Filename,
+			Variant:     b.Variant,
+			Filename:    b.Filename,
 			Size:        b.Size,
 			SHA256:      b.SHA256,
+			ContentType: b.ContentType,
 			URL:         fmt.Sprintf("%s/api/app/updates/%s/%s", base, track, b.Filename),
 		})
 	}
@@ -103,298 +113,311 @@ func manifestResponse(m *updates.Manifest, track, configuredBase, requestBase st
 }
 
 // handleAppUpdatesPublish accepts a multipart/form-data POST and publishes
-// one or more APKs to the track's storage directory, persisting a manifest
-// that lists them all under their ABI tags.
+// one or more build artifacts to the track's storage directory, persisting
+// a manifest that lists them all under their variant tags.
 //
 // Auth: the request MUST carry `Authorization: Bearer <token>` matching
 // the configured [updates] publish_token. User/password and session Bearer
 // tokens are NOT accepted. If no token is configured on the server, the
 // endpoint returns 503.
 //
-// Body: every APK must be sent as a form file with name `apk_<abi>`,
-// where <abi> is the Android ABI string the file targets. Common values:
+// Body: every artifact must be sent as a form file with name
+// `build_<variant>`, where <variant> is a client-defined string
+// identifying the build. For Android tracks this is typically an ABI:
 //
-//	apk_arm64-v8a       (most modern ARM devices)
-//	apk_armeabi-v7a     (older 32-bit ARM)
-//	apk_x86_64          (Chromebooks / emulators)
-//	apk_x86             (older emulators)
-//	apk_universal       (fat APK; fallback for clients that don't list a specific ABI)
+//	build_arm64-v8a       (most modern ARM devices)
+//	build_armeabi-v7a     (older 32-bit ARM)
+//	build_x86_64          (Chromebooks / emulators)
+//	build_x86             (older emulators)
+//	build_universal       (fat APK; fallback for clients that don't list a specific ABI)
 //
-// A single release may carry any combination of these (at least one is
-// required). The form fields `versionName`, `versionCode`, `releaseNotes`
-// and `mandatory` apply to the whole release; each build inherits them.
+// Non-Android tracks are free to use any variant name that makes sense for
+// their platform (e.g. `build_ios`, `build_web`). A single release may
+// carry any combination of variants (at least one is required). The form
+// fields `versionName`, `versionCode`, `releaseNotes` and `mandatory`
+// apply to the whole release; each build inherits them. The uploaded
+// part's own Content-Type header (if any) is recorded and served back on
+// download; the server never assumes a fixed archive format.
 //
 // Streaming: r.MultipartReader() walks the parts without buffering. Each
-// `apk_<abi>` body is streamed into a temp file as soon as it is
+// `build_<variant>` body is streamed into a temp file as soon as it is
 // encountered (multipart.Reader discards unread bodies on the next
 // NextPart() call). Temp files are removed by defer. Memory is O(1) per
-// APK; disk briefly doubles (temp + final) per build during the publish.
+// artifact; disk briefly doubles (temp + final) per build during the
+// publish.
 //
 // r.Body is wrapped in http.MaxBytesReader to cap the total request size
 // (default 500 MiB, configurable via [updates] max_apk_size). On overflow
 // the read returns *http.MaxBytesError, which the handler translates to
 // 413.
-func (a *App) handleAppUpdatesPublish(track string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !a.requirePublishAuth(w, r) {
-			return
-		}
-		store, ok := a.updates[track]
-		if !ok {
-			httpError(w, http.StatusNotFound, "Unknown track: "+track)
-			return
-		}
-		if !store.Enabled() {
-			httpError(w, http.StatusServiceUnavailable, "Auto-update is not configured on this server")
-			return
-		}
+func (a *App) handleAppUpdatesPublish(w http.ResponseWriter, r *http.Request) {
+	if !a.requirePublishAuth(w, r) {
+		return
+	}
+	track := r.PathValue("track")
+	if !validTrack(track) {
+		httpError(w, http.StatusBadRequest, "Invalid track name: "+track)
+		return
+	}
+	store, err := a.updatesRegistry.Get(track)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "Failed to initialize track storage: "+err.Error())
+		return
+	}
+	if !store.Enabled() {
+		httpError(w, http.StatusServiceUnavailable, "Auto-update is not configured on this server")
+		return
+	}
 
-		r.Body = http.MaxBytesReader(w, r.Body, a.cfg.UpdatesMaxAPKSize())
+	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.UpdatesMaxAPKSize())
 
-		mr, err := r.MultipartReader()
-		if err != nil {
-			httpError(w, http.StatusBadRequest, "Expected multipart/form-data: "+err.Error())
-			return
-		}
+	mr, err := r.MultipartReader()
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "Expected multipart/form-data: "+err.Error())
+		return
+	}
 
-		var (
-			versionName    string
-			versionCodeStr string
-			releaseNotes   string
-			mandatory      bool
-			// finalize defaults to true: a single POST behaves as before
-			// (writes the APK + commits the manifest). Set finalize=false
-			// on the first N-1 POSTs of a multi-POST sequence so the body
-			// of each request is small and the timeout risk per request
-			// is bounded by one APK's upload time, not the whole release.
-			finalize = true
-			// Each build is a (abi, original filename, temp file path) triple.
-			// The temp file is reopened for reading in store.Publish and
-			// removed by the defer below.
-			builds []pendingBuild
-		)
-		defer func() {
-			for _, b := range builds {
-				_ = os.Remove(b.tempPath)
-			}
-		}()
-
-		for {
-			part, err := mr.NextPart()
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				if isMaxBytesErr(err) {
-					httpError(w, http.StatusRequestEntityTooLarge,
-						fmt.Sprintf("Body exceeds the %d-byte server limit", a.cfg.UpdatesMaxAPKSize()))
-					return
-				}
-				httpError(w, http.StatusBadRequest, "Multipart parse error: "+err.Error())
-				return
-			}
-			name := part.FormName()
-			switch {
-			case strings.HasPrefix(name, "apk_") && len(name) > len("apk_"):
-				abi := name[len("apk_"):]
-				tempPath, ok := a.streamAPKPart(w, part, abi)
-				if !ok {
-					return
-				}
-				builds = append(builds, pendingBuild{
-					abi:      abi,
-					origName: part.FileName(),
-					tempPath: tempPath,
-				})
-			case name == "versionName":
-				b, _ := io.ReadAll(io.LimitReader(part, 256))
-				versionName = strings.TrimSpace(string(b))
-				part.Close()
-			case name == "versionCode":
-				b, _ := io.ReadAll(io.LimitReader(part, 64))
-				versionCodeStr = strings.TrimSpace(string(b))
-				part.Close()
-			case name == "releaseNotes":
-				b, _ := io.ReadAll(io.LimitReader(part, 64*1024))
-				releaseNotes = string(b)
-				part.Close()
-			case name == "finalize":
-				b, _ := io.ReadAll(io.LimitReader(part, 16))
-				finalize = parseBool(string(b), true) // default true keeps single-POST simple
-				part.Close()
-			case name == "mandatory":
-				b, _ := io.ReadAll(io.LimitReader(part, 16))
-				mandatory = parseBool(string(b), false)
-				part.Close()
-			default:
-				_, _ = io.Copy(io.Discard, part)
-				part.Close()
-			}
-		}
-
-		if versionName == "" || versionCodeStr == "" {
-			httpError(w, http.StatusUnprocessableEntity, "versionName and versionCode are required")
-			return
-		}
-		versionCode, err := strconv.Atoi(versionCodeStr)
-		if err != nil || versionCode < 0 {
-			httpError(w, http.StatusUnprocessableEntity, "versionCode must be a non-negative integer")
-			return
-		}
-		if len(builds) == 0 {
-			httpError(w, http.StatusUnprocessableEntity, "at least one apk_<abi> file is required (e.g. apk_arm64-v8a)")
-			return
-		}
-
-		// Reopen each temp file as a Reader for store.Publish. The
-		// store reads each one end-to-end into its own final temp
-		// file, then atomic-renames into place.
-		inputs := make([]updates.BuildInput, 0, len(builds))
-		openFiles := make([]*os.File, 0, len(builds))
+	var (
+		versionName    string
+		versionCodeStr string
+		releaseNotes   string
+		mandatory      bool
+		// finalize defaults to true: a single POST behaves as before
+		// (writes the build + commits the manifest). Set finalize=false
+		// on the first N-1 POSTs of a multi-POST sequence so the body
+		// of each request is small and the timeout risk per request
+		// is bounded by one artifact's upload time, not the whole release.
+		finalize = true
+		// Each build is a (variant, original filename, content type, temp
+		// file path) tuple. The temp file is reopened for reading in
+		// store.Publish and removed by the defer below.
+		builds []pendingBuild
+	)
+	defer func() {
 		for _, b := range builds {
-			f, ferr := os.Open(b.tempPath)
-			if ferr != nil {
-				for _, of := range openFiles {
-					of.Close()
-				}
-				httpError(w, http.StatusInternalServerError, "Failed to reopen temp APK: "+ferr.Error())
-				return
-			}
-			openFiles = append(openFiles, f)
-			inputs = append(inputs, updates.BuildInput{
-				ABI:      b.abi,
-				Filename: b.origName,
-				Reader:   f,
-			})
+			_ = os.Remove(b.tempPath)
 		}
+	}()
 
-		meta := updates.Manifest{
-			VersionName:  versionName,
-			VersionCode:  versionCode,
-			Mandatory:    mandatory,
-			ReleaseNotes: releaseNotes,
+	for {
+		part, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
 		}
-
-		// Multi-POST lifecycle: every POST goes through the active release
-		// (StartActive / AppendBuild), and finalize=true adds a final
-		// CommitActive. A single POST with finalize=true (or omitted,
-		// since the default is true) starts, appends, and commits in one
-		// request — equivalent to the old single-shot Publish path but
-		// with the active state persisted in pending.json (useful for
-		// debugging and crash recovery).
-		active, _ := store.GetActive()
-		if active == nil || active.VersionCode != versionCode {
-			if _, err := store.StartActive(meta); err != nil {
-				for _, f := range openFiles {
-					f.Close()
-				}
-				httpError(w, http.StatusInternalServerError, "Failed to start active release: "+err.Error())
-				return
-			}
-		}
-		var lastErr error
-		var appended []string
-		for i, p := range inputs {
-			if _, err := openFiles[i].Seek(0, io.SeekStart); err != nil {
-				lastErr = err
-				break
-			}
-			if _, err := store.AppendBuild(meta, p.ABI, p.Filename, openFiles[i]); err != nil {
-				lastErr = err
-				break
-			}
-			appended = append(appended, p.ABI)
-		}
-		for _, f := range openFiles {
-			f.Close()
-		}
-		if lastErr != nil {
-			if isMaxBytesErr(lastErr) {
+		if err != nil {
+			if isMaxBytesErr(err) {
 				httpError(w, http.StatusRequestEntityTooLarge,
 					fmt.Sprintf("Body exceeds the %d-byte server limit", a.cfg.UpdatesMaxAPKSize()))
 				return
 			}
-			httpError(w, http.StatusUnprocessableEntity, lastErr.Error())
+			httpError(w, http.StatusBadRequest, "Multipart parse error: "+err.Error())
 			return
 		}
-
-		if !finalize {
-			current, err := store.GetActive()
-			if err != nil || current == nil {
-				httpError(w, http.StatusInternalServerError, "Active release disappeared after append")
+		name := part.FormName()
+		switch {
+		case strings.HasPrefix(name, "build_") && len(name) > len("build_"):
+			variant := name[len("build_"):]
+			contentType := part.Header.Get("Content-Type")
+			tempPath, ok := a.streamBuildPart(w, part, variant)
+			if !ok {
 				return
 			}
-			abis := make([]string, 0, len(current.Builds))
-			for _, b := range current.Builds {
-				abis = append(abis, b.ABI)
-			}
-			slog.Info("update appended",
-				"track", track,
-				"version", current.VersionName,
-				"code", current.VersionCode,
-				"abis_this_post", strings.Join(appended, ","),
-				"abis_total", strings.Join(abis, ","),
-			)
-			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":            true,
-				"state":         "pending",
-				"versionName":   current.VersionName,
-				"versionCode":   current.VersionCode,
-				"builds":        len(current.Builds),
-				"abis":          abis,
-				"abis_appended": appended,
+			builds = append(builds, pendingBuild{
+				variant:     variant,
+				origName:    part.FileName(),
+				contentType: contentType,
+				tempPath:    tempPath,
 			})
-			return
+		case name == "versionName":
+			b, _ := io.ReadAll(io.LimitReader(part, 256))
+			versionName = strings.TrimSpace(string(b))
+			part.Close()
+		case name == "versionCode":
+			b, _ := io.ReadAll(io.LimitReader(part, 64))
+			versionCodeStr = strings.TrimSpace(string(b))
+			part.Close()
+		case name == "releaseNotes":
+			b, _ := io.ReadAll(io.LimitReader(part, 64*1024))
+			releaseNotes = string(b)
+			part.Close()
+		case name == "finalize":
+			b, _ := io.ReadAll(io.LimitReader(part, 16))
+			finalize = parseBool(string(b), true) // default true keeps single-POST simple
+			part.Close()
+		case name == "mandatory":
+			b, _ := io.ReadAll(io.LimitReader(part, 16))
+			mandatory = parseBool(string(b), false)
+			part.Close()
+		default:
+			_, _ = io.Copy(io.Discard, part)
+			part.Close()
 		}
+	}
 
-		// finalize=true: promote the active release to the current
-		// manifest. The active state is cleared, the APKs are now
-		// referenced by manifest.json and downloadable. APKs that
-		// belonged to older releases are removed from disk.
-		committed, err := store.CommitActive()
-		if err != nil {
-			httpError(w, http.StatusInternalServerError, "Failed to commit: "+err.Error())
+	if versionName == "" || versionCodeStr == "" {
+		httpError(w, http.StatusUnprocessableEntity, "versionName and versionCode are required")
+		return
+	}
+	versionCode, err := strconv.Atoi(versionCodeStr)
+	if err != nil || versionCode < 0 {
+		httpError(w, http.StatusUnprocessableEntity, "versionCode must be a non-negative integer")
+		return
+	}
+	if len(builds) == 0 {
+		httpError(w, http.StatusUnprocessableEntity, "at least one build_<variant> file is required (e.g. build_universal)")
+		return
+	}
+
+	// Reopen each temp file as a Reader for store.Publish. The
+	// store reads each one end-to-end into its own final temp
+	// file, then atomic-renames into place.
+	inputs := make([]updates.BuildInput, 0, len(builds))
+	openFiles := make([]*os.File, 0, len(builds))
+	for _, b := range builds {
+		f, ferr := os.Open(b.tempPath)
+		if ferr != nil {
+			for _, of := range openFiles {
+				of.Close()
+			}
+			httpError(w, http.StatusInternalServerError, "Failed to reopen temp build file: "+ferr.Error())
 			return
 		}
-		abis := make([]string, 0, len(committed.Builds))
-		for _, b := range committed.Builds {
-			abis = append(abis, b.ABI)
-		}
-		slog.Info("update committed",
-			"track", track,
-			"version", committed.VersionName,
-			"code", committed.VersionCode,
-			"builds", len(committed.Builds),
-			"abis", strings.Join(abis, ","),
-			"mandatory", committed.Mandatory,
-		)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":          true,
-			"state":       "committed",
-			"versionName": committed.VersionName,
-			"versionCode": committed.VersionCode,
-			"builds":      len(committed.Builds),
-			"abis":        abis,
+		openFiles = append(openFiles, f)
+		inputs = append(inputs, updates.BuildInput{
+			Variant:     b.variant,
+			Filename:    b.origName,
+			ContentType: b.contentType,
+			Reader:      f,
 		})
 	}
+
+	meta := updates.Manifest{
+		VersionName:  versionName,
+		VersionCode:  versionCode,
+		Mandatory:    mandatory,
+		ReleaseNotes: releaseNotes,
+	}
+
+	// Multi-POST lifecycle: every POST goes through the active release
+	// (StartActive / AppendBuild), and finalize=true adds a final
+	// CommitActive. A single POST with finalize=true (or omitted,
+	// since the default is true) starts, appends, and commits in one
+	// request — equivalent to the old single-shot Publish path but
+	// with the active state persisted in pending.json (useful for
+	// debugging and crash recovery).
+	active, _ := store.GetActive()
+	if active == nil || active.VersionCode != versionCode {
+		if _, err := store.StartActive(meta); err != nil {
+			for _, f := range openFiles {
+				f.Close()
+			}
+			httpError(w, http.StatusInternalServerError, "Failed to start active release: "+err.Error())
+			return
+		}
+	}
+	var lastErr error
+	var appended []string
+	for i, p := range inputs {
+		if _, err := openFiles[i].Seek(0, io.SeekStart); err != nil {
+			lastErr = err
+			break
+		}
+		if _, err := store.AppendBuild(meta, p.Variant, p.Filename, p.ContentType, openFiles[i]); err != nil {
+			lastErr = err
+			break
+		}
+		appended = append(appended, p.Variant)
+	}
+	for _, f := range openFiles {
+		f.Close()
+	}
+	if lastErr != nil {
+		if isMaxBytesErr(lastErr) {
+			httpError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("Body exceeds the %d-byte server limit", a.cfg.UpdatesMaxAPKSize()))
+			return
+		}
+		httpError(w, http.StatusUnprocessableEntity, lastErr.Error())
+		return
+	}
+
+	if !finalize {
+		current, err := store.GetActive()
+		if err != nil || current == nil {
+			httpError(w, http.StatusInternalServerError, "Active release disappeared after append")
+			return
+		}
+		variants := make([]string, 0, len(current.Builds))
+		for _, b := range current.Builds {
+			variants = append(variants, b.Variant)
+		}
+		slog.Info("update appended",
+			"track", track,
+			"version", current.VersionName,
+			"code", current.VersionCode,
+			"variants_this_post", strings.Join(appended, ","),
+			"variants_total", strings.Join(variants, ","),
+		)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":                true,
+			"state":             "pending",
+			"versionName":       current.VersionName,
+			"versionCode":       current.VersionCode,
+			"builds":            len(current.Builds),
+			"variants":          variants,
+			"variants_appended": appended,
+		})
+		return
+	}
+
+	// finalize=true: promote the active release to the current
+	// manifest. The active state is cleared, the builds are now
+	// referenced by manifest.json and downloadable. Build files that
+	// belonged to older releases are removed from disk.
+	committed, err := store.CommitActive()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "Failed to commit: "+err.Error())
+		return
+	}
+	variants := make([]string, 0, len(committed.Builds))
+	for _, b := range committed.Builds {
+		variants = append(variants, b.Variant)
+	}
+	slog.Info("update committed",
+		"track", track,
+		"version", committed.VersionName,
+		"code", committed.VersionCode,
+		"builds", len(committed.Builds),
+		"variants", strings.Join(variants, ","),
+		"mandatory", committed.Mandatory,
+	)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"state":       "committed",
+		"versionName": committed.VersionName,
+		"versionCode": committed.VersionCode,
+		"builds":      len(committed.Builds),
+		"variants":    variants,
+	})
 }
 
 // pendingBuild is the per-build bookkeeping the publish handler keeps
 // while it streams the multipart body. The temp file lives in os.TempDir
-// until store.Publish consumes it; the original multipart filename is
-// kept so the store can sanitize and preserve it on disk.
+// until store.Publish consumes it; the original multipart filename and
+// declared content type are kept so the store can sanitize/preserve them.
 type pendingBuild struct {
-	abi      string
-	origName string
-	tempPath string
+	variant     string
+	origName    string
+	contentType string
+	tempPath    string
 }
 
-// streamAPKPart reads the body of an apk_<abi> multipart part into a temp
-// file (mode 0600) and returns its path. On any error it writes the
+// streamBuildPart reads the body of a build_<variant> multipart part into a
+// temp file (mode 0600) and returns its path. On any error it writes the
 // response and returns ("", false). Caller is responsible for removing
 // the temp file (typically via defer on a list).
-func (a *App) streamAPKPart(w http.ResponseWriter, part *multipart.Part, abi string) (string, bool) {
-	f, err := os.CreateTemp("", "eneverre-upload-*.apk.tmp")
+func (a *App) streamBuildPart(w http.ResponseWriter, part *multipart.Part, variant string) (string, bool) {
+	f, err := os.CreateTemp("", "eneverre-upload-*.build.tmp")
 	if err != nil {
 		part.Close()
 		httpError(w, http.StatusInternalServerError, "Failed to allocate temp file: "+err.Error())
@@ -406,16 +429,16 @@ func (a *App) streamAPKPart(w http.ResponseWriter, part *multipart.Part, abi str
 		part.Close()
 		if isMaxBytesErr(err) {
 			httpError(w, http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("APK exceeds the %d-byte server limit", a.cfg.UpdatesMaxAPKSize()))
+				fmt.Sprintf("Build artifact exceeds the %d-byte server limit", a.cfg.UpdatesMaxAPKSize()))
 			return "", false
 		}
-		httpError(w, http.StatusBadRequest, "Failed to read APK: "+err.Error())
+		httpError(w, http.StatusBadRequest, "Failed to read build artifact: "+err.Error())
 		return "", false
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(f.Name())
 		part.Close()
-		httpError(w, http.StatusInternalServerError, "Failed to finalize temp APK: "+err.Error())
+		httpError(w, http.StatusInternalServerError, "Failed to finalize temp build file: "+err.Error())
 		return "", false
 	}
 	part.Close()
@@ -429,75 +452,77 @@ func isMaxBytesErr(err error) bool {
 	return errors.As(err, &mbe)
 }
 
-// handleAppUpdateFile serves the APK bytes. The filename in the URL is
-// matched against the manifest — anything else is a 404, which keeps the
-// endpoint useful (only the current build is fetchable) and prevents
-// fingerprinting the disk contents.
-func (a *App) handleAppUpdateFile(track string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := a.updates[track]
-		if !ok {
-			httpError(w, http.StatusNotFound, "Unknown track: "+track)
-			return
-		}
-		if !store.Enabled() {
-			httpError(w, http.StatusServiceUnavailable, "Auto-update is not configured on this server")
-			return
-		}
-		name := r.PathValue("filename")
-		// The manifest's Builds list is the source of truth for "current".
-		// A request for a filename not in the list is treated as "not the
-		// current build" and answered with 404 — old APKs (from a previous
-		// release) stay on disk so in-flight downloads survive a publish,
-		// but are not addressable.
-		m, err := store.Get()
-		if err != nil {
-			if errors.Is(err, updates.ErrNotFound) {
-				httpError(w, http.StatusNotFound, "No current build")
-				return
-			}
-			httpError(w, http.StatusInternalServerError, "Failed to read manifest")
-			return
-		}
-		allowed := false
-		for _, b := range m.Builds {
-			if b.Filename == name {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			httpError(w, http.StatusNotFound, "Not the current build")
-			return
-		}
-		f, err := store.ReadAPK(name)
-		if err != nil {
-			if errors.Is(err, updates.ErrNotFound) {
-				httpError(w, http.StatusNotFound, "APK missing on disk")
-				return
-			}
-			httpError(w, http.StatusInternalServerError, "Failed to open APK")
-			return
-		}
-		defer f.Close()
-		fi, err := f.Stat()
-		if err != nil {
-			httpError(w, http.StatusInternalServerError, "Failed to stat APK")
-			return
-		}
-		ctype := mime.TypeByExtension(filepath.Ext(name))
-		if ctype == "" {
-			ctype = "application/vnd.android.package-archive"
-		}
-		w.Header().Set("Content-Type", ctype)
-		w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
-		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
-		// A 100MB+ APK on a slow link takes well over the global WriteTimeout
-		// (30s); the response size is bounded by the file on disk.
-		clearWriteDeadline(w, "apk download")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, f)
+// handleAppUpdateFile serves the build artifact's bytes. The filename in
+// the URL is matched against the manifest — anything else is a 404, which
+// keeps the endpoint useful (only the current build is fetchable) and
+// prevents fingerprinting the disk contents.
+func (a *App) handleAppUpdateFile(w http.ResponseWriter, r *http.Request) {
+	track := r.PathValue("track")
+	if !validTrack(track) {
+		httpError(w, http.StatusBadRequest, "Invalid track name: "+track)
+		return
 	}
+	store := updates.NewStore(a.updatesRoot, track)
+	if !store.Enabled() {
+		httpError(w, http.StatusServiceUnavailable, "Auto-update is not configured on this server")
+		return
+	}
+	name := r.PathValue("filename")
+	// The manifest's Builds list is the source of truth for "current".
+	// A request for a filename not in the list is treated as "not the
+	// current build" and answered with 404 — old build files (from a
+	// previous release) stay on disk so in-flight downloads survive a
+	// publish, but are not addressable.
+	m, err := store.Get()
+	if err != nil {
+		if errors.Is(err, updates.ErrNotFound) {
+			httpError(w, http.StatusNotFound, "No current build")
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "Failed to read manifest")
+		return
+	}
+	var current *updates.Build
+	for i, b := range m.Builds {
+		if b.Filename == name {
+			current = &m.Builds[i]
+			break
+		}
+	}
+	if current == nil {
+		httpError(w, http.StatusNotFound, "Not the current build")
+		return
+	}
+	f, err := store.ReadBuild(name)
+	if err != nil {
+		if errors.Is(err, updates.ErrNotFound) {
+			httpError(w, http.StatusNotFound, "Build file missing on disk")
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "Failed to open build file")
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "Failed to stat build file")
+		return
+	}
+	ctype := current.ContentType
+	if ctype == "" {
+		ctype = mime.TypeByExtension(filepath.Ext(name))
+	}
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	// A 100MB+ build on a slow link takes well over the global WriteTimeout
+	// (30s); the response size is bounded by the file on disk.
+	clearWriteDeadline(w, "build download")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, f)
 }
 
 // publicURLForRequest derives an "http(s)://host[:port]" string from the

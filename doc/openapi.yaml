@@ -1621,15 +1621,22 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /api/app/tv/update:
+  /api/app/{track}/update:
     get:
-      summary: Latest available build for the Android TV client
+      summary: Latest available build for a client track
       description: |
-        Returns the current manifest for the TV track, or `204 No Content`
-        when no build has been published yet. Used by `EneverreTV` on cold
-        start to check for an update. Anonymous (no auth). See `doc/UPDATES.md`
-        for the full client protocol.
+        Returns the current manifest for `{track}`, or `204 No Content`
+        when no build has been published yet. `{track}` is any
+        operator/CI-chosen identifier (e.g. `tv`, `phone`, `tablet`,
+        `ios`) — there is no fixed track list; publishing to a new track
+        is enough to start serving it. Anonymous (no auth). See
+        `doc/UPDATES.md` for the full client protocol.
       security: []
+      parameters:
+        - name: track
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[a-z0-9][a-z0-9_-]{0,39}$', example: "tv" }
       responses:
         '200':
           description: A build is available
@@ -1642,6 +1649,12 @@ paths:
                 $ref: '#/components/schemas/UpdateManifest'
         '204':
           description: No build has been published for this track
+        '400':
+          description: Track name failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '503':
           description: Auto-update is not configured on this server
           content:
@@ -1649,51 +1662,40 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/app/phone/update:
-    get:
-      summary: Latest available build for the Android phone client
-      description: Same shape as the TV endpoint, separate track. Anonymous.
-      security: []
-      responses:
-        '200':
-          description: A build is available
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UpdateManifest'
-        '204':
-          description: No build has been published for this track
-        '503':
-          description: Auto-update is not configured on this server
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /api/admin/app/updates/tv:
+  /api/admin/app/updates/{track}:
     post:
-      summary: Publish a new build for the TV track
+      summary: Publish a new build to a client track
       description: |
-        Accepts a `multipart/form-data` body with one or more APKs (one form
-        file per Android ABI, named `apk_<abi>`) and release metadata.
-        Streams each APK straight to a temp file (no full-body buffering),
-        computes its SHA-256, and persists the sidecar manifest. Subsequent
-        `GET /api/app/tv/update` returns the new manifest. APKs belonging to
-        the previous release are deleted once this one commits — only the
-        current release's APKs are kept on disk.
+        Accepts a `multipart/form-data` body with one or more build
+        artifacts (one form file per client-defined variant, named
+        `build_<variant>`) and release metadata. Streams each file
+        straight to a temp file (no full-body buffering), computes its
+        SHA-256, and persists the sidecar manifest. Subsequent
+        `GET /api/app/{track}/update` returns the new manifest. Files
+        belonging to the previous release are deleted once this one
+        commits — only the current release's builds are kept on disk.
 
-        Supports both a single self-contained POST (all APKs at once, the
-        default `finalize=true` behavior) and a multi-POST sequence for large
-        releases on slow links (`finalize=false` on the first N-1 POSTs,
-        `finalize=true` — or omitted — on the last). See "Single POST vs
-        multi-POST" in `doc/UPDATES.md` for the full state machine and
-        worked examples.
+        `{track}` needs no prior registration — the first publish to a
+        new track name creates its storage directory on the fly.
+
+        Supports both a single self-contained POST (all variants at once,
+        the default `finalize=true` behavior) and a multi-POST sequence
+        for large releases on slow links (`finalize=false` on the first
+        N-1 POSTs, `finalize=true` — or omitted — on the last). See
+        "Single POST vs multi-POST" in `doc/UPDATES.md` for the full
+        state machine and worked examples.
 
         **Auth:** `Authorization: Bearer <publish_token>`. User/password
         and session Bearer tokens are not accepted. Returns `503` if the
-        server has no `publish_token` configured.
+        server has no `publish_token` configured. The same token
+        authorizes publishing to any track.
       security:
         - updateToken: []
+      parameters:
+        - name: track
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[a-z0-9][a-z0-9_-]{0,39}$', example: "tv" }
       requestBody:
         $ref: '#/components/requestBodies/AppUpdatePublish'
       responses:
@@ -1703,10 +1705,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AppUpdatePublishResult'
+        '400':
+          description: Track name failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401': { $ref: '#/components/responses/Unauthorized' }
         '413':
           description: >-
-            Total body (or a single APK part) exceeds `[updates] max_apk_size`
+            Total body (or a single build part) exceeds `[updates] max_apk_size`
             (default 100 MiB).
           content:
             application/json:
@@ -1715,92 +1723,44 @@ paths:
         '422':
           description: >-
             versionName/versionCode missing, versionCode not a non-negative
-            integer, or no `apk_<abi>` file part present.
+            integer, or no `build_<variant>` file part present.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
-  /api/admin/app/updates/phone:
-    post:
-      summary: Publish a new build for the phone track
-      description: |
-        Same shape as the TV publish endpoint, separate track. See the TV
-        endpoint for the auth rules and the multi-POST publish flow.
-      security:
-        - updateToken: []
-      requestBody:
-        $ref: '#/components/requestBodies/AppUpdatePublish'
-      responses:
-        '200':
-          description: Publish succeeded (state committed or pending — see the schema).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AppUpdatePublishResult'
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '413':
-          description: >-
-            Total body (or a single APK part) exceeds `[updates] max_apk_size`
-            (default 100 MiB).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Message'
-        '422':
-          description: >-
-            versionName/versionCode missing, versionCode not a non-negative
-            integer, or no `apk_<abi>` file part present.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Message'
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
-
-  /api/app/updates/tv/{filename}:
+  /api/app/updates/{track}/{filename}:
     get:
-      summary: Download the current TV APK
+      summary: Download a build file from a client track
       description: |
-        Serves the file named in the current TV manifest. A request for a
-        different filename is 404 — only the current build is fetchable.
-        Anonymous.
+        Serves the file named in `{track}`'s current manifest. A request
+        for a different filename is 404 — only the current build is
+        fetchable. The Content-Type served is, in order: the value
+        declared at publish time, else a guess from the file extension,
+        else `application/octet-stream`. Anonymous.
       security: []
       parameters:
+        - name: track
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[a-z0-9][a-z0-9_-]{0,39}$', example: "tv" }
         - name: filename
           in: path
           required: true
           schema: { type: string, example: "eneverre-tv-universal-1.0.1.apk" }
       responses:
         '200':
-          description: APK bytes
+          description: Build file bytes
           content:
-            application/vnd.android.package-archive:
+            application/octet-stream:
               schema: { type: string, format: binary }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '503':
-          description: Auto-update is not configured on this server
+        '400':
+          description: Track name failed validation
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-
-  /api/app/updates/phone/{filename}:
-    get:
-      summary: Download the current phone APK
-      description: Same shape as the TV download endpoint, separate track.
-      security: []
-      parameters:
-        - name: filename
-          in: path
-          required: true
-          schema: { type: string, example: "eneverre-universal-1.0.0.apk" }
-      responses:
-        '200':
-          description: APK bytes
-          content:
-            application/vnd.android.package-archive:
-              schema: { type: string, format: binary }
         '404': { $ref: '#/components/responses/NotFound' }
         '503':
           description: Auto-update is not configured on this server
@@ -1824,10 +1784,11 @@ components:
       scheme: bearer
       description: |
         Publish-only bearer token matching the server's `[updates] publish_token`
-        (or `ENEVERRE_UPDATES_PUBLISH_TOKEN`). The publish endpoints
-        (POST /api/admin/app/updates/{tv,phone}) accept ONLY this token;
+        (or `ENEVERRE_UPDATES_PUBLISH_TOKEN`). The publish endpoint
+        (POST /api/admin/app/updates/{track}) accepts ONLY this token;
         user/password and session Bearer are rejected. If no token is
-        configured on the server, the publish endpoints return 503.
+        configured on the server, the publish endpoint returns 503. The
+        same token authorizes publishing to any track.
 
   parameters:
     camera_id:
@@ -1854,20 +1815,22 @@ components:
             type: object
             required: [versionName, versionCode]
             description: >-
-              At least one `apk_<abi>` file part is required (not
+              At least one `build_<variant>` file part is required (not
               expressible as a JSON Schema `required` entry since the field
-              name is the variable ABI). `apk_arm64-v8a`, `apk_armeabi-v7a`,
-              `apk_x86_64`, `apk_x86` and `apk_universal` are the common
-              names in use; any `apk_<abi>` name is accepted. A release can
+              name is the client-defined variant). For Android tracks,
+              `build_arm64-v8a`, `build_armeabi-v7a`, `build_x86_64`,
+              `build_x86` and `build_universal` are the common names in
+              use; any `build_<variant>` name is accepted (other platforms
+              are free to use e.g. `build_ios`, `build_web`). A release can
               carry any combination of them in one POST, or be built up
               across several POSTs (see `finalize` below and
               `doc/UPDATES.md`).
             properties:
-              apk_arm64-v8a: { type: string, format: binary, description: "APK for arm64-v8a devices" }
-              apk_armeabi-v7a: { type: string, format: binary, description: "APK for armeabi-v7a devices" }
-              apk_x86_64: { type: string, format: binary, description: "APK for x86_64 devices (Chromebooks, emulators)" }
-              apk_x86: { type: string, format: binary, description: "APK for x86 devices (older emulators)" }
-              apk_universal: { type: string, format: binary, description: "Fat APK; fallback for clients that don't list a specific ABI" }
+              build_arm64-v8a: { type: string, format: binary, description: "Build for arm64-v8a devices" }
+              build_armeabi-v7a: { type: string, format: binary, description: "Build for armeabi-v7a devices" }
+              build_x86_64: { type: string, format: binary, description: "Build for x86_64 devices (Chromebooks, emulators)" }
+              build_x86: { type: string, format: binary, description: "Build for x86 devices (older emulators)" }
+              build_universal: { type: string, format: binary, description: "Fallback build for clients that don't list a specific variant" }
               versionName: { type: string, example: "1.0.1" }
               versionCode: { type: integer, example: 10101, description: "Non-negative integer. Common scheme: MAJOR*10000+MINOR*100+PATCH. All POSTs building the same release must share this value." }
               releaseNotes: { type: string, description: "Optional; surfaced to the user in the update dialog" }
@@ -2091,13 +2054,13 @@ components:
     UpdateManifest:
       type: object
       description: |
-        Body of `GET /api/app/<track>/update` when a build is available.
-        Clients upgrade iff `versionCode` is strictly greater than their
-        installed `BuildConfig.VERSION_CODE`. Every APK in the release is a
-        first-class entry in `builds` — there is no single-APK convenience
-        field, even for a release with only one build. `mandatory` removes
-        the "Later" / "Skip" buttons in the dialog. See the client selection
-        algorithm in `doc/UPDATES.md`.
+        Body of `GET /api/app/{track}/update` when a build is available.
+        Clients upgrade iff `versionCode` is strictly greater than their own
+        build number. Every build in the release is a first-class entry in
+        `builds` — there is no single-build convenience field, even for a
+        release with only one variant. `mandatory` removes the "Later" /
+        "Skip" buttons in the dialog. See the client selection algorithm in
+        `doc/UPDATES.md`.
       required: [versionName, versionCode, mandatory, builds]
       properties:
         versionName:
@@ -2114,34 +2077,41 @@ components:
           description: Optional release notes shown in the update dialog
         builds:
           type: array
-          description: One entry per APK variant in the release, in CI publish order.
+          description: One entry per build variant in the release, in CI publish order.
           items:
             $ref: '#/components/schemas/UpdateBuild'
 
     UpdateBuild:
       type: object
-      required: [abi, apkFilename, size, sha256, url]
+      required: [variant, filename, size, sha256, url]
       properties:
-        abi:
+        variant:
           type: string
-          description: "Android ABI: arm64-v8a, armeabi-v7a, x86, x86_64, universal, ..."
+          description: >-
+            Client-defined tag identifying the build (e.g. an Android ABI
+            like arm64-v8a/armeabi-v7a/x86/x86_64/universal, or a platform
+            name like ios/web). Opaque to the server.
           example: "arm64-v8a"
-        apkFilename:
+        filename:
           type: string
-          description: Basename of the APK as stored on the server
+          description: Basename of the build file as stored on the server
           example: "eneverre-tv-arm64-1.0.1.apk"
         size:
           type: integer
           format: int64
-          description: Size of the APK in bytes
+          description: Size of the build file in bytes
         sha256:
           type: string
-          description: Lowercase hex SHA-256 of the APK bytes; the client verifies it after download
+          description: Lowercase hex SHA-256 of the file's bytes; the client verifies it after download
           example: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        contentType:
+          type: string
+          description: Content-Type declared at publish time, if any. Omitted if unset.
+          example: "application/vnd.android.package-archive"
         url:
           type: string
           format: uri
-          description: Absolute URL the client GETs to download this APK
+          description: Absolute URL the client GETs to download this build
 
     AppUpdatePublishResult:
       type: object
@@ -2149,7 +2119,7 @@ components:
         Response of a successful publish POST. `state` distinguishes a
         finalized (client-visible) release from a staged, in-progress one
         (multi-POST flow).
-      required: [ok, state, versionName, versionCode, builds, abis]
+      required: [ok, state, versionName, versionCode, builds, variants]
       properties:
         ok:
           type: boolean
@@ -2167,17 +2137,17 @@ components:
           type: integer
         builds:
           type: integer
-          description: Total number of APKs in the release so far (this POST plus any earlier ones with the same versionCode).
-        abis:
+          description: Total number of build files in the release so far (this POST plus any earlier ones with the same versionCode).
+        variants:
           type: array
           items:
             type: string
-          description: ABIs of every build in the release so far.
-        abis_appended:
+          description: Variants of every build in the release so far.
+        variants_appended:
           type: array
           items:
             type: string
-          description: ABIs this specific POST added. Present only when state is pending.
+          description: Variants this specific POST added. Present only when state is pending.
 
     Error:
       type: object
