@@ -94,6 +94,16 @@ type App struct {
 	privacyMu sync.RWMutex
 	privacy   map[string]bool
 
+	// privacyOps serializes privacy toggles per camera: the toggle spans slow
+	// firmware calls (PTZ move + lens blackout) plus the engine pause plus the
+	// privacy map write, and two concurrent toggles interleaving could leave
+	// the lens blacked out while recording (or vice versa). Per-camera (not
+	// camMutateMu) because each thingino call can take up to 10s and must not
+	// block admin mutations or other cameras' toggles. Guarded by privacyOpsMu;
+	// entries live for the camera's lifetime (bounded by the camera count).
+	privacyOpsMu sync.Mutex
+	privacyOps   map[string]*sync.Mutex
+
 	// updates holds the per-track auto-update stores (keys: "tv", "phone").
 	// Empty when the [updates] section is not configured; in that case the
 	// /api/app/* endpoints answer 503.
@@ -162,6 +172,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		secLog:             newSecLogger(cfg.AuthSecurityLog()),
 		authThrottle:       newAuthThrottle(),
 		privacy:            make(map[string]bool),
+		privacyOps:         make(map[string]*sync.Mutex),
 		updates:            updateStores,
 		talk:               make(map[string]*backchannel.Session),
 		talkCodecs:         make(map[string][]string),
@@ -895,6 +906,21 @@ func (a *App) handlePTZRecalibrate(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+// privacyOp returns (creating if needed) the per-camera privacy-toggle mutex.
+func (a *App) privacyOp(camID string) *sync.Mutex {
+	a.privacyOpsMu.Lock()
+	defer a.privacyOpsMu.Unlock()
+	if a.privacyOps == nil { // tests build App without New
+		a.privacyOps = make(map[string]*sync.Mutex)
+	}
+	mu := a.privacyOps[camID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		a.privacyOps[camID] = mu
+	}
+	return mu
+}
+
 // handlePrivacy toggles a camera's privacy. Privacy stops recording and
 // transmission (live MSE + RTSP relay) for any camera by pausing the media
 // engine's pipeline for it; on thingino cameras it additionally drives the
@@ -915,6 +941,11 @@ func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "Missing or invalid 'enable' query param")
 		return
 	}
+
+	// One toggle at a time per camera; see the privacyOps field comment.
+	mu := a.privacyOp(cam.ID)
+	mu.Lock()
+	defer mu.Unlock()
 
 	// Firmware privacy (lens blackout + PTZ privacy position) is only possible
 	// on thingino cameras. Non-thingino cameras rely solely on the engine pause

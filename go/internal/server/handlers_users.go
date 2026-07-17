@@ -260,7 +260,11 @@ func (a *App) handleRevokeMySession(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "Session not found")
 		return
 	}
-	res, _ := a.db.Exec("DELETE FROM tokens WHERE id = ? AND username = ?", sessionID, me.Username)
+	res, err := a.db.Exec("DELETE FROM tokens WHERE id = ? AND username = ?", sessionID, me.Username)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "Could not revoke session")
+		return
+	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		httpError(w, http.StatusNotFound, "Session not found")
 		return
@@ -368,8 +372,12 @@ func (a *App) handleChangeName(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	res, _ := a.db.Exec("UPDATE users SET first_name = ?, last_name = ? WHERE username = ?",
+	res, err := a.db.Exec("UPDATE users SET first_name = ?, last_name = ? WHERE username = ?",
 		req.FirstName, req.LastName, username)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "Could not update name")
+		return
+	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		var one int
 		if a.db.QueryRow("SELECT 1 FROM users WHERE username = ?", username).Scan(&one) == sql.ErrNoRows {
@@ -393,7 +401,11 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "Cannot delete the last admin")
 		return
 	}
-	res, _ := a.db.Exec("DELETE FROM users WHERE username = ?", username)
+	res, err := a.db.Exec("DELETE FROM users WHERE username = ?", username)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "Could not delete user")
+		return
+	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		httpError(w, http.StatusNotFound, "User not found")
 		return

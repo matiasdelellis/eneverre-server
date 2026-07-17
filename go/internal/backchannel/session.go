@@ -87,6 +87,22 @@ func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 		return nil, err
 	}
 
+	// Honor ctx across the whole handshake, not just the TCP dial: each RTSP
+	// step below runs with its own 10s socket deadline, so with auth retries a
+	// dead camera could hold the caller for several times the intended budget.
+	// Closing the conn unblocks whichever step is in flight; after Dial
+	// returns (handshakeDone) the session's lifetime is Close()'s business,
+	// not ctx's.
+	handshakeDone := make(chan struct{})
+	defer close(handshakeDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			c.conn.Close()
+		case <-handshakeDone:
+		}
+	}()
+
 	s := &Session{
 		rtspClient: c,
 		stop:       make(chan struct{}),

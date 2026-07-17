@@ -291,10 +291,17 @@ func (a *App) handleCheckDevice(w http.ResponseWriter, r *http.Request) {
 		// Device (TV) sessions get an access token with a fixed life and no
 		// refresh_token, so they cannot be extended — the device re-pairs.
 		tokenExpiresAt := now + a.accessTTL
-		_, _ = a.db.Exec(
+		// A failed INSERT must not consume the device code: the client would
+		// receive a token that doesn't exist and be "logged in" with a dead
+		// session, with re-pairing as the only (undiagnosed) way out. Report
+		// 500 and leave the code approved so the next poll can retry.
+		if _, err := a.db.Exec(
 			"INSERT INTO tokens (token, username, expires_at, created_at, device_name) VALUES (?, ?, ?, ?, ?)",
 			token, username, tokenExpiresAt, now, deviceName,
-		)
+		); err != nil {
+			httpError(w, http.StatusInternalServerError, "Could not create session")
+			return
+		}
 		_, _ = a.db.Exec("UPDATE device_login SET status='expired' WHERE device_code = ?", deviceCode)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":      "approved",

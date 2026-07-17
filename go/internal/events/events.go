@@ -7,8 +7,13 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// recordMu serializes RecordMotion's read-merge-write sequence; see the
+// comment there.
+var recordMu sync.Mutex
 
 // Event is a recorded motion (or other) event for a camera.
 type Event struct {
@@ -95,6 +100,15 @@ func scanEvent(row interface{ Scan(...any) error }) (Event, error) {
 // union of the two ranges. If duration is non-nil and >= 0 the range is
 // [ts, ts+duration]; otherwise [ts-pre, ts+post].
 func RecordMotion(db *sql.DB, cameraID string, ts int64, pre, post int, duration *int64, eventType, source string) (Event, error) {
+	// The SELECT-merge-UPDATE below is not atomic: two concurrent webhooks for
+	// the same camera could both see "no overlap" and insert duplicate rows, or
+	// overwrite each other's merge with a shorter range. This process is the
+	// database's only writer, so an in-process mutex is enough to serialize it
+	// (and far simpler than SQLite immediate-transaction plumbing). Events are
+	// low-rate; the contention cost is negligible.
+	recordMu.Lock()
+	defer recordMu.Unlock()
+
 	now := time.Now().Unix()
 
 	var newStart, newEnd int64

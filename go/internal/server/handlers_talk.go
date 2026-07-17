@@ -28,6 +28,11 @@ const (
 	talkPingPeriod = 25 * time.Second
 )
 
+// talkDialTimeout bounds the whole RTSP backchannel setup (DESCRIBE through
+// PLAY, including retries). It caps how long the per-camera talk slot can be
+// held by a connect attempt before other clients stop seeing 409s.
+const talkDialTimeout = 15 * time.Second
+
 // talkUpgrader upgrades the push-to-talk WebSocket. Origin is not restricted
 // here: auth is enforced by the access token before the upgrade, and the token
 // is unforgeable so there is no CSRF vector. Advertising talkSubprotocol makes
@@ -145,7 +150,14 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := backchannel.Dial(context.Background(), cam.Backchannel, forceCodec)
+	// Bound the RTSP setup: with per-step timeouts and retries an unreachable
+	// camera can take >30s, and the whole time the single talk slot reserved
+	// above stays taken, answering 409 to everyone — including the same client
+	// retrying after it gave up (the WS is hijacked, so a client disconnect
+	// does not cancel anything by itself).
+	dialCtx, cancelDial := context.WithTimeout(r.Context(), talkDialTimeout)
+	defer cancelDial()
+	sess, err := backchannel.Dial(dialCtx, cam.Backchannel, forceCodec)
 	if err != nil {
 		slog.Warn("talk backchannel dial failed", "camera", cam.ID, "err", err)
 		conn.WriteMessage(websocket.CloseMessage,

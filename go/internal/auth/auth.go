@@ -57,20 +57,18 @@ func VerifyToken(db *sql.DB, token string) *CurrentUser {
 	if token == "" {
 		return nil
 	}
-	var username string
+	// One JOINed query instead of tokens-then-users: this runs on every Bearer
+	// request, so the second round-trip was pure hot-path overhead. A token
+	// whose user was deleted matches no row, same as before.
+	var username, role string
 	var expires sql.NullInt64
 	if err := db.QueryRow(
-		"SELECT username, expires_at FROM tokens WHERE token = ?", token,
-	).Scan(&username, &expires); err != nil {
+		"SELECT t.username, t.expires_at, u.role FROM tokens t "+
+			"JOIN users u ON u.username = t.username WHERE t.token = ?", token,
+	).Scan(&username, &expires, &role); err != nil {
 		return nil
 	}
 	if expires.Valid && expires.Int64 != 0 && expires.Int64 < time.Now().Unix() {
-		return nil
-	}
-	var role string
-	if err := db.QueryRow(
-		"SELECT role FROM users WHERE username = ?", username,
-	).Scan(&role); err != nil {
 		return nil
 	}
 	return &CurrentUser{Username: username, Role: role}

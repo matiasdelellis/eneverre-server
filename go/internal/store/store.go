@@ -44,6 +44,9 @@ var schema = []string{
 		refresh_expires_at INTEGER
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_tokens_username ON tokens(username)`,
+	// handleRefresh looks sessions up by refresh_token on every renewal; without
+	// this index that is a full-table scan.
+	`CREATE INDEX IF NOT EXISTS idx_tokens_refresh ON tokens(refresh_token)`,
 	`CREATE TABLE IF NOT EXISTS events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		camera_id TEXT NOT NULL,

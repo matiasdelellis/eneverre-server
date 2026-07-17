@@ -109,6 +109,10 @@ func doPost(url string, body []byte, timeout time.Duration) ([]byte, error) {
 	return do(http.MethodPost, url, body, timeout)
 }
 
+// maxResponseBytes caps how much of a camera response is buffered, matching
+// the server's generic snapshot cap (8 MiB).
+const maxResponseBytes = 8 << 20
+
 func do(method, url string, payload []byte, timeout time.Duration) ([]byte, error) {
 	var reqBody io.Reader
 	if payload != nil {
@@ -130,9 +134,15 @@ func do(method, url string, payload []byte, timeout time.Duration) ([]byte, erro
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	// Cap the read: a camera with broken firmware (or a compromised one) that
+	// streams an endless body must not exhaust the NVR's RAM. 8 MiB matches
+	// the generic snapshot cap and comfortably fits any thumbnail/JSON reply.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(body) > maxResponseBytes {
+		return nil, fmt.Errorf("thingino: response from %s exceeds %d bytes", url, maxResponseBytes)
 	}
 	if resp.StatusCode >= 400 {
 		return nil, &StatusError{Code: resp.StatusCode}
