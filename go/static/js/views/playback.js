@@ -1,5 +1,6 @@
 import { $, $$, makeMsg } from "../util/dom.js";
 import { token, apiFetch } from "../api.js";
+import { getState } from "../state.js";
 import { icon } from "../ui/icons.js";
 import { Timeline } from "../../timeline.js";
 import { t } from "../i18n.js";
@@ -16,6 +17,7 @@ let preservedPbState = null;
 let pbBuildGen = 0;
 let pbLoadGen = 0;     // initial-playback render; bumped when leaving playback
 let pbSelectGen = 0;   // timeline clicks; bumped when leaving playback or on a newer click
+let pbLive = false;    // latch so the live callback acts once per not-live -> live edge
 
 const PB_REFRESH_INTERVAL_MS = 15 * 1000;   // present-edge poll cadence
 const PB_PAGE_MS = 24 * 3600 * 1000;        // older chunk loaded per back-scroll step
@@ -297,6 +299,7 @@ export async function buildPlaybackTimeline(filtered) {
   const myGen = ++pbBuildGen;
   pbTimeline = null;
   pbCams = filtered;
+  pbLive = false;
 
   const rowH = 24;
   const desiredH = Math.max(80, filtered.length * rowH + 50);
@@ -340,7 +343,19 @@ export async function buildPlaybackTimeline(filtered) {
   });
 
   tl.setLiveCallback((_tlIdx, isLive) => {
-    if (!isLive) return;
+    // The timeline fires this on EVERY draw while the cursor sits within 1s
+    // of "now" (the snap animation, hover redraws, the present-edge refresh).
+    // Latch on the not-live -> live edge so we tear down VOD and rebuild the
+    // live tiles exactly once; setTileMode destroys+recreates the MSE
+    // connection, so re-running it per draw caused several reconnects per
+    // camera on a single click.
+    if (!isLive) { pbLive = false; return; }
+    if (pbLive) return;
+    pbLive = true;
+    // A tap near the live edge also armed the 500ms time-selection timer,
+    // which would restart VOD over the tiles we're about to put live. Cancel
+    // it so "go live" wins.
+    if (pbTimeline) { clearTimeout(pbTimeline.timerSelectedId); pbTimeline.timerSelectedId = 0; }
     killVods();
     // Lazy-load the wall module to break the wall <-> playback import
     // cycle. The wall module is always already loaded by the time the
@@ -432,6 +447,7 @@ export function teardownPlaybackTimeline() {
   }
   pbBuildGen++;
   pbSelectGen++;
+  pbLive = false;
   if (pbRefreshTimer) { clearInterval(pbRefreshTimer); pbRefreshTimer = null; }
   pbRefreshing = false;
   killVods();
@@ -648,7 +664,14 @@ export function killVods() {
   vodPlaybackStartMsec = 0;
   vodPaused = false;
   vodPausedAt = 0;
-  for (const t of $$("#wall .wall-gap-overlay")) t.remove();
+  // Sweep both overlay kinds: .wall-gap-overlay (transient, cursor in a gap)
+  // and the standalone .wall-no-recording that showVodNoRecording puts in
+  // place of the <video>. The gap overlays also carry .wall-no-recording, so
+  // this one selector covers both. The keyboard jumps (j/l/p/n) and the date
+  // input call startVodPlayback -> killVods without going through
+  // setTilePlaybackLoading, so without this the old opaque "No recording"
+  // message stayed on top of the freshly appended video.
+  for (const t of $$("#wall .wall-no-recording")) t.remove();
   for (const t of $$("#wall .wall-buffering")) t.remove();
 }
 
@@ -889,52 +912,54 @@ function startVodCursor() {
 // ---------- Keyboard shortcuts (j / k / l / Space) for recordings ----------
 
 export function initPlaybackKeys() {
+  // Synchronous handler: e.preventDefault() must run in the same tick as the
+  // event, so getState is a static import (not a dynamic import().then(),
+  // which resolves a microtask late — by then the page has already scrolled
+  // on Space and any focused button has fired).
   document.addEventListener("keydown", (e) => {
-    import("../state.js").then(({ getState }) => {
-      if (getState().viewMode !== "playback") return;
-      const t = e.target;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      if (!pbTimeline) return;
-      if (e.key === "j") {
-        e.preventDefault();
-        const records = pbTimeline.getBackgroundRecords(pbTimeline.timelineSelected);
-        const prev = pbTimeline.getPrevRecord(pbTimeline.getCurrent(), records || []);
-        if (prev) {
-          pbTimeline.setCurrent(prev.timestampMsec);
-          pbTimeline.draw();
-          startVodPlayback(pbCams, prev.timestampMsec);
-        }
-      } else if (e.key === "k" || e.key === " ") {
-        e.preventDefault();
-        const btn = $("#pb-play");
-        if (btn) btn.click();
-      } else if (e.key === "l") {
-        e.preventDefault();
-        const records = pbTimeline.getBackgroundRecords(pbTimeline.timelineSelected);
-        const next = pbTimeline.getNextRecord(pbTimeline.getCurrent(), records || []);
-        if (next) {
-          pbTimeline.setCurrent(next.timestampMsec);
-          pbTimeline.draw();
-          startVodPlayback(pbCams, next.timestampMsec);
-        }
-      } else if (e.key === "p" || e.key === "n") {
-        // Jump between events (drawn as major markers on the timeline).
-        e.preventDefault();
-        const events = pbTimeline.getMajor1Records(pbTimeline.timelineSelected);
-        const rec = e.key === "p"
-          ? pbTimeline.getPrevRecord(pbTimeline.getCurrent(), events || [])
-          : pbTimeline.getNextRecord(pbTimeline.getCurrent(), events || []);
-        if (rec) {
-          pbTimeline.setCurrent(rec.timestampMsec);
-          pbTimeline.draw();
-          startVodPlayback(pbCams, rec.timestampMsec);
-        }
-      } else if (e.key === "," || e.key === ".") {
-        // Frame-step backward / forward. Only meaningful while paused.
-        e.preventDefault();
-        frameStep(e.key === "," ? -PB_FRAME_STEP_SEC : PB_FRAME_STEP_SEC);
+    if (getState().viewMode !== "playback") return;
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (!pbTimeline) return;
+    if (e.key === "j") {
+      e.preventDefault();
+      const records = pbTimeline.getBackgroundRecords(pbTimeline.timelineSelected);
+      const prev = pbTimeline.getPrevRecord(pbTimeline.getCurrent(), records || []);
+      if (prev) {
+        pbTimeline.setCurrent(prev.timestampMsec);
+        pbTimeline.draw();
+        startVodPlayback(pbCams, prev.timestampMsec);
       }
-    });
+    } else if (e.key === "k" || e.key === " ") {
+      e.preventDefault();
+      const btn = $("#pb-play");
+      if (btn) btn.click();
+    } else if (e.key === "l") {
+      e.preventDefault();
+      const records = pbTimeline.getBackgroundRecords(pbTimeline.timelineSelected);
+      const next = pbTimeline.getNextRecord(pbTimeline.getCurrent(), records || []);
+      if (next) {
+        pbTimeline.setCurrent(next.timestampMsec);
+        pbTimeline.draw();
+        startVodPlayback(pbCams, next.timestampMsec);
+      }
+    } else if (e.key === "p" || e.key === "n") {
+      // Jump between events (drawn as major markers on the timeline).
+      e.preventDefault();
+      const events = pbTimeline.getMajor1Records(pbTimeline.timelineSelected);
+      const rec = e.key === "p"
+        ? pbTimeline.getPrevRecord(pbTimeline.getCurrent(), events || [])
+        : pbTimeline.getNextRecord(pbTimeline.getCurrent(), events || []);
+      if (rec) {
+        pbTimeline.setCurrent(rec.timestampMsec);
+        pbTimeline.draw();
+        startVodPlayback(pbCams, rec.timestampMsec);
+      }
+    } else if (e.key === "," || e.key === ".") {
+      // Frame-step backward / forward. Only meaningful while paused.
+      e.preventDefault();
+      frameStep(e.key === "," ? -PB_FRAME_STEP_SEC : PB_FRAME_STEP_SEC);
+    }
   });
 }
 

@@ -46,6 +46,15 @@ function fmtElapsed(sec) {
 // on every entry.
 const wallInstances = new Map();
 
+// Generation counter for loadWall. Every call bumps it and captures its own
+// value; after each await the call bails if a newer loadWall has started. The
+// playback path already had its own guard (pbLoadGen via claimPlaybackLoad),
+// but the live path did not: two overlapping calls (fast sidebar clicks, or a
+// Live/Playback toggle firing while a previous load is mid-await) both did
+// `wall.innerHTML = ""` then appended tiles, duplicating the grid and leaving
+// MSE instances streaming for cameras no longer shown.
+let wallLoadGen = 0;
+
 // The single camera currently playing audio (only one at a time). Remembered
 // across wall re-renders — selecting a camera or location rebuilds the tiles,
 // and the previously unmuted camera keeps its audio if it's still shown.
@@ -441,18 +450,22 @@ function renderWallEmpty(wall) {
 }
 
 export async function loadWall(mode = "live") {
+  const myGen = ++wallLoadGen;
   const wall = $("#wall");
   destroyWall();
   await loadSidebar();
+  if (myGen !== wallLoadGen) return; // superseded by a newer loadWall
   wall.innerHTML = `<p class='muted wall-status'>${t("loading")}</p>`;
   let cams;
   try {
     cams = await fetchCameras();
   } catch (e) {
+    if (myGen !== wallLoadGen) return;
     wall.innerHTML = `<p class="error wall-status">${t("wall.failed_load", { msg: escapeHtml(e.message) })}</p>`;
     updateSidebarActive();
     return;
   }
+  if (myGen !== wallLoadGen) return;
   // Playback only makes sense when some camera advertises it (recording is
   // off by default, so a fresh install has none). Hide the whole Live/Playback
   // switch otherwise — a lone "Live" button toggles nothing — and fall back to
@@ -496,6 +509,7 @@ export async function loadWall(mode = "live") {
     updateSidebarActive();
   } else {
     const { teardownPlaybackTimeline } = await import("./playback.js");
+    if (myGen !== wallLoadGen) return; // a newer loadWall superseded us
     teardownPlaybackTimeline();
     for (const cam of filtered) {
       const tile = renderWallTile(cam);
@@ -513,6 +527,7 @@ export async function loadWall(mode = "live") {
     }
     updateSidebarActive();
   }
+  if (myGen !== wallLoadGen) return; // don't announce a render a newer load replaced
   // Tiles were (re)created: let the topbar controls that inject per-tile
   // overlays or track the selected cam resync. PTZ and talk both subscribe.
   emit("wallRendered");

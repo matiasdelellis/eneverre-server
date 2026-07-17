@@ -56,7 +56,10 @@ export class Timeline {
     this.timelineSelected = 0;
     this.selectedMsec = date.getTime();
     this.intervalMsec = INTERVAL_HOUR_1;
-    this.gmtOffsetInMillis = -date.getTimezoneOffset() * 60000;
+    // The GMT offset used to align ruler ticks to local time is computed per
+    // draw from the time being shown (see gmtOffsetMillis), not captured here:
+    // a fixed value drifts by an hour when reviewing footage from the other
+    // side of a DST change (or when the page stays open across one).
     this.density = 1;
     this.canvas = null;
     this.requestMoreBackgroundDataCallback = null;
@@ -278,9 +281,17 @@ export class Timeline {
     return "";
   }
 
+  // gmtOffsetMillis is the local UTC offset (ms) at the given instant, DST
+  // included. Used to align ruler ticks to local time; recomputed from the
+  // shown time on every draw so it stays correct across DST boundaries.
+  gmtOffsetMillis(msec) {
+    return -new Date(msec).getTimezoneOffset() * 60000;
+  }
+
   drawHoursMinutes(context, msecInPixels, interval) {
-    const minValue = this.selectedMsec - this.intervalMsec / 2 + this.gmtOffsetInMillis;
-    const maxValue = this.selectedMsec + this.intervalMsec / 2 + this.gmtOffsetInMillis;
+    const gmtOffsetInMillis = this.gmtOffsetMillis(this.selectedMsec);
+    const minValue = this.selectedMsec - this.intervalMsec / 2 + gmtOffsetInMillis;
+    const maxValue = this.selectedMsec + this.intervalMsec / 2 + gmtOffsetInMillis;
     if (minValue + this.selectedMsec % interval >= maxValue) return false;
     const numToDraw = this.intervalMsec / interval;
     const offsetInterval = minValue % interval;
@@ -297,7 +308,7 @@ export class Timeline {
     context.beginPath();
     for (let i = 0; i < numToDraw; i++) {
       const startDate = new Date();
-      startDate.setTime(minValue - offsetInterval + (i + 1) * interval - this.gmtOffsetInMillis);
+      startDate.setTime(minValue - offsetInterval + (i + 1) * interval - gmtOffsetInMillis);
       let text = formatHourMin(startDate);
       if (text === "00:00") {
         text = formatShortDate(startDate);

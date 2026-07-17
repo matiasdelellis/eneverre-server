@@ -281,13 +281,16 @@ function initPtzKeyboard() {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
 
-    // Playback mode: + / - zoom timeline
+    // Playback mode: + / - zoom timeline. preventDefault synchronously (before
+    // the dynamic import resolves) so the key never triggers a browser default.
     if (viewMode === "playback") {
+      if (e.key !== "+" && e.key !== "-") return;
+      e.preventDefault();
       const { getTimeline } = await import("./playback.js");
       const tl = getTimeline();
       if (!tl) return;
-      if (e.key === "+") { tl.increaseInterval(); e.preventDefault(); }
-      else if (e.key === "-") { tl.decreaseInterval(); e.preventDefault(); }
+      if (e.key === "+") tl.increaseInterval();
+      else tl.decreaseInterval();
       return;
     }
 
