@@ -84,8 +84,8 @@
       <header class="topbar">
         <button id="sidebar-open" class="ghost icon-btn sidebar-open" data-i18n-title="sidebar.open" title="Open camera list" aria-label="Open camera list" data-icon="menu"></button>
         <div class="view-toggle" role="tablist">
-          <button id="view-live" class="toggle" role="tab" data-i18n-title="view.live_title" title="All cameras as a grid" data-i18n="view.live">Live</button>
-          <button id="view-playback" class="toggle" role="tab" data-i18n-title="view.playback_title" title="Synchronized playback with timeline" data-i18n="view.playback">Playback</button>
+          <button id="view-live" class="toggle" role="tab" aria-selected="true" data-i18n-title="view.live_title" title="All cameras as a grid" data-i18n="view.live">Live</button>
+          <button id="view-playback" class="toggle" role="tab" aria-selected="false" data-i18n-title="view.playback_title" title="Synchronized playback with timeline" data-i18n="view.playback">Playback</button>
         </div>
         <span class="grow"></span>
         <button id="talk-toggle" class="ghost icon-btn talk-toggle" hidden data-i18n-title="talk.enable" title="Enable talk (allow microphone)" aria-label="Enable talk (allow microphone)" aria-pressed="false" data-icon="mic"></button>
@@ -244,7 +244,7 @@
     </div>
   </section>
 
-  <div id="user-edit-modal" class="user-edit-modal" hidden>
+  <div id="user-edit-modal" class="user-edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="user-edit-title">
     <div class="user-edit-card">
       <h2 id="user-edit-title" data-i18n="user-edit.title">New user</h2>
       <form id="user-edit-form" class="users-form">
@@ -305,7 +305,7 @@
     </div>
   </section>
 
-  <div id="cam-wizard-modal" class="user-edit-modal cam-wizard-modal" hidden>
+  <div id="cam-wizard-modal" class="user-edit-modal cam-wizard-modal" hidden role="dialog" aria-modal="true" aria-labelledby="cam-wizard-title">
     <div class="user-edit-card cam-wizard-card">
       <h2 id="cam-wizard-title" data-i18n="cameras.add_title">Add camera</h2>
       <ol class="cam-wizard-steps" id="cam-wizard-steps">

@@ -4,6 +4,10 @@ import { loadJson, saveJson, get, USER_KEY } from "../util/storage.js";
 import { api } from "../api.js";
 import { blankToNull, displayName } from "../util/format.js";
 import { alertModal, confirmModal, promptModal } from "../ui/dialog.js";
+import { trapFocus } from "../util/focus-trap.js";
+
+// Focus-trap release for the open user-edit modal (null when closed).
+let userEditRelease = null;
 import { refreshUserMenu, closeUserMenu } from "../ui/user-menu.js";
 import { moveGlobalControlsTo, closeOverlayViews, backLabel } from "./app-shell.js";
 import { t } from "../i18n.js";
@@ -75,8 +79,7 @@ export function exitUsersView() {
   // main app's topbar before showing it, so the user can reach them.
   moveGlobalControlsTo(document.querySelector("#app .app-main header.topbar"));
   document.getElementById("app").hidden = false;
-  const modal = document.getElementById("user-edit-modal");
-  if (modal) modal.hidden = true;
+  closeUserEditModal();
 }
 
 function setUsersStatus(msg, kind) {
@@ -250,11 +253,16 @@ function openUserEditModal() {
   document.getElementById("user-edit-title").textContent = t("user-edit.title");
   document.getElementById("user-edit-status").hidden = true;
   modal.hidden = false;
+  // Release a stale trap first (closeOverlayViews can hide the modal without
+  // calling closeUserEditModal), so reopening never stacks listeners.
+  if (userEditRelease) userEditRelease();
+  userEditRelease = trapFocus(modal);
   form.elements.username.focus();
 }
 
 function closeUserEditModal() {
   document.getElementById("user-edit-modal").hidden = true;
+  if (userEditRelease) { userEditRelease(); userEditRelease = null; }
 }
 
 async function submitNewUser(e) {

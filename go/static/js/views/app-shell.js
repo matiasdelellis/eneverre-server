@@ -28,8 +28,15 @@ export function setViewMode(mode) {
   sessionSet(VIEW_KEY, mode);
   $("#wall").hidden = mode !== "live" && mode !== "playback";
   $("#playback-bar").hidden = mode !== "playback";
-  $("#view-live").classList.toggle("active", mode === "live");
-  $("#view-playback").classList.toggle("active", mode === "playback");
+  const liveTab = $("#view-live");
+  const pbTab = $("#view-playback");
+  liveTab.classList.toggle("active", mode === "live");
+  pbTab.classList.toggle("active", mode === "playback");
+  // Mirror the visual state to assistive tech: role="tab" needs aria-selected
+  // to announce which view is active (the .active class alone is invisible to
+  // a screen reader).
+  liveTab.setAttribute("aria-selected", mode === "live" ? "true" : "false");
+  pbTab.setAttribute("aria-selected", mode === "playback" ? "true" : "false");
   if (mode === "live" || mode === "playback") {
     // Lazy-load: avoids the wall/playback <-> app-shell cycle.
     Promise.all([import("./wall.js"), import("./ptz.js")]).then(([wall, ptz]) => {

@@ -1,11 +1,12 @@
 import { t } from "../i18n.js";
+import { trapFocus } from "../util/focus-trap.js";
 
 const dlg = {
   modal: null, card: null, titleEl: null, bodyEl: null,
   inputWrap: null, inputLabel: null, inputEl: null,
   input2Wrap: null, input2Label: null, input2El: null,
   errorEl: null, okBtn: null, cancelBtn: null,
-  _active: null,
+  _active: null, _release: null,
 };
 
 function resolve(value) {
@@ -16,6 +17,8 @@ function resolve(value) {
   dlg.errorEl.hidden = true;
   dlg.inputEl.value = "";
   dlg.input2El.value = "";
+  // Release the focus trap and restore focus to the trigger before resolving.
+  if (dlg._release) { dlg._release(); dlg._release = null; }
   r(value);
 }
 
@@ -68,6 +71,8 @@ function open({ title, body, kind, inputLabel, inputValue, input2Label, input2Va
     }
     dlg.errorEl.hidden = true;
     dlg.modal.hidden = false;
+    // Capture the trigger (still focused now) and trap Tab within the card.
+    dlg._release = trapFocus(dlg.card);
     setTimeout(() => {
       if (kind === "prompt") { dlg.inputEl.focus(); dlg.inputEl.select(); }
       else dlg.okBtn.focus();

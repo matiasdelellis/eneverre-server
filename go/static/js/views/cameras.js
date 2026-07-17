@@ -7,6 +7,10 @@ import { confirmModal } from "../ui/dialog.js";
 import { closeUserMenu } from "../ui/user-menu.js";
 import { moveGlobalControlsTo, closeOverlayViews, backLabel } from "./app-shell.js";
 import { t } from "../i18n.js";
+import { trapFocus } from "../util/focus-trap.js";
+
+// Focus-trap release for the open wizard modal (null when closed).
+let wizardRelease = null;
 
 let camerasCache = null; // [Camera, ...] as returned by GET /api/cameras
 let wizardStep = 1;
@@ -154,7 +158,13 @@ function openWizard(config = null) {
   idInput.readOnly = !!editingId;
   idInput.classList.toggle("readonly", !!editingId);
   if (config) fillForm(config);
-  document.getElementById("cam-wizard-modal").hidden = false;
+  const modal = document.getElementById("cam-wizard-modal");
+  modal.hidden = false;
+  // Release a stale trap first: closeOverlayViews (overlay switch / logout)
+  // hides the modal directly without calling closeWizard, so a leftover trap
+  // could otherwise stack on reopen.
+  if (wizardRelease) wizardRelease();
+  wizardRelease = trapFocus(modal);
   showStep(1);
   (editingId ? form.elements.name : form.elements.id).focus();
 }
@@ -194,6 +204,7 @@ function closeWizard() {
   editingId = null;
   const m = document.getElementById("cam-wizard-modal");
   if (m) m.hidden = true;
+  if (wizardRelease) { wizardRelease(); wizardRelease = null; }
 }
 
 function showStep(n) {
