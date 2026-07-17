@@ -1,6 +1,6 @@
 import { $, $$, escapeHtml, makeMsg } from "../util/dom.js";
 import { getState, setWallFilter, setWallFilterBeforeCam, on, emit } from "../state.js";
-import { fetchCameras, token } from "../api.js";
+import { fetchCameras, token, apiFetch } from "../api.js";
 import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js";
 import { attachMse, captureVideoFrame } from "./mse.js";
 import { hidePtzModal } from "./ptz.js";
@@ -135,11 +135,8 @@ function snapshotTile(tile, video, cam) {
 async function tryLoadThumbnail(tile, camId) {
   if (!camId) return;
   try {
-    const t = token();
-    if (!t) return;
-    const resp = await fetch(`/api/camera/${encodeURIComponent(camId)}/thumbnail`, {
-      headers: { Authorization: `Bearer ${t}` },
-    });
+    if (!token()) return;
+    const resp = await apiFetch(`/api/camera/${encodeURIComponent(camId)}/thumbnail`);
     if (!resp.ok) return;
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);

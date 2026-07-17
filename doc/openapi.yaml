@@ -218,6 +218,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
+        '429':
+          description: >-
+            Too many failed login attempts from this IP or for this username
+            (in-memory throttle; only failures count and a success clears the
+            username's counter). Carries a Retry-After header in seconds. The
+            same throttle guards failed HTTP Basic attempts on every
+            authenticated endpoint.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until the failure window expires.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/auth/refresh:
     post:

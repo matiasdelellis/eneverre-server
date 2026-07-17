@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // cors handles CORS and preflight OPTIONS. `allowed` is the Origin allowlist:
@@ -67,6 +69,15 @@ func queryFloat(r *http.Request, key string, def float64) float64 {
 		return def
 	}
 	return n
+}
+
+// clearWriteDeadline lifts the server's global WriteTimeout (30s) for one
+// response whose body legitimately takes longer to send — a clip export, an
+// APK download, the live MSE feed. Every other handler keeps the 30s guard.
+func clearWriteDeadline(w http.ResponseWriter, what string) {
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+		slog.Debug(what+": could not clear write deadline", "err", err)
+	}
 }
 
 // maxJSONBodyBytes caps request bodies decoded by decodeJSON. Without it a

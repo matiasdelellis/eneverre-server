@@ -2,7 +2,7 @@ import { $ } from "../util/dom.js";
 import {
   get, set, remove, sessionGet, sessionSet, sessionRemove,
   loadJson, saveJson,
-  TOKEN_KEY, USER_KEY, VIEW_KEY, USERCODE_KEY, USERCODE_NAME_KEY,
+  TOKEN_KEY, REFRESH_KEY, USER_KEY, VIEW_KEY, USERCODE_KEY, USERCODE_NAME_KEY,
 } from "../util/storage.js";
 import { api, token, setOnUnauthorized } from "../api.js";
 import { t } from "../i18n.js";
@@ -81,6 +81,7 @@ export async function logout(silent = false) {
   resetOnLogout();
   sessionRemove(VIEW_KEY);
   remove(TOKEN_KEY);
+  remove(REFRESH_KEY);
   remove(USER_KEY);
   if (t && !silent) {
     fetch("/api/auth/logout", {

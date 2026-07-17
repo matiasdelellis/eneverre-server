@@ -583,6 +583,12 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 	camCtx, camCancel := context.WithCancel(e.ctx)
 	ctrl := &camCtrl{rec: rec, resumeCh: make(chan struct{}), cancel: camCancel}
 
+	// Abort a connect in flight when privacy or removal landed after the
+	// loop's pause check: rec.Close() at that point may have had no client to
+	// close, so without this the session would go live (and record/transmit
+	// with privacy on) until the source dropped on its own.
+	rec.ShouldStop = func() bool { return ctrl.isPaused() || camCtx.Err() != nil }
+
 	e.mu.Lock()
 	e.recorders = append(e.recorders, rec)
 	e.ctrls[id] = ctrl

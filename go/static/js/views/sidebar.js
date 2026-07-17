@@ -1,6 +1,6 @@
 import { $, $$, escapeHtml } from "../util/dom.js";
 import { setWallFilter, setWallFilterBeforeCam, getState, on } from "../state.js";
-import { fetchCameras, token } from "../api.js";
+import { fetchCameras, apiFetch } from "../api.js";
 import { isMobileViewport, closeSidebarDrawer } from "./app-shell.js";
 import { loadJson, saveJson, LOCATION_ORDER_KEY } from "../util/storage.js";
 import { icon } from "../ui/icons.js";
@@ -379,10 +379,7 @@ async function loadViewerThumb(cam, tile, { force = false } = {}) {
 // localStorage the same way HLS captures are). Cache-busts the request and
 // disables HTTP cache so refreshes always get a current frame.
 async function fetchThumbnailDataUrl(camId) {
-  const t = token();
-  const headers = t ? { Authorization: `Bearer ${t}` } : {};
-  const r = await fetch(`/api/camera/${encodeURIComponent(camId)}/thumbnail?_=${Date.now()}`, {
-    headers,
+  const r = await apiFetch(`/api/camera/${encodeURIComponent(camId)}/thumbnail?_=${Date.now()}`, {
     cache: "no-store",
   });
   if (!r.ok) return null;

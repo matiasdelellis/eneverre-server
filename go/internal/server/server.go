@@ -75,6 +75,11 @@ type App struct {
 	// nil (newSecLogger falls back to main-log-only when no file is set).
 	secLog *secLogger
 
+	// authThrottle caps failed password attempts per peer IP and username so
+	// brute-forcing is bounded and bogus logins can't starve the CPU with
+	// PBKDF2 passes (see ratelimit.go). Never nil.
+	authThrottle *authThrottle
+
 	// cleanupGrace is the number of seconds a token stays visible in the
 	// sessions list after it expires. The background cleaner deletes tokens
 	// only when they have been expired for longer than this window. This lets
@@ -155,6 +160,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		refreshTTL:         refreshTTL,
 		cleanupGrace:       int64(cfg.AuthCleanupGraceHours()) * 3600,
 		secLog:             newSecLogger(cfg.AuthSecurityLog()),
+		authThrottle:       newAuthThrottle(),
 		privacy:            make(map[string]bool),
 		updates:            updateStores,
 		talk:               make(map[string]*backchannel.Session),
@@ -610,24 +616,54 @@ func (a *App) unauthorized(w http.ResponseWriter) {
 	httpError(w, http.StatusUnauthorized, "Unauthorized")
 }
 
-// requireUser enforces Basic-or-Bearer auth, writing 401 and returning nil on
-// failure.
+// requireUser enforces Basic-or-Bearer auth, writing 401 (or 429 when the
+// caller is throttled) and returning nil on failure.
 func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentUser {
-	u := auth.Current(a.db, r)
+	u, throttled := a.currentUser(r)
+	if throttled {
+		_, wait := a.authThrottle.blocked(remoteIP(r), basicUsername(r))
+		throttleExceeded(w, wait)
+		return nil
+	}
 	if u == nil {
-		// A present-but-invalid HTTP Basic credential is a real brute-force
-		// signal: the browser UI authenticates with Bearer tokens and never
-		// sends Basic, so a wrong Basic password is a deliberate probe. Log
-		// it for fail2ban / CrowdSec. Missing credentials and merely-expired
-		// Bearer tokens are normal and intentionally not logged (they would
-		// ban legitimate users whose sessions lapsed).
-		if user, _, ok := r.BasicAuth(); ok {
-			a.logAuthFailure(r, user, "basic_auth_failed")
-		}
 		a.unauthorized(w)
 		return nil
 	}
 	return u
+}
+
+// currentUser authenticates r via Basic or Bearer, wrapping auth.Current with
+// the failed-password throttle: a throttled Basic attempt is rejected BEFORE
+// the PBKDF2 pass (that cost is the whole point of the cap), and a failed one
+// records a strike + a security-log line. A present-but-invalid HTTP Basic
+// credential is a real brute-force signal: the browser UI authenticates with
+// Bearer tokens and never sends Basic, so a wrong Basic password is a
+// deliberate probe. Missing credentials and merely-expired Bearer tokens are
+// normal and get neither strikes nor log lines (they would ban legitimate
+// users whose sessions lapsed).
+func (a *App) currentUser(r *http.Request) (u *auth.CurrentUser, throttled bool) {
+	user, _, hasBasic := r.BasicAuth()
+	if hasBasic {
+		if blocked, _ := a.authThrottle.blocked(remoteIP(r), user); blocked {
+			return nil, true
+		}
+	}
+	u = auth.Current(a.db, r)
+	if hasBasic {
+		if u == nil {
+			a.authThrottle.fail(remoteIP(r), user)
+			a.logAuthFailure(r, user, "basic_auth_failed")
+		} else {
+			a.authThrottle.success(user)
+		}
+	}
+	return u, false
+}
+
+// basicUsername is the username from r's Basic credentials, or "".
+func basicUsername(r *http.Request) string {
+	user, _, _ := r.BasicAuth()
+	return user
 }
 
 // gateMetrics wraps a metrics handler so it is reachable without credentials

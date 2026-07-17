@@ -55,6 +55,10 @@ const noVideoTimeout = 8 * time.Second
 // the codecs the stream actually offered.
 var ErrNoSupportedVideo = errors.New("no supported video codec (recorder handles H264/H265)")
 
+// errStopped is returned by Start when ShouldStop reported true right before
+// PLAY: the supervisor paused (privacy) or cancelled the camera mid-connect.
+var errStopped = errors.New("stopped by supervisor before play")
+
 // videoDTS is the DTS-extraction contract shared by H264 and H265: both
 // *h264.DTSExtractor and *h265.DTSExtractor satisfy it, so the recorder holds
 // one field and the per-codec process function picks the concrete type.
@@ -102,7 +106,20 @@ type Recorder struct {
 	OnLiveTracks func([]*fmp4.InitTrack) error
 	OnLiveSample func(trackID int, s *fmp4.Sample, dts int64)
 
+	// ShouldStop (optional) is consulted by Start right before PLAY. When it
+	// returns true the connection is closed and Start returns errStopped
+	// instead of going live. It closes the race where the supervisor calls
+	// Close() while Start is still connecting — after the retry loop's pause
+	// check but before the new RTSP client exists — so Close() finds nothing
+	// to close and the session would otherwise record/transmit anyway (e.g.
+	// with privacy enabled) until the source dropped on its own.
+	ShouldStop func() bool
+
+	// clientMu guards client, which Close() reads from other goroutines while
+	// Start() replaces it on every (re)connect.
+	clientMu sync.Mutex
 	client   *gortsplib.Client
+
 	pathFmt  string
 	streamID uuid.UUID
 
@@ -161,19 +178,19 @@ func (r *Recorder) Start() error {
 		return err
 	}
 
-	r.client = &gortsplib.Client{Scheme: u.Scheme, Host: u.Host}
+	c := &gortsplib.Client{Scheme: u.Scheme, Host: u.Host}
 	// Route gortsplib's transport diagnostics through our Logf (which the
 	// engine prefixes with media/recorder[<id>]:) so each line carries the
 	// camera id. gortsplib's defaults log to the standard log package,
 	// which loses that context.
-	r.client.OnPacketsLost = func(lost uint64) {
+	c.OnPacketsLost = func(lost uint64) {
 		word := "packets"
 		if lost == 1 {
 			word = "packet"
 		}
 		r.Logf("%d RTP %s lost", lost, word)
 	}
-	r.client.OnDecodeError = func(err error) {
+	c.OnDecodeError = func(err error) {
 		r.Logf("decode error: %v", err)
 	}
 	// Transport selection. "auto" (default) is gortsplib's behaviour: try UDP and
@@ -185,18 +202,23 @@ func (r *Recorder) Start() error {
 		// leave Protocol nil
 	case "tcp":
 		p := gortsplib.ProtocolTCP
-		r.client.Protocol = &p
+		c.Protocol = &p
 	case "udp":
 		p := gortsplib.ProtocolUDP
-		r.client.Protocol = &p
+		c.Protocol = &p
 	default:
 		return fmt.Errorf("invalid transport %q (want auto|tcp|udp)", r.Transport)
 	}
-	if err = r.client.Start(); err != nil {
+	// Publish the client before dialing so a concurrent Close() from here on
+	// closes THIS session (unblocking whatever RTSP step is in flight below).
+	r.clientMu.Lock()
+	r.client = c
+	r.clientMu.Unlock()
+	if err = c.Start(); err != nil {
 		return err
 	}
 
-	desc, _, err := r.client.Describe(u)
+	desc, _, err := c.Describe(u)
 	if err != nil {
 		return err
 	}
@@ -264,7 +286,7 @@ func (r *Recorder) Start() error {
 			return derr
 		}
 		assemble = func(pkt *rtp.Packet) {
-			pts, ok := r.client.PacketPTS(videoMedia, pkt)
+			pts, ok := c.PacketPTS(videoMedia, pkt)
 			if !ok {
 				return
 			}
@@ -298,7 +320,7 @@ func (r *Recorder) Start() error {
 			return derr
 		}
 		assemble = func(pkt *rtp.Packet) {
-			pts, ok := r.client.PacketPTS(videoMedia, pkt)
+			pts, ok := c.PacketPTS(videoMedia, pkt)
 			if !ok {
 				return
 			}
@@ -316,7 +338,7 @@ func (r *Recorder) Start() error {
 		}
 	}
 
-	if _, err = r.client.Setup(desc.BaseURL, videoMedia, 0, 0); err != nil {
+	if _, err = c.Setup(desc.BaseURL, videoMedia, 0, 0); err != nil {
 		return err
 	}
 
@@ -326,7 +348,7 @@ func (r *Recorder) Start() error {
 	}
 
 	// --- video callback ---
-	r.client.OnPacketRTP(videoMedia, videoForma, func(pkt *rtp.Packet) {
+	c.OnPacketRTP(videoMedia, videoForma, func(pkt *rtp.Packet) {
 		r.lastVideoNano.Store(time.Now().UnixNano()) // feed the media watchdog
 		if r.OnRTP != nil {                          // forward raw to live relay (lowest latency)
 			r.OnRTP(videoMedia, pkt)
@@ -350,7 +372,17 @@ func (r *Recorder) Start() error {
 
 	r.Logf("recording %s -> %s", r.URL, r.pathFmt)
 
-	if _, err = r.client.Play(nil); err != nil {
+	// Last pause/cancel check before going live. Close() may have run while we
+	// were connecting, before the client above existed — in that case it had
+	// nothing to close and this session would record/transmit anyway (worst
+	// case: with privacy just enabled). Any Close() from here on does reach
+	// this client, so after this check the race is closed.
+	if r.ShouldStop != nil && r.ShouldStop() {
+		c.Close()
+		return errStopped
+	}
+
+	if _, err = c.Play(nil); err != nil {
 		return err
 	}
 
@@ -372,14 +404,14 @@ func (r *Recorder) Start() error {
 				since := time.Since(time.Unix(0, r.lastVideoNano.Load()))
 				if since > noVideoTimeout {
 					r.Logf("no video for %s, forcing reconnect", since.Round(time.Second))
-					r.client.Close() // unblocks Wait below
+					c.Close() // unblocks Wait below
 					return
 				}
 			}
 		}
 	}()
 
-	werr := r.client.Wait()
+	werr := c.Wait()
 	close(watchdogDone)
 
 	// The source ended (disconnect / silent stall caught by the read timeout).
@@ -422,10 +454,14 @@ func (r *Recorder) IsConnected() bool {
 	return time.Since(time.Unix(0, last)) <= noVideoTimeout+2*time.Second
 }
 
-// Close stops recording and flushes the current segment.
+// Close stops recording and flushes the current segment. Safe to call from
+// any goroutine, concurrently with a Start that is still connecting.
 func (r *Recorder) Close() {
-	if r.client != nil {
-		r.client.Close()
+	r.clientMu.Lock()
+	c := r.client
+	r.clientMu.Unlock()
+	if c != nil {
+		c.Close()
 	}
 	r.mu.Lock()
 	if r.currentSegment != nil {

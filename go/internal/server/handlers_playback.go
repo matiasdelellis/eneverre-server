@@ -236,6 +236,11 @@ func (a *App) playbackGetEngine(w http.ResponseWriter, r *http.Request, cam *cam
 		return
 	}
 	dur := parseClipSeconds(duration)
+	if dur > maxClipDuration {
+		httpError(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("duration exceeds the %s export limit", maxClipDuration))
+		return
+	}
 	end := t.Add(dur)
 
 	segs, err := a.engine.Index().Range(cam.ID, &t, &end)
@@ -265,6 +270,9 @@ func (a *App) playbackGetEngine(w http.ResponseWriter, r *http.Request, cam *cam
 		vals.Set("fill_gaps", fg)
 	}
 	rq.URL.RawQuery = vals.Encode()
+	// A long clip on a slow link takes well over the global WriteTimeout (30s);
+	// duration is already capped above, so lifting the deadline is bounded.
+	clearWriteDeadline(w, "clip export")
 	a.engine.Playback().HandleGet(w, rq)
 }
 
@@ -283,6 +291,12 @@ func (a *App) nextAvailableIndex(camID string, start time.Time) string {
 	}
 	return ""
 }
+
+// maxClipDuration caps a single /recordings/get export. Without it a huge
+// duration with fill_gaps (default on) would generate black filler
+// indefinitely — and this handler lifts the global WriteTimeout, so nothing
+// else would stop it.
+const maxClipDuration = 4 * time.Hour
 
 // parseClipSeconds parses the client's duration param (seconds, e.g. "5" or
 // "5.0"); anything unparseable falls back to 5s, matching PB_CLIP_SECONDS.

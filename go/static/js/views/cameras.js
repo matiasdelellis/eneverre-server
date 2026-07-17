@@ -385,7 +385,7 @@ async function refreshUnderlyingViews() {
 export function initCameras() {
   document.getElementById("cameras-btn")?.addEventListener("click", () => { closeUserMenu(); enterCamerasView(); });
   document.getElementById("cameras-back")?.addEventListener("click", exitCamerasView);
-  document.getElementById("cameras-new")?.addEventListener("click", openWizard);
+  document.getElementById("cameras-new")?.addEventListener("click", () => openWizard());
   document.getElementById("cam-wizard-cancel")?.addEventListener("click", closeWizard);
   document.getElementById("cam-wizard-next")?.addEventListener("click", onNext);
   document.getElementById("cam-wizard-back")?.addEventListener("click", onBack);

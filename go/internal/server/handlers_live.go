@@ -1,9 +1,7 @@
 package server
 
 import (
-	"log/slog"
 	"net/http"
-	"time"
 )
 
 // handleLiveInfo reports whether the embedded engine has a live source for the
@@ -54,12 +52,9 @@ func (a *App) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusServiceUnavailable, "no live source")
 		return
 	}
-	// The live MSE feed is an indefinite chunked response. The server's global
-	// WriteTimeout (30s) would otherwise cut it every 30s, forcing the client to
-	// reconnect and re-buffer. Clear the write deadline for THIS response only
-	// (via ResponseController); every other handler keeps the 30s guard.
-	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
-		slog.Debug("live: could not clear write deadline", "camera", cam.ID, "err", err)
-	}
+	// The live MSE feed is an indefinite chunked response; without this the
+	// global WriteTimeout would cut it every 30s, forcing the client to
+	// reconnect and re-buffer.
+	clearWriteDeadline(w, "live")
 	lb.HandleStream(w, r)
 }

@@ -69,7 +69,13 @@ func talkToken(r *http.Request) string {
 func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 	u := auth.VerifyToken(a.db, talkToken(r))
 	if u == nil {
-		u = auth.Current(a.db, r)
+		var throttled bool
+		u, throttled = a.currentUser(r) // Basic fallback goes through the throttle
+		if throttled {
+			_, wait := a.authThrottle.blocked(remoteIP(r), basicUsername(r))
+			throttleExceeded(w, wait)
+			return
+		}
 	}
 	if u == nil {
 		a.unauthorized(w)

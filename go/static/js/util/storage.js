@@ -1,4 +1,5 @@
 export const TOKEN_KEY = "eneverre.token";
+export const REFRESH_KEY = "eneverre.refresh";
 export const USER_KEY = "eneverre.user";
 export const VIEW_KEY = "eneverre.view";
 export const SIDEBAR_KEY = "eneverre.sidebar";

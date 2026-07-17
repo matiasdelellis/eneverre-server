@@ -8,7 +8,7 @@
 // which resets the broadcaster and ends this HTTP stream. Instead of going
 // black, we rebuild the pipeline and retry until .destroy() is called.
 import { makeMsg } from "../util/dom.js";
-import { token } from "../api.js";
+import { apiFetch } from "../api.js";
 import { setCamStatus } from "../ui/cam-status.js";
 import { icon } from "../ui/icons.js";
 import { t } from "../i18n.js";
@@ -16,11 +16,6 @@ import { t } from "../i18n.js";
 const TARGET = 1.2;          // seconds of latency to hold at the live edge
 const RECONNECT_MS = 1500;   // base wait before retrying after the source drops
 const RECONNECT_MAX_MS = 30000; // cap for the exponential reconnect backoff
-
-function authHeaders() {
-  const t = token();
-  return t ? { Authorization: `Bearer ${t}` } : {};
-}
 
 // attachMse wires `video` to the camera's live MSE stream, reconnecting on
 // drops. Returns a handle { destroy() } (or null if MSE is unsupported).
@@ -148,7 +143,7 @@ export function attachMse(cam, video) {
 
     let info;
     try {
-      const r = await fetch(infoUrl, { headers: authHeaders(), signal });
+      const r = await apiFetch(infoUrl, { signal });
       info = await r.json();
     } catch {
       scheduleReconnect(); // engine/API momentarily unreachable — keep trying
@@ -270,7 +265,7 @@ export function attachMse(cam, video) {
     }, 1000);
 
     try {
-      const resp = await fetch(streamUrl, { headers: authHeaders(), signal });
+      const resp = await apiFetch(streamUrl, { signal });
       if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
       const reader = resp.body.getReader();
       while (true) {

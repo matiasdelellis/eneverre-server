@@ -492,6 +492,9 @@ func (a *App) handleAppUpdateFile(track string) http.HandlerFunc {
 		w.Header().Set("Content-Type", ctype)
 		w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
 		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+		// A 100MB+ APK on a slow link takes well over the global WriteTimeout
+		// (30s); the response size is bounded by the file on disk.
+		clearWriteDeadline(w, "apk download")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.Copy(w, f)
 	}

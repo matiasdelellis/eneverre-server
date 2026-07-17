@@ -1,5 +1,5 @@
 import { $, $$, makeMsg } from "../util/dom.js";
-import { token } from "../api.js";
+import { token, apiFetch } from "../api.js";
 import { icon } from "../ui/icons.js";
 import { Timeline } from "../../timeline.js";
 import { t } from "../i18n.js";
@@ -87,9 +87,8 @@ async function fetchRecordingsRange(camId, startMs, endMs) {
     end: new Date(endMs).toISOString(),
   });
   try {
-    const r = await fetch(
+    const r = await apiFetch(
       `/api/camera/${encodeURIComponent(camId)}/recordings/list?${params}`,
-      { headers: { Authorization: `Bearer ${token()}` } },
     );
     if (!r.ok) return [];
     const segs = await r.json();
@@ -114,9 +113,8 @@ function fetchRecordings(camId, rangeMs = 24 * 3600 * 1000) {
 // start of history is loaded.
 async function fetchRecordingStart(camId) {
   try {
-    const r = await fetch(
+    const r = await apiFetch(
       `/api/camera/${encodeURIComponent(camId)}/recordings/timeline`,
-      { headers: { Authorization: `Bearer ${token()}` } },
     );
     if (!r.ok) return null;
     const data = await r.json();
@@ -136,9 +134,8 @@ async function fetchEventsRange(camId, startMs, endMs) {
     limit: "1000",
   });
   try {
-    const r = await fetch(
+    const r = await apiFetch(
       `/api/camera/${encodeURIComponent(camId)}/events?${params}`,
-      { headers: { Authorization: `Bearer ${token()}` } },
     );
     if (!r.ok) return [];
     const data = await r.json();
@@ -254,9 +251,9 @@ export async function loadPlaybackBlob(camId, start, duration, opts = {}) {
   // fill_gaps defaults to true on the server; opt out with opts.fillGaps=false
   // to get the legacy gapless (truncate-at-gap) avc1 output.
   if (opts.fillGaps === false) params.set("fill_gaps", "false");
-  const r = await fetch(
+  const r = await apiFetch(
     `/api/camera/${encodeURIComponent(camId)}/recordings/get?${params}`,
-    { headers: { Authorization: `Bearer ${token()}` }, signal: opts.signal },
+    { signal: opts.signal },
   );
   if (!r.ok) {
     let detail = `HTTP ${r.status}`;

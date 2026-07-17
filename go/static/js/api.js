@@ -1,4 +1,4 @@
-import { TOKEN_KEY } from "./util/storage.js";
+import { TOKEN_KEY, REFRESH_KEY, get, set } from "./util/storage.js";
 import { getState, setCamerasCache } from "./state.js";
 
 /**
@@ -48,18 +48,80 @@ export function token() {
   return localStorage.getItem(TOKEN_KEY);
 }
 
+// Single-flight guard: concurrent 401s (a wall of tiles expiring together)
+// must produce ONE refresh call — the server rotates the refresh token
+// atomically, so a second concurrent attempt with the same token would fail
+// and log the session out.
+let refreshing = null;
+
+/**
+ * Exchanges the stored refresh token for a fresh access/refresh pair.
+ * Resolves true when the session was renewed (tokens already stored).
+ * Safe to call concurrently from any number of failed requests.
+ */
+export function refreshSession() {
+  const rt = get(REFRESH_KEY);
+  if (!rt) return Promise.resolve(false);
+  if (!refreshing) {
+    refreshing = (async () => {
+      try {
+        const r = await fetch("/api/auth/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: rt }),
+        });
+        if (!r.ok) {
+          // Another tab may have rotated the pair first; if the stored token
+          // changed under us, its refresh succeeded and we can ride it.
+          return get(REFRESH_KEY) !== rt;
+        }
+        const data = await r.json();
+        set(TOKEN_KEY, data.token);
+        set(REFRESH_KEY, data.refresh_token);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    refreshing.finally(() => { refreshing = null; });
+  }
+  return refreshing;
+}
+
+/**
+ * fetch + Bearer + expired-session recovery, returning the raw Response. On a
+ * 401 it refreshes the session once and retries the request with the new
+ * token; when that fails it fires onUnauthorized (logout) and returns the 401
+ * for the caller to treat as fatal. Use this instead of bare fetch for any
+ * authenticated request that needs the Response itself (streams, blobs);
+ * api() below wraps it for JSON endpoints.
+ */
+export async function apiFetch(path, opts = {}) {
+  const withAuth = () => {
+    const headers = { ...(opts.headers || {}) };
+    const t = token();
+    if (t) headers["Authorization"] = `Bearer ${t}`;
+    return { ...opts, headers };
+  };
+  let r = await fetch(path, withAuth());
+  // The auth endpoints answer 401 as part of their normal contract (wrong
+  // password, consumed refresh token) — recovering or logging out on those
+  // would loop.
+  if (r.status === 401 && !path.startsWith("/api/auth/")) {
+    if (await refreshSession()) {
+      r = await fetch(path, withAuth());
+    }
+    if (r.status === 401) onUnauthorized();
+  }
+  return r;
+}
+
 export async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
-  const t = token();
-  if (t) headers["Authorization"] = `Bearer ${t}`;
   if (opts.body && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  const r = await fetch(path, { ...opts, headers });
-  if (r.status === 401) {
-    onUnauthorized();
-    throw new Error("Unauthorized");
-  }
+  const r = await apiFetch(path, { ...opts, headers });
   if (!r.ok) {
     let msg;
     try { msg = (await r.json()).detail; } catch { msg = r.statusText; }

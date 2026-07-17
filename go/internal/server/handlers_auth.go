@@ -67,6 +67,11 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if passwordTooLong(w, req.Password) {
 		return
 	}
+	// Throttle check before the DB hit and (crucially) before any PBKDF2 pass.
+	if blocked, wait := a.authThrottle.blocked(remoteIP(r), req.Username); blocked {
+		throttleExceeded(w, wait)
+		return
+	}
 	var stored, role string
 	var firstName, lastName sql.NullString
 	var mustChange bool
@@ -81,15 +86,18 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// otherwise "valid user, wrong password" would run two hashes and take
 		// ~2x as long, leaking which usernames exist.
 		auth.CheckPasswordHash("pbkdf2:sha256:600000$dummy$"+strings.Repeat("0", 64), req.Password)
+		a.authThrottle.fail(remoteIP(r), req.Username)
 		a.logAuthFailure(r, req.Username, "invalid_credentials")
 		httpError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
 	if !auth.CheckPasswordHash(stored, req.Password) {
+		a.authThrottle.fail(remoteIP(r), req.Username)
 		a.logAuthFailure(r, req.Username, "invalid_credentials")
 		httpError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
+	a.authThrottle.success(req.Username)
 	token := auth.TokenURLSafe(32)
 	refresh := auth.TokenURLSafe(32)
 	now := time.Now().Unix()

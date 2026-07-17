@@ -1,5 +1,5 @@
 import { $ } from "../util/dom.js";
-import { set, saveJson, loadJson, USER_KEY, TOKEN_KEY } from "../util/storage.js";
+import { set, saveJson, loadJson, USER_KEY, TOKEN_KEY, REFRESH_KEY } from "../util/storage.js";
 import { api } from "../api.js";
 import { t, getSupportedLangs, getLang, setLang, langName } from "../i18n.js";
 
@@ -54,6 +54,9 @@ export function initLogin() {
         }),
       });
       set(TOKEN_KEY, data.token);
+      // The refresh token keeps a wall left on a monitor logged in past the
+      // access token's TTL: api() renews the pair on the first 401.
+      if (data.refresh_token) set(REFRESH_KEY, data.refresh_token);
       saveJson(USER_KEY, {
         username: data.username,
         first_name: data.first_name || null,
