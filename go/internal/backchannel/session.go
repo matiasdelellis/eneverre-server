@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -37,6 +38,7 @@ type Session struct {
 	stop          chan struct{}
 	done          chan struct{}
 	keepaliveDone chan struct{}
+	closeOnce     sync.Once
 }
 
 // sleepCtx blocks for d or until ctx is cancelled, returning ctx.Err() if the
@@ -372,13 +374,18 @@ func (s *Session) FeedAU(au []byte) {
 }
 
 // Close stops the send loop, tears down the RTSP session and closes the TCP
-// connection. It is idempotent-safe to call once per Session.
+// connection. Idempotent: a sync.Once guards the body so the second caller is a
+// no-op instead of panicking on the already-closed `stop` channel. This matters
+// because two owners can race to close the same session — the talk handler's
+// deferred Close and the shutdown path's CloseAllTalk.
 func (s *Session) Close() {
-	close(s.stop)
-	<-s.done
-	close(s.keepaliveDone)
-	_ = s.writeRequest("TEARDOWN", s.uri)
-	time.Sleep(200 * time.Millisecond)
-	s.stopReader()
-	s.conn.Close()
+	s.closeOnce.Do(func() {
+		close(s.stop)
+		<-s.done
+		close(s.keepaliveDone)
+		_ = s.writeRequest("TEARDOWN", s.uri)
+		time.Sleep(200 * time.Millisecond)
+		s.stopReader()
+		s.conn.Close()
+	})
 }

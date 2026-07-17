@@ -295,6 +295,7 @@ func main() {
 	// shutdown so a stop doesn't drop the recording since the last segment
 	// rotation.
 	cleanup := func() {
+		app.CloseAllTalk()
 		engine.Close()
 		db.Close()
 	}

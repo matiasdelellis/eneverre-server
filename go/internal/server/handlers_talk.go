@@ -56,6 +56,31 @@ func talkToken(r *http.Request) string {
 	return r.URL.Query().Get("token")
 }
 
+// CloseAllTalk tears down every active push-to-talk session so a clean shutdown
+// sends each camera an RTSP TEARDOWN instead of dropping the backchannel on a
+// half-open socket. Called from the shutdown cleanup (after the HTTP server has
+// drained). WebSocket connections are hijacked, so srv.Shutdown does not wait
+// for the talk handlers — their goroutines are still live here; closing the
+// session unblocks each one's read loop, and its deferred Close is a no-op
+// thanks to Session.Close's sync.Once. The nil placeholder a reservation leaves
+// during Dial is skipped.
+func (a *App) CloseAllTalk() {
+	a.talkMu.Lock()
+	sessions := make([]*backchannel.Session, 0, len(a.talk))
+	for id, s := range a.talk {
+		if s != nil {
+			sessions = append(sessions, s)
+		}
+		delete(a.talk, id)
+	}
+	a.talkMu.Unlock()
+	// Close outside the lock: Session.Close blocks (drains the send loop, sleeps
+	// ~200ms for TEARDOWN) and the handler's release() also takes talkMu.
+	for _, s := range sessions {
+		s.Close()
+	}
+}
+
 // handleTalk streams push-to-talk audio from a client to a camera's ONVIF
 // Profile T backchannel. The client connects a WebSocket, sends a JSON handshake
 // {"sampleRate": N, "codec": "aac"?}, then a stream of binary audio frames. With
