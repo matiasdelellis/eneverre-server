@@ -558,7 +558,7 @@ func (a *App) requirePublishAuth(w http.ResponseWriter, r *http.Request) bool {
 	if expected == "" {
 		slog.Warn("updates publish denied",
 			"path", r.URL.Path,
-			"ip", clientIP(r),
+			"ip", a.proxyTrust.clientIP(r),
 			"reason", "publish_token not configured on server",
 		)
 		httpError(w, http.StatusServiceUnavailable,
@@ -569,7 +569,7 @@ func (a *App) requirePublishAuth(w http.ResponseWriter, r *http.Request) bool {
 	if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
 		slog.Warn("updates publish denied",
 			"path", r.URL.Path,
-			"ip", clientIP(r),
+			"ip", a.proxyTrust.clientIP(r),
 			"reason", "missing or invalid publish_token",
 		)
 		httpError(w, http.StatusUnauthorized, "Invalid publish token")

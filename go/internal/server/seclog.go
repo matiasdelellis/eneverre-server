@@ -98,5 +98,5 @@ func quoteField(v string) string {
 // attempted username (may be empty when unknown); reason is a short machine
 // token (invalid_credentials, basic_auth_failed, …).
 func (a *App) logAuthFailure(r *http.Request, user, reason string) {
-	a.secLog.event(clientIP(r), "authentication_failure", user, r.URL.Path, reason)
+	a.secLog.event(a.proxyTrust.clientIP(r), "authentication_failure", user, r.URL.Path, reason)
 }

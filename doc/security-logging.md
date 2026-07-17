@@ -40,11 +40,14 @@ Example:
 2026-07-10T14:23:01-03:00 eneverre authentication_failure ip=203.0.113.5 user="admin" path=/api/login reason=invalid_credentials
 ```
 
-The client IP honors `X-Forwarded-For` / `X-Real-IP` when eneverre runs behind
-a reverse proxy (Caddy), so the banned address is the real client, not the
-proxy. **This requires trusting those headers** — only set the proxy to forward
-them and do not expose eneverre's port directly, or an attacker could spoof
-`X-Forwarded-For` and get an innocent IP banned (or evade the ban).
+The client IP honors `X-Forwarded-For` / `X-Real-IP` **only when the request
+comes from a trusted proxy**, so the banned address is the real client, not
+the proxy — and a direct client cannot spoof the header to get an innocent IP
+banned (or evade a ban); untrusted peers are logged by their socket address.
+By default only loopback peers are trusted, which covers the same-host Caddy
+setup; a proxy on another host must be listed in `[server] trusted_proxies`
+(comma-separated IPs or CIDRs, or `none` to trust nobody). See
+[`doc/example/README.md`](example/README.md).
 
 ### Events currently emitted
 

@@ -27,6 +27,7 @@ port = 8080
 ; read_timeout = 5m       ; HTTP request-body read timeout (time.ParseDuration)
 ; metrics = true          ; expose /api/metrics + /api/metrics/json
 ; cors_origins =          ; comma-separated Origin allowlist; empty = permissive
+; trusted_proxies =       ; peers whose X-Forwarded-For is honored; empty = loopback
 ```
 
 `[server]` keys (all optional):
@@ -43,6 +44,15 @@ port = 8080
  * **cors_origins:** Comma-separated browser CORS allowlist. Empty (default) is
    permissive — any Origin is reflected, which is safe with same-origin UI +
    Bearer-token auth. Set it to lock the browser surface to known front-ends.
+ * **trusted_proxies:** Comma-separated IPs or CIDRs of reverse proxies whose
+   `X-Forwarded-For` / `X-Real-IP` headers are honored when resolving the
+   client IP for the access log and the [security log](../security-logging.md)
+   (the IP fail2ban bans). Empty (default) trusts **loopback only**, which
+   covers the same-host Caddy setup from this guide. A proxy on another host
+   must be listed explicitly (e.g. `192.168.1.10` or `10.0.0.0/24`); use
+   `none` when eneverre is exposed directly with no proxy at all. Peers not
+   on the list get logged by their socket address, so a direct client cannot
+   spoof the banned IP.
 
 > **Admin user.** Eneverre does **not** read any username/password from this
 > file — all user management lives in `data/eneverre.db`. The first time the

@@ -64,7 +64,7 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 // accessLog logs one line per request at INFO (method, path, status, duration,
 // client IP). At DEBUG it also logs the query string and response size.
-func accessLog(next http.Handler) http.Handler {
+func accessLog(next http.Handler, trust *proxyTrust) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -76,7 +76,7 @@ func accessLog(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", rec.status,
 			"dur_ms", dur.Milliseconds(),
-			"ip", clientIP(r),
+			"ip", trust.clientIP(r),
 		}
 		if slog.Default().Enabled(r.Context(), slog.LevelDebug) {
 			attrs = append(attrs, "query", r.URL.RawQuery, "bytes", rec.bytes)
@@ -85,17 +85,82 @@ func accessLog(next http.Handler) http.Handler {
 	})
 }
 
-// clientIP returns the real client IP, honoring X-Forwarded-For / X-Real-IP set
-// by a fronting reverse proxy (Caddy), else the socket peer.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
+// proxyTrust resolves the client IP for logging: X-Forwarded-For / X-Real-IP
+// are honored ONLY when the socket peer is a trusted proxy. The resolved IP
+// feeds the security log that fail2ban bans on, so an untrusted peer must
+// never control it — otherwise a direct client can spoof X-Forwarded-For to
+// get an innocent address banned (or to evade a ban). Configured via
+// [server] trusted_proxies; the default trusts loopback only (the documented
+// same-host Caddy deployment).
+type proxyTrust struct {
+	nets []*net.IPNet
+}
+
+// newProxyTrust parses [server] trusted_proxies entries (IPs or CIDRs).
+// nil/empty entries -> loopback default; a single "none" -> trust no one;
+// invalid entries are logged and skipped.
+func newProxyTrust(entries []string) *proxyTrust {
+	t := &proxyTrust{}
+	if len(entries) == 0 {
+		entries = []string{"127.0.0.0/8", "::1/128"}
 	}
-	if xr := r.Header.Get("X-Real-IP"); xr != "" {
-		return xr
+	for _, e := range entries {
+		if strings.EqualFold(e, "none") {
+			continue
+		}
+		cidr := e
+		if !strings.Contains(e, "/") {
+			if strings.Contains(e, ":") {
+				cidr = e + "/128"
+			} else {
+				cidr = e + "/32"
+			}
+		}
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			slog.Warn("ignoring invalid [server] trusted_proxies entry", "entry", e, "err", err)
+			continue
+		}
+		t.nets = append(t.nets, n)
+	}
+	return t
+}
+
+// trusts reports whether the socket peer of r is a trusted proxy. Nil-safe
+// (tests build App without one): a nil resolver trusts the loopback default.
+func (t *proxyTrust) trusts(r *http.Request) bool {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if t == nil {
+		return ip.IsLoopback()
+	}
+	for _, n := range t.nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP returns the client IP for r: the first X-Forwarded-For hop (or
+// X-Real-IP) when the peer is a trusted proxy, else the socket peer itself.
+func (t *proxyTrust) clientIP(r *http.Request) string {
+	if t.trusts(r) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if i := strings.IndexByte(xff, ','); i >= 0 {
+				return strings.TrimSpace(xff[:i])
+			}
+			return strings.TrimSpace(xff)
+		}
+		if xr := r.Header.Get("X-Real-IP"); xr != "" {
+			return xr
+		}
 	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host

@@ -80,6 +80,11 @@ type App struct {
 	// PBKDF2 passes (see ratelimit.go). Never nil.
 	authThrottle *authThrottle
 
+	// proxyTrust resolves the client IP for the access and security logs,
+	// honoring X-Forwarded-For only from [server] trusted_proxies peers
+	// (default: loopback). Nil-safe for tests that build App directly.
+	proxyTrust *proxyTrust
+
 	// cleanupGrace is the number of seconds a token stays visible in the
 	// sessions list after it expires. The background cleaner deletes tokens
 	// only when they have been expired for longer than this window. This lets
@@ -171,6 +176,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		cleanupGrace:       int64(cfg.AuthCleanupGraceHours()) * 3600,
 		secLog:             newSecLogger(cfg.AuthSecurityLog()),
 		authThrottle:       newAuthThrottle(),
+		proxyTrust:         newProxyTrust(cfg.TrustedProxies()),
 		privacy:            make(map[string]bool),
 		privacyOps:         make(map[string]*sync.Mutex),
 		updates:            updateStores,
@@ -573,7 +579,7 @@ func (a *App) Handler() http.Handler {
 	// accessLog is outermost so every request (including CORS preflight) is
 	// logged; cors handles OPTIONS before the mux. The Origin allowlist is empty
 	// by default (permissive), or locked down via [server] cors_origins.
-	return accessLog(cors(mux, a.cfg.CORSOrigins()))
+	return accessLog(cors(mux, a.cfg.CORSOrigins()), a.proxyTrust)
 }
 
 // deprecatedAlias wraps a handler so a legacy route alias flags every response

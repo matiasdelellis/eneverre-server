@@ -305,6 +305,30 @@ func (c *Config) CORSOrigins() []string {
 	return out
 }
 
+// TrustedProxies returns the peers whose X-Forwarded-For / X-Real-IP headers
+// are honored when resolving the client IP (access log + security log), from
+// [server] trusted_proxies (comma-separated IPs or CIDRs). Unset (default)
+// trusts only loopback peers — the documented same-host Caddy setup keeps
+// working, while a remote client connecting directly can no longer spoof the
+// IP that fail2ban bans. The literal "none" trusts no one (direct-exposed
+// installs); a proxy on another host must be listed explicitly.
+func (c *Config) TrustedProxies() []string {
+	raw := strings.TrimSpace(c.Server.Get("trusted_proxies", ""))
+	if raw == "" {
+		return nil // resolver applies the loopback default
+	}
+	if strings.EqualFold(raw, "none") {
+		return []string{"none"}
+	}
+	out := make([]string, 0)
+	for _, p := range strings.Split(raw, ",") {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // ServerReadTimeout resolves the http.Server.ReadTimeout used for the
 // listen socket. The body read is what trips the default (15s) for big
 // publishes; the publish endpoints legitimately need a generous window
