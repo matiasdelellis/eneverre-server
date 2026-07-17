@@ -31,45 +31,12 @@ and the same seamless experience—everywhere.
   ONVIF or motion detection source push alerts directly to your application
   timeline.
 - 🚀 **OTA Update Server for clients:** Publish an APK once, and Eneverre will
-- automatically handle updates for all your connected Android devices.
+  automatically handle updates for all your connected Android devices.
 
 ## 🚀 Quick Start
 
-Pre-built binaries for Linux / macOS / Windows are on the
-[Releases page][releases].
-
-### 💻 Automated Installation
-
-On Linux and macOS the install script fetches the right one, verifies its
-checksum, installs it and (with `--install-service`) registers a `systemd` unit
-so it keeps running across reboots:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/matiasdelellis/eneverre-server/main/scripts/install.sh | sudo bash -s -- --install-service
-```
-
-On Windows, run PowerShell as an Administrator:
-
-```powershell
-iex (irm 'https://raw.githubusercontent.com/matiasdelellis/eneverre-server/main/scripts/install.ps1')
-# add `-InstallService` to register + start the native Windows service
-.\install.ps1 -InstallService
-```
-
-### 🛠️ Building from Source
-Or build it yourself with a recent Go toolchain (1.22+):
-
-```bash
-git clone https://github.com/matiasdelellis/eneverre-server
-cd eneverre-server
-go -C go build -o ./eneverre .
-./eneverre
-```
-
-### 🪛 Releases
-
-Just download a release tarball, extract it, and run the binary directly. No
-installer and no service installed.
+Download the latest release for your platform, extract it, and run the
+binary — no installer, no service, no configuration required:
 
 ```bash
 curl -fsSLO "https://github.com/matiasdelellis/eneverre-server/releases/latest/download/eneverre-linux-amd64.tar.gz"
@@ -78,16 +45,12 @@ cd eneverre-*/
 ./eneverre
 ```
 
-### ✅ First run
+Then open <http://localhost:8080/> — the first-boot admin password is
+printed to the log. From the user menu, `Manage cameras` -> `+ Add camera`
+walks you through adding your first camera.
 
-Just open <http://localhost:8080/> in a browser. On its very first boot,
-Eneverre automatically generates a random initial password for the default
-`admin` account, which will be printed directly to the system logs. If you
-prefer to set your own credentials from the start, you can fully customize or
-override them using environment variables before running the application.
-
-Now you need to add your cameras. From the user menu, navigate to `Manage
-cameras` -> `+ Add camera` and follow the step-by-step wizard.
+Installing as a system service, building from source, and every other
+startup option are covered in [`doc/README.md`](doc/README.md).
 
 ## Companion apps 📱
 
@@ -95,8 +58,8 @@ cameras` -> `+ Add camera` and follow the step-by-step wizard.
   same functional ground for a quick view or configuration right from your web
   browser, with no setup required.
 - 📱 **Eneverre Android (Phones):** Live streams, recording browser, event
-  timeline, PTZ controls, privacy toggle, and Picture-in-Picture support..
-- 📺 **Eneverre TV (Android TV]** — Optimized full-screen layout designed for TV
+  timeline, PTZ controls, privacy toggle, and Picture-in-Picture support.
+- 📺 **Eneverre TV (Android TV)** — Optimized full-screen layout designed for TV
   remotes with simple code-pairing authentication.
 
 🛠️ Building your own client? The entire wire-protocol contract is thoroughly
@@ -112,15 +75,8 @@ This is the Android client. 😍
 
 ## Documentation
 
-- 📖 [`doc/example/README.md`](doc/example/README.md) — Comprehensive
-  configuration reference ([server], [media], etc.), systemd recipes, and
-  Caddyfile examples.
-- 🎥 [`doc/MEDIA.md`](doc/MEDIA.md) — Details on the embedded media engine:
-  codecs, recording structure, MSE live streams, and RTSP relaying.
-- 📖 [`doc/openapi.yaml`](doc/openapi.yaml) — the wire-protocol contract for
-  client authors.
-- 🔬 [`go/README.md`](go/README.md) — Go internals: layout and operational
-  notes.
+Configuration reference, the embedded media engine, the OpenAPI client
+contract, and Go internals all live in [`doc/README.md`](doc/README.md).
 
 ## License
 
