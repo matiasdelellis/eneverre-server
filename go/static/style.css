@@ -6,6 +6,18 @@
 :root,
 :root[data-theme="dark"] {
   --bg: #0f1419;
+  /* Page-background gradient: a near-flat vertical ramp around --bg plus two
+     very soft radial tints of the brand pair (blue top-left, violet
+     bottom-right). Applied via background-image so --bg stays the solid
+     fallback / average color (theme-color metas, etc.). */
+  --bg-image:
+    radial-gradient(1100px 700px at 12% -8%, rgba(59, 130, 246, 0.10), transparent 60%),
+    radial-gradient(900px 650px at 90% 112%, rgba(139, 92, 246, 0.08), transparent 60%),
+    linear-gradient(180deg, #131a25 0%, #0c1015 100%);
+  /* Accent gradient for filled (primary) buttons: the brand blue rolling
+     into its violet partner. Same in both themes (like --accent), so it is
+     defined once here — the light blocks below inherit it. */
+  --accent-grad: linear-gradient(135deg, #4f8ef9 0%, #3b82f6 55%, #5a6cf2 100%);
   --panel: #1a212b;
   --panel-2: #222c38;
   --fg: #e6edf3;
@@ -28,6 +40,10 @@
      topbar be recolored without touching the sidebar, which also uses
      --panel. */
   --topbar-bg: var(--panel);
+  /* Vertical gradient for the 52px header band. It is split across two
+     elements (.viewer-side-header and .topbar), so it must only vary with
+     y — a horizontal ramp would show a seam at the sidebar edge. */
+  --topbar-bg-image: linear-gradient(180deg, #212b38 0%, #171e27 100%);
   --topbar-fg: var(--fg);
   --topbar-muted: var(--muted);
   --topbar-border: var(--border);
@@ -47,6 +63,10 @@
 
 :root[data-theme="light"] {
   --bg: #f3f5f8;
+  --bg-image:
+    radial-gradient(1100px 700px at 12% -8%, rgba(59, 130, 246, 0.07), transparent 60%),
+    radial-gradient(900px 650px at 90% 112%, rgba(139, 92, 246, 0.05), transparent 60%),
+    linear-gradient(180deg, #f7f9fc 0%, #edf0f5 100%);
   --panel: #ffffff;
   --panel-2: #eceff3;
   --fg: #1a2330;
@@ -66,6 +86,7 @@
   /* Subtle: a touch darker than the body (--bg #f3f5f8), keeping dark text.
      The segmented control uses white so it still pops off the gray bar. */
   --topbar-bg: #e4e9f0;
+  --topbar-bg-image: linear-gradient(180deg, #ecf0f6 0%, #dde3ec 100%);
   --topbar-fg: var(--fg);
   --topbar-muted: var(--muted);
   --topbar-border: #cfd7e1;
@@ -80,6 +101,10 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --bg: #f3f5f8;
+    --bg-image:
+      radial-gradient(1100px 700px at 12% -8%, rgba(59, 130, 246, 0.07), transparent 60%),
+      radial-gradient(900px 650px at 90% 112%, rgba(139, 92, 246, 0.05), transparent 60%),
+      linear-gradient(180deg, #f7f9fc 0%, #edf0f5 100%);
     --panel: #ffffff;
     --panel-2: #eceff3;
     --fg: #1a2330;
@@ -97,6 +122,7 @@
     --shadow: 0 4px 16px rgba(15, 20, 25, 0.08);
     --radius: 10px;
     --topbar-bg: #e4e9f0;
+    --topbar-bg-image: linear-gradient(180deg, #ecf0f6 0%, #dde3ec 100%);
     --topbar-fg: var(--fg);
     --topbar-muted: var(--muted);
     --topbar-border: #cfd7e1;
@@ -119,6 +145,10 @@
 html, body {
   margin: 0;
   background: var(--bg);
+  /* Soft brand-tinted gradient over the flat --bg (see the token comment).
+     The body never scrolls (overflow: hidden below), so the gradient always
+     spans exactly one viewport. */
+  background-image: var(--bg-image);
   color: var(--fg);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 15px;
@@ -137,7 +167,10 @@ input, select, textarea { font-size: 16px; }
 .hidden { display: none !important; }
 
 button {
-  background: var(--accent);
+  /* Filled buttons carry the accent gradient; the solid --accent stays as
+     the background-color fallback underneath. Variants that recolor via the
+     `background` shorthand (ghost, pb-btn, …) reset the image too. */
+  background: var(--accent) var(--accent-grad);
   color: white;
   border: 0;
   border-radius: var(--radius);
@@ -201,6 +234,8 @@ input {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  /* The card floats over the page gradient; the shadow lifts it off. */
+  box-shadow: var(--shadow);
   padding: 28px;
   width: 360px;
   max-width: 100%;
@@ -310,7 +345,7 @@ input {
   cursor: pointer;
 }
 .pb-btn:hover { border-color: var(--border-hover); }
-.pb-live-btn { background: var(--accent); border-color: var(--accent); color: white; }
+.pb-live-btn { background: var(--accent) var(--accent-grad); border-color: var(--accent); color: white; }
 .pb-live-btn:hover { filter: brightness(1.1); }
 .pb-canvas {
   flex: 1;
@@ -341,7 +376,7 @@ input {
   text-align: center;
 }
 .pb-speed-btn.active {
-  background: var(--accent);
+  background: var(--accent) var(--accent-grad);
   border-color: var(--accent);
   color: white;
 }
@@ -354,6 +389,9 @@ input {
   flex-shrink: 0;
   padding: 0 20px;
   background: var(--topbar-bg);
+  /* Vertical-only gradient — shared with .viewer-side-header so the split
+     band reads as one continuous surface (see the token comment). */
+  background-image: var(--topbar-bg-image);
   color: var(--topbar-fg);
   border-bottom: 1px solid var(--topbar-border);
   box-sizing: border-box;
@@ -545,7 +583,7 @@ input {
 }
 .view-toggle button.toggle:hover:not(.active) { color: var(--fg); }
 .view-toggle button.toggle.active {
-  background: var(--accent);
+  background: var(--accent) var(--accent-grad);
   color: white;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
@@ -608,6 +646,7 @@ button.icon-btn {
   /* Same surface as the topbar so the two share one continuous header band
      across the full width; the sidebar body below stays --panel. */
   background: var(--topbar-bg);
+  background-image: var(--topbar-bg-image);
   color: var(--topbar-fg);
   border-bottom: 1px solid var(--topbar-border);
   box-sizing: border-box;
@@ -1331,7 +1370,7 @@ button.icon-btn {
   font-size: 13px;
   padding: 8px 10px;
 }
-.segments button.active { background: var(--accent); color: white; }
+.segments button.active { background: var(--accent) var(--accent-grad); color: white; }
 
 /* ---------- Floating PTZ panel (Live mode, single cam) ----------
    Sits above the wall as an absolute-positioned panel. Drag the header
@@ -1402,7 +1441,7 @@ button.icon-btn {
   padding: 0 14px;
   border-radius: 999px;
   border: 1px solid var(--border-strong);
-  background: var(--accent);
+  background: var(--accent) var(--accent-grad);
   color: #fff;
   font-weight: 600;
   font-size: 13px;
@@ -1421,6 +1460,10 @@ button.icon-btn {
   position: fixed;
   inset: 0;
   background: var(--bg);
+  /* Same gradient as the main app background. The element is viewport-sized
+     and scrolls its own content, so the (default, border-box–anchored)
+     background stays put while the body scrolls. */
+  background-image: var(--bg-image);
   color: var(--fg);
   display: flex;
   flex-direction: column;
@@ -1524,7 +1567,7 @@ button.icon-btn {
 .users-inline-status.ok { color: var(--good); }
 
 button.primary {
-  background: var(--accent);
+  background: var(--accent) var(--accent-grad);
   color: white;
   border: 0;
   border-radius: var(--radius);
@@ -1795,6 +1838,8 @@ label.switch input:disabled + .switch-track { opacity: 0.5; cursor: not-allowed;
   position: fixed;
   inset: 0;
   background: var(--bg);
+  /* Match the page gradient so revealing the app doesn't shift the tone. */
+  background-image: var(--bg-image);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1925,7 +1970,7 @@ html.booting body > *:not(#boot) { display: none !important; }
   font-weight: 600;
   border-radius: 8px;
   border: 1px solid var(--accent);
-  background: var(--accent);
+  background: var(--accent) var(--accent-grad);
   color: #fff;
   cursor: pointer;
 }
@@ -2112,7 +2157,7 @@ kbd {
   font: inherit;
   font-size: 13px;
   color: #fff;
-  background: var(--accent);
+  background: var(--accent) var(--accent-grad);
   border: none;
   border-radius: var(--radius);
   cursor: pointer;

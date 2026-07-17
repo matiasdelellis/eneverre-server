@@ -2,6 +2,7 @@ import { $, $$, makeMsg } from "../util/dom.js";
 import { token, apiFetch } from "../api.js";
 import { getState } from "../state.js";
 import { icon } from "../ui/icons.js";
+import { ensureTileBuffering, removeTileBuffering as hideTileBuffering } from "../ui/buffering.js";
 import { toast } from "../ui/toast.js";
 import { Timeline } from "../../timeline.js";
 import { t, getLang } from "../i18n.js";
@@ -727,24 +728,8 @@ function vodPlaylistUrl(camId, startMsec) {
 }
 
 function showTileBuffering(tile) {
-  if (!tile) return;
-  let el = tile.querySelector(".wall-buffering");
-  if (!el) {
-    el = document.createElement("div");
-    el.className = "wall-buffering";
-    el.setAttribute("role", "status");
-    el.setAttribute("aria-live", "polite");
-    el.innerHTML = '<span class="wall-buffering-icon" aria-hidden="true">⟳</span><span class="wall-buffering-text">Loading…</span>';
-    const overlay = tile.querySelector(".wall-overlay");
-    if (overlay) tile.insertBefore(el, overlay);
-    else tile.appendChild(el);
-  }
-  el.classList.remove("wall-connection-lost");
-}
-
-function hideTileBuffering(tile) {
-  const el = tile && tile.querySelector(".wall-buffering");
-  if (el) el.remove();
+  const el = ensureTileBuffering(tile);
+  if (el) el.classList.remove("wall-connection-lost");
 }
 
 export function killVods() {
