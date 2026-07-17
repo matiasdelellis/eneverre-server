@@ -66,6 +66,21 @@ export default {
   "pb.speed": "Playback speed",
   "pb.live": "Live",
 
+  // Timeline canvas labels (drawn by timeline.js via injected options).
+  "pb.tl_live": "LIVE",
+  "pb.tl_now": "Now",
+  "pb.tl_today": "Today",
+  "pb.tl_scale_30d": "30 days",
+  "pb.tl_scale_7d": "7 days",
+  "pb.tl_scale_1d": "1 day",
+  "pb.tl_scale_12h": "12 hours",
+  "pb.tl_scale_6h": "6 hours",
+  "pb.tl_scale_1h": "1 hour",
+  "pb.tl_scale_30m": "30 min",
+  "pb.tl_scale_15m": "15 min",
+  "pb.tl_scale_5m": "5 min",
+  "pb.tl_scale_1m": "1 min",
+
   "ptz.title": "PTZ",
   "ptz.control": "Control",
   "ptz.close": "Close",

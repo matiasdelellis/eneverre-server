@@ -66,6 +66,22 @@ export default {
   "pb.speed": "Velocidad de reproducción",
   "pb.live": "Directo",
 
+  // Etiquetas del canvas de la línea de tiempo (dibujadas por timeline.js
+  // vía opciones inyectadas).
+  "pb.tl_live": "EN VIVO",
+  "pb.tl_now": "Ahora",
+  "pb.tl_today": "Hoy",
+  "pb.tl_scale_30d": "30 días",
+  "pb.tl_scale_7d": "7 días",
+  "pb.tl_scale_1d": "1 día",
+  "pb.tl_scale_12h": "12 horas",
+  "pb.tl_scale_6h": "6 horas",
+  "pb.tl_scale_1h": "1 hora",
+  "pb.tl_scale_30m": "30 min",
+  "pb.tl_scale_15m": "15 min",
+  "pb.tl_scale_5m": "5 min",
+  "pb.tl_scale_1m": "1 min",
+
   "ptz.title": "PTZ",
   "ptz.control": "Control",
   "ptz.close": "Cerrar",

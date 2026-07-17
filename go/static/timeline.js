@@ -12,13 +12,22 @@ function formatHourMinSec(d) {
   return `${h < 10 ? "0" : ""}${h}:${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
 }
 
-function formatShortDate(d) {
-  return d.toLocaleString("en-us", { month: "short" }) + " " + d.getDate();
+function formatShortDate(d, locale) {
+  return d.toLocaleString(locale || "en-us", { month: "short" }) + " " + d.getDate();
 }
 
 function isToday(d) {
   return new Date().toDateString() === d.toDateString();
 }
+
+// English fallbacks for the ruler-scale label, keyed by the id getRulerScale
+// returns. The app injects localized strings via options.labels.scales; these
+// keep the widget self-contained when used without them.
+const SCALE_LABELS_EN = {
+  "30d": "30 days", "7d": "7 days", "1d": "1 day",
+  "12h": "12 hours", "6h": "6 hours", "1h": "1 hour",
+  "30m": "30 min", "15m": "15 min", "5m": "5 min", "1m": "1 min",
+};
 
 class Rect {
   constructor(left, top, right, bottom, color) {
@@ -174,6 +183,13 @@ export class Timeline {
   setTimeSelectedCallback(cb) { this.timeSelectedCallback = cb; }
   setLiveCallback(cb) { this.liveCallback = cb; }
 
+  // _label reads a UI string from the injected options.labels (so the host app
+  // can localize the canvas text), falling back to the English default.
+  _label(key, fallback) {
+    const l = this.options.labels;
+    return (l && l[key]) || fallback;
+  }
+
   runTimeSelectedCallbackDelayed() {
     clearTimeout(this.timerSelectedId);
     this.timerSelectedId = setTimeout(() => {
@@ -252,7 +268,7 @@ export class Timeline {
     const isLive = isNow && this.liveCallback != null;
     if (isLive || this.isLive) this.liveCallback(this.timelineSelected, isLive);
     this.isLive = isLive;
-    let text = isLive ? "LIVE" : (isNow ? "Now" : formatHourMinSec(date));
+    let text = isLive ? this._label("live", "LIVE") : (isNow ? this._label("now", "Now") : formatHourMinSec(date));
     let textWidth = context.measureText(text).width;
     const textHeight = 12;
     let textX = this.canvas.clientWidth / 2 - textWidth / 2;
@@ -260,24 +276,27 @@ export class Timeline {
     context.fillRect(textX - 2, 0, textWidth + 4, textHeight + 6);
     context.fillStyle = this.options.colorTimeText;
     context.fillText(text, textX, textHeight + 2);
-    text = isToday(date) ? "Today" : date.toLocaleDateString();
+    text = isToday(date) ? this._label("today", "Today") : date.toLocaleDateString(this.options.locale || undefined);
     textWidth = context.measureText(text).width;
     textX = this.canvas.clientWidth - textWidth - 4;
     context.fillText(text, textX, textHeight + 2);
     context.restore();
   }
 
+  // getRulerScale returns an id (see SCALE_LABELS_EN) for the current zoom
+  // level, or "" below the 1-minute step. drawRuler turns it into a localized
+  // label via options.labels.scales.
   getRulerScale() {
-    if (this.intervalMsec > INTERVAL_DAY_30 - 1) return "30 days";
-    if (this.intervalMsec > INTERVAL_DAY_7 - 1) return "7 days";
-    if (this.intervalMsec > INTERVAL_DAY_1 - 1) return "1 day";
-    if (this.intervalMsec > INTERVAL_HOUR_12 - 1) return "12 hours";
-    if (this.intervalMsec > INTERVAL_HOUR_6 - 1) return "6 hours";
-    if (this.intervalMsec > INTERVAL_HOUR_1 - 1) return "1 hour";
-    if (this.intervalMsec > INTERVAL_MIN_30 - 1) return "30 min";
-    if (this.intervalMsec > INTERVAL_MIN_15 - 1) return "15 min";
-    if (this.intervalMsec > INTERVAL_MIN_5 - 1) return "5 min";
-    if (this.intervalMsec > INTERVAL_MIN_1 - 1) return "1 min";
+    if (this.intervalMsec > INTERVAL_DAY_30 - 1) return "30d";
+    if (this.intervalMsec > INTERVAL_DAY_7 - 1) return "7d";
+    if (this.intervalMsec > INTERVAL_DAY_1 - 1) return "1d";
+    if (this.intervalMsec > INTERVAL_HOUR_12 - 1) return "12h";
+    if (this.intervalMsec > INTERVAL_HOUR_6 - 1) return "6h";
+    if (this.intervalMsec > INTERVAL_HOUR_1 - 1) return "1h";
+    if (this.intervalMsec > INTERVAL_MIN_30 - 1) return "30m";
+    if (this.intervalMsec > INTERVAL_MIN_15 - 1) return "15m";
+    if (this.intervalMsec > INTERVAL_MIN_5 - 1) return "5m";
+    if (this.intervalMsec > INTERVAL_MIN_1 - 1) return "1m";
     return "";
   }
 
@@ -311,7 +330,7 @@ export class Timeline {
       startDate.setTime(minValue - offsetInterval + (i + 1) * interval - gmtOffsetInMillis);
       let text = formatHourMin(startDate);
       if (text === "00:00") {
-        text = formatShortDate(startDate);
+        text = formatShortDate(startDate, this.options.locale);
         context.font = "bold 10px sans-serif";
       } else {
         context.font = "10px sans-serif";
@@ -344,7 +363,9 @@ export class Timeline {
         !this.drawHoursMinutes(context, msecInPixels, INTERVAL_DAY_1)) {
       this.drawHoursMinutes(context, msecInPixels, INTERVAL_DAY_7);
     }
-    const textScale = this.getRulerScale();
+    const scaleId = this.getRulerScale();
+    const scales = this.options.labels && this.options.labels.scales;
+    const textScale = scaleId ? ((scales && scales[scaleId]) || SCALE_LABELS_EN[scaleId]) : "";
     const tw = context.measureText(textScale).width;
     context.fillStyle = this.options.colorDigits;
     context.fillText(textScale, 4, 12);
@@ -479,7 +500,7 @@ export class Timeline {
 
   drawHoverTooltip(context) {
     const d = new Date(this._hoverMsec);
-    const text = d.toLocaleString();
+    const text = d.toLocaleString(this.options.locale || undefined);
     context.save();
     context.font = "11px sans-serif";
     const tw = context.measureText(text).width;

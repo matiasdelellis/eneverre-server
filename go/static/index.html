@@ -468,7 +468,12 @@
     </div>
   </div>
 
-  <script src="hls.min.js"></script>
+  <!-- defer so the 400KB HLS library never blocks HTML parsing / first paint
+       (it's only needed once the user opens playback). Deferred classic
+       scripts still run in document order before the deferred module below,
+       so window.Hls is guaranteed present by the time app.js — and any
+       playback code it later triggers — runs. -->
+  <script src="hls.min.js" defer></script>
   <script src="app.js" type="module"></script>
 </body>
 </html>

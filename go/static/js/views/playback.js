@@ -3,7 +3,7 @@ import { token, apiFetch } from "../api.js";
 import { getState } from "../state.js";
 import { icon } from "../ui/icons.js";
 import { Timeline } from "../../timeline.js";
-import { t } from "../i18n.js";
+import { t, getLang } from "../i18n.js";
 
 export const PB_DEFAULT_INTERVAL = 6 * 60 * 60 * 1000; // timeline window: 6 hours
 const PB_START_OFFSET_MS = 5 * 60 * 1000;    // cursor lands 5 min in the past
@@ -65,6 +65,34 @@ function readTimelineColors() {
     colorTimelineSelected: css("--accent") || "#3b82f6",
     colorMajor1Selected: css("--danger") || "#ef4444",
     colorMajor2Selected: css("--accent") || "#3b82f6",
+  };
+}
+
+// timelineLabels builds the localized strings the timeline canvas paints
+// (LIVE/Now/Today, the ruler-scale caption) plus the locale it should use for
+// its date formatting. Passed into the Timeline via options so the widget
+// itself stays free of the i18n module. Read once at build time; the timeline
+// is rebuilt on any navigation, so a language switch is picked up on re-entry.
+function timelineLabels() {
+  return {
+    locale: getLang(),
+    labels: {
+      live: t("pb.tl_live"),
+      now: t("pb.tl_now"),
+      today: t("pb.tl_today"),
+      scales: {
+        "30d": t("pb.tl_scale_30d"),
+        "7d": t("pb.tl_scale_7d"),
+        "1d": t("pb.tl_scale_1d"),
+        "12h": t("pb.tl_scale_12h"),
+        "6h": t("pb.tl_scale_6h"),
+        "1h": t("pb.tl_scale_1h"),
+        "30m": t("pb.tl_scale_30m"),
+        "15m": t("pb.tl_scale_15m"),
+        "5m": t("pb.tl_scale_5m"),
+        "1m": t("pb.tl_scale_1m"),
+      },
+    },
   };
 }
 
@@ -309,6 +337,7 @@ export async function buildPlaybackTimeline(filtered) {
     timelines: filtered.length,
     timelineNames: filtered.map((c) => c.name || c.id),
     ...readTimelineColors(),
+    ...timelineLabels(),
   });
   tl.intervalMsec = PB_DEFAULT_INTERVAL;
   tl.setCanvas(canvas);
