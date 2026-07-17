@@ -124,7 +124,7 @@ function renderUsers() {
       <div class="users-name" title="${escapeHtml(u.username)}">${escapeHtml(u.username)}${isMe ? ' <span class="muted">' + t("users.you") + '</span>' : ""}</div>
       <div><span class="role-badge role-${escapeHtml(u.role)}">${escapeHtml(u.role)}</span></div>
       <div class="users-actions">
-        <button data-act="name" title="${t("users.edit_name_title", { username: u.username })}">${t("users.edit_name")}</button>
+        <button data-act="name" title="${escapeHtml(t("users.edit_name_title", { username: u.username }))}">${t("users.edit_name")}</button>
         <button data-act="role" data-role="${u.role === "admin" ? "user" : "admin"}">
           ${u.role === "admin" ? t("users.demote") : t("users.promote")}
         </button>
