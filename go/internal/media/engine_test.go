@@ -9,6 +9,51 @@ import (
 	"eneverre/internal/config"
 )
 
+// Duration-valued [media] keys accept anything time.ParseDuration takes plus a
+// trailing "d" for days (e.g. "10d" = 240h). Invalid or empty values fall back
+// to the option's default; an empty days component ("d") is also invalid.
+// "retain" defaults to 7d; the literal "0" keeps footage forever.
+func TestOptionsDurationKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+		raw  string
+		def  time.Duration
+		want time.Duration
+	}{
+		{"absent retain defaults to 7d", "retain", "", 0, 7 * 24 * time.Hour},
+		{"retain zero keeps forever", "retain", "0", 0, 0},
+		{"days retain", "retain", "10d", 0, 10 * 24 * time.Hour},
+		{"hours retain", "retain", "240h", 0, 240 * time.Hour},
+		{"invalid retain falls back to 7d", "retain", "ten days", 0, 7 * 24 * time.Hour},
+		{"empty days retain", "retain", "d", 0, 7 * 24 * time.Hour},
+		{"default segment", "segment_duration", "", 60 * time.Second, 60 * time.Second},
+		{"minutes segment", "segment_duration", "5m", 60 * time.Second, 5 * time.Minute},
+		{"invalid segment", "segment_duration", "30", 60 * time.Second, 60 * time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sec := config.Section{}
+			if c.raw != "" {
+				sec[c.key] = c.raw
+			}
+			var got time.Duration
+			switch c.key {
+			case "retain":
+				got = OptionsFromSection(sec).Retain
+			case "segment_duration":
+				got = OptionsFromSection(sec).SegmentDuration
+			}
+			if got != c.want {
+				t.Fatalf("%s = %s, want %s", c.key, got, c.want)
+			}
+		})
+	}
+	if got := DefaultOptions().Retain; got != 7*24*time.Hour {
+		t.Fatalf("DefaultOptions Retain = %s, want 7d", got)
+	}
+}
+
 // max_part_size is parsed from [media] with a K/M/G suffix, falling back to the
 // 50 MiB default when absent or invalid.
 func TestOptionsMaxPartSize(t *testing.T) {

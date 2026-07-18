@@ -20,6 +20,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,7 +68,7 @@ type Options struct {
 	SegmentDuration time.Duration // min segment length (default 60s)
 	PartDuration    time.Duration // fMP4 fragment length (default 1s)
 	MaxPartSize     uint64        // max fMP4 part size in bytes (default 50 MiB)
-	Retain          time.Duration // delete recordings older than this; 0 = keep forever
+	Retain          time.Duration // delete recordings older than this; 0 = keep forever (default 7d)
 	RTSPAddress     string        // relay listen address (default ":8554")
 	Transport       string        // RTSP source transport: auto|tcp|udp (default auto)
 	// RelayCredsFn supplies the currently-valid [user, pass] pairs the RTSP relay
@@ -85,6 +87,7 @@ func DefaultOptions() Options {
 		RelayEnabled: true,
 		// RecordEnabled: false (zero value) — recording is off by default.
 		MaxPartSize: 50 * 1024 * 1024,
+		Retain:      7 * 24 * time.Hour,
 		RTSPAddress: ":8554",
 		Transport:   "auto",
 	}
@@ -108,22 +111,38 @@ func OptionsFromSection(sec config.Section) Options {
 	// named even across day/hour boundaries. Operators can override the
 	// whole pattern in [media].
 	o.RecordPath = sec.Get("record_path", filepath.Join(recordDir, "%path", "%Y-%m-%d", "%H", "%Y-%m-%d_%H-%M-%S-%f"))
-	o.SegmentDuration = durationOr(sec.Get("segment_duration", ""), 60*time.Second)
-	o.PartDuration = durationOr(sec.Get("part_duration", ""), time.Second)
-	o.MaxPartSize = sizeOr(sec.Get("max_part_size", ""), 50*1024*1024)
-	o.Retain = durationOr(sec.Get("retain", ""), 0)
+	o.SegmentDuration = durationOr("segment_duration", sec.Get("segment_duration", ""), 60*time.Second)
+	o.PartDuration = durationOr("part_duration", sec.Get("part_duration", ""), time.Second)
+	o.MaxPartSize = sizeOr("max_part_size", sec.Get("max_part_size", ""), 50*1024*1024)
+	o.Retain = durationOr("retain", sec.Get("retain", ""), 7*24*time.Hour)
 	o.RTSPAddress = sec.Get("rtsp_address", ":8554")
 	o.Transport = sec.Get("transport", "auto")
 	return o
 }
 
-func durationOr(s string, def time.Duration) time.Duration {
+func durationOr(key, s string, def time.Duration) time.Duration {
 	if s == "" {
 		return def
 	}
+	// time.ParseDuration has no "d" unit; the docs and example INI
+	// promise "10d" works, so accept a trailing "d" as days on top of
+	// every other stdlib unit.
+	if strings.HasSuffix(s, "d") || strings.HasSuffix(s, "D") {
+		head := strings.TrimSpace(s[:len(s)-1])
+		if head == "" {
+			slog.Warn("media: invalid duration, using default", "key", key, "value", s, "default", def)
+			return def
+		}
+		n, err := strconv.Atoi(head)
+		if err != nil {
+			slog.Warn("media: invalid duration, using default", "key", key, "value", s, "default", def)
+			return def
+		}
+		return time.Duration(n) * 24 * time.Hour
+	}
 	d, err := time.ParseDuration(s)
 	if err != nil {
-		slog.Warn("media: invalid duration, using default", "value", s, "default", def)
+		slog.Warn("media: invalid duration, using default", "key", key, "value", s, "default", def)
 		return def
 	}
 	return d
@@ -131,13 +150,13 @@ func durationOr(s string, def time.Duration) time.Duration {
 
 // sizeOr parses a byte size ("50M", "1G", or a plain byte count; base 1024),
 // falling back to def on missing or invalid input. Mirrors durationOr.
-func sizeOr(s string, def uint64) uint64 {
+func sizeOr(key, s string, def uint64) uint64 {
 	if s == "" {
 		return def
 	}
 	n, err := config.ParseSize(s)
 	if err != nil || n <= 0 {
-		slog.Warn("media: invalid size, using default", "value", s, "default", def)
+		slog.Warn("media: invalid size, using default", "key", key, "value", s, "default", def)
 		return def
 	}
 	return uint64(n)

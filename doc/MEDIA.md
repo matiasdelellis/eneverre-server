@@ -205,7 +205,7 @@ record_dir       = /var/lib/eneverre/recordings
 segment_duration = 60s
 part_duration    = 1s          ; recovery-point objective (crash loses ≤ this)
 ;max_part_size   = 50M         ; force a part out past this size (K/M/G, base 1024)
-retain           = 240h        ; 0 = keep forever
+retain           = 7d          ; default 7d; 0 = keep forever
 rtsp_address     = :8554       ; RTSP relay listen address
 ;rtsp_host       = nvr.example.com  ; pin the public host in the `rtsp` URL (else the request host)
 transport        = auto        ; source transport: auto (default) | tcp | udp

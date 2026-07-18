@@ -118,7 +118,7 @@ refresh_token_ttl_days = 90
 ;segment_duration = 60s       ; min segment length
 ;part_duration    = 1s        ; fMP4 fragment length (crash recovery-point)
 ;max_part_size    = 50M       ; safety cap on a single fMP4 fragment (RAM valve)
-;retain        = 240h         ; 0 = keep forever
+;retain        = 7d           ; default 7d; set 0 to keep forever; accepts ParseDuration + "d" days
 ;rtsp_address  = :8554
 ;transport     = auto         ; auto | tcp | udp
 ;gap_message   = NO RECORDING ; caption burned into gap-fill black frames
@@ -140,8 +140,9 @@ webhook_secret = changeme    ; required to accept POST /api/camera/{id}/events
 
 Motion events are pruned on the **same** retention window as recordings
 (`[media] retain`): with it set, a background sweep drops events older than
-that window so the events table never outlives the footage its rows
-reference. Without `[media] retain` (the default), events are kept forever.
+the window so the events table never outlives the footage its rows
+reference. With `[media] retain` unset (the 7d default), the sweep still
+runs against the default window. Set `retain = 0` to keep events forever.
 
 See [`doc/MEDIA.md`](../MEDIA.md) for the full endpoint list, client
 integration notes, and the codec/coverage-gap semantics.
