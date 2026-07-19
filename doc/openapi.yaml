@@ -88,12 +88,18 @@ paths:
                     type: object
                     description: >-
                       Present only when recording is enabled and the volume can
-                      be queried.
+                      be queried. min_free_bytes / low_space / low_space_since
+                      are populated by the engine's low-disk watcher
+                      ([media] min_free_bytes, default 1 GiB; 0 disables); see
+                      doc/MEDIA.md → Low-disk safety.
                     properties:
                       record_dir: { type: string }
                       total_bytes: { type: integer, format: int64 }
                       free_bytes: { type: integer, format: int64 }
                       used_bytes: { type: integer, format: int64 }
+                      min_free_bytes: { type: integer, format: int64 }
+                      low_space: { type: boolean }
+                      low_space_since: { type: string, format: date-time }
         '401':
           description: Missing or invalid token
         '403':

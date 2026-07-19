@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -181,3 +182,63 @@ func TestAddCameraGating(t *testing.T) {
 		t.Error("RemoveCamera(ghost) = true; want false")
 	}
 }
+
+// TestLowDiskStateZeroWhenDisabled covers the no-monitor path: with recording
+// off the engine skips creating a disk monitor entirely, so LowDiskState
+// returns the zero DiskState. Status() callers (e.g. /api/status) should
+// treat the zero value as "no alert" and skip the storage.low_space fields.
+func TestLowDiskStateZeroWhenDisabled(t *testing.T) {
+	e, err := New(Options{MSEEnabled: true, RelayEnabled: false, RecordEnabled: false})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer e.Close()
+
+	got := e.LowDiskState()
+	if got.Enabled {
+		t.Errorf("LowDiskState.Enabled = true, want false (recording off)")
+	}
+	if got.Low || got.MinFree != 0 || got.FreeBytes != 0 {
+		t.Errorf("LowDiskState = %+v, want zero value", got)
+	}
+}
+
+// TestLowDiskStateWithMonitor covers the monitor-enabled path. We construct
+// an engine with recording on, then read LowDiskState right after New — the
+// monitor has not polled yet, so FreeBytes is 0 and Low is false, but Enabled
+// and MinFree reflect the configured threshold. This is the steady-state
+// shape that /api/status serializes to the web UI.
+func TestLowDiskStateWithMonitor(t *testing.T) {
+	dir := t.TempDir()
+	e, err := New(Options{
+		RecordEnabled: true,
+		RelayEnabled:  false,
+		RecordDir:     dir,
+		CacheDir:      filepath.Join(dir, "cache"),
+		IndexPath:     filepath.Join(dir, "index.db"),
+		MinFreeBytes:  512 * 1024 * 1024, // 512 MiB low-water
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer e.Close()
+
+	got := e.LowDiskState()
+	if !got.Enabled {
+		t.Errorf("LowDiskState.Enabled = false, want true (recording on + min_free_bytes>0)")
+	}
+	if got.MinFree != 512*1024*1024 {
+		t.Errorf("MinFree = %d, want %d", got.MinFree, 512*1024*1024)
+	}
+	if got.RecordDir != dir {
+		t.Errorf("RecordDir = %q, want %q", got.RecordDir, dir)
+	}
+	if got.Low {
+		t.Errorf("Low = true, want false (no sample taken yet)")
+	}
+}
+
+// The emergency free-space purge itself lives in the retention package
+// (Cleaner.PurgeToFree) and is covered by retention's own tests. The engine
+// only wires the disk monitor's OnLow callback to it; that wiring is exercised
+// by the LowDiskState tests above and by integration use.

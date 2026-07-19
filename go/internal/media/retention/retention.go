@@ -21,8 +21,8 @@ import (
 // enough that the wall-clock cost per batch is dominated by parallel
 // file I/O, not by SQL or fsync overhead.
 const (
-	purgeBatchSize   = 500  // segments per query + delete batch
-	purgeFileWorkers = 4    // parallel os.Remove goroutines per batch
+	purgeBatchSize   = 500                   // segments per query + delete batch
+	purgeFileWorkers = 4                     // parallel os.Remove goroutines per batch
 	purgeBatchPause  = 50 * time.Millisecond // yield between batches
 )
 
@@ -81,42 +81,110 @@ func (c *Cleaner) clean() {
 		if len(expired) == 0 {
 			break
 		}
-
-		fpaths := make([]string, len(expired))
-		for i, s := range expired {
-			fpaths[i] = s.Fpath
-		}
-		// Parallel os.Remove: file I/O is the bottleneck (the index
-		// delete is one transaction, one fsync). Limited concurrency
-		// avoids thrashing SSDs and avoids spamming the kernel with
-		// concurrent syscalls.
-		deleted := deleteFilesParallel(fpaths, purgeFileWorkers, c.Logf)
-		// One transaction, one fsync, for all successfully-deleted
-		// rows. Rows whose file failed to delete (e.g. permission)
-		// stay in the index and are retried next pass.
-		if err := c.Index.DeleteBatch(deleted); err != nil {
+		deleted, err := c.purgeBatch(expired)
+		if err != nil {
 			c.Logf("index delete batch: %v", err)
 			return
 		}
-
-		totalRemoved += len(deleted)
-		c.Logf("purged %d expired segment(s) (older than %s)", len(deleted), c.Retain)
-
-		// Targeted dir prune: only walk the parents of just-deleted
-		// files (the previous implementation walked the whole record
-		// tree on every clean, which becomes O(tree size) per pass).
-		c.pruneEmptyDirsAround(deleted)
-
-		// Yield so the recorder's per-segment INSERTs can interleave
-		// with the next batch. Without this, a continuous purge
-		// (thousands of segments) could starve the writer of WAL
-		// checkpoints.
-		time.Sleep(purgeBatchPause)
+		totalRemoved += deleted
+		c.Logf("purged %d expired segment(s) (older than %s)", deleted, c.Retain)
 	}
 
 	if totalRemoved > 0 {
 		c.Logf("purge pass complete: %d segment(s) removed (older than %s)", totalRemoved, c.Retain)
 	}
+}
+
+// PurgeToFree deletes the oldest segments — ignoring the retain window — until
+// statfs(dir) reports at least `target` free bytes, the index runs empty, or
+// ctx is cancelled. It returns the number of segments removed.
+//
+// This is the emergency valve behind the media engine's low-disk watcher:
+// where clean() drops footage that has aged out, PurgeToFree sacrifices the
+// oldest footage regardless of age to keep the recording volume from hitting
+// ENOSPC. It shares clean()'s batch machinery (parallel unlink, one index
+// transaction per batch, dir prune, inter-batch yield); the only differences
+// are the query (oldest-first instead of expired) and the stop condition
+// (free space instead of an empty result). statfs is injected so tests can
+// drive the loop without a real disk; production passes diskfree.Available.
+//
+// The free-space check runs once per batch (at the top of each iteration),
+// not per segment, so the purge can overshoot the target by at most one
+// batch (purgeBatchSize segments) before it notices it has crossed. That
+// slack is acceptable: `target` is already the high-water mark (2x the
+// low-water), so overshooting leaves extra headroom rather than parking the
+// disk right at the edge, and the disk monitor won't re-fire OnLow until free
+// climbs back above 2*LowWater — no cascading re-purges. Shrink purgeBatchSize
+// if a tighter bound is ever needed.
+func (c *Cleaner) PurgeToFree(ctx context.Context, dir string, target uint64, statfs func(string) (uint64, error)) int {
+	if c.Logf == nil {
+		c.Logf = func(string, ...any) {}
+	}
+	totalRemoved := 0
+	for {
+		if ctx.Err() != nil {
+			return totalRemoved
+		}
+		// Re-check before each batch so a purge that already recovered the
+		// disk stops instead of deleting more than necessary.
+		free, err := statfs(dir)
+		if err != nil {
+			c.Logf("emergency purge: statfs %s: %v", dir, err)
+			return totalRemoved
+		}
+		if free >= target {
+			return totalRemoved
+		}
+		batch, err := c.Index.Oldest(purgeBatchSize)
+		if err != nil {
+			c.Logf("emergency purge: query oldest: %v", err)
+			return totalRemoved
+		}
+		if len(batch) == 0 {
+			// No footage left to sacrifice and still below target: the
+			// volume is genuinely full of non-recording data. Loud so the
+			// operator knows to free space by hand.
+			c.Logf("emergency purge: index empty but only %d byte(s) free (target %d) — free space manually", free, target)
+			return totalRemoved
+		}
+		deleted, err := c.purgeBatch(batch)
+		if err != nil {
+			c.Logf("emergency purge: index delete batch: %v", err)
+			return totalRemoved
+		}
+		totalRemoved += deleted
+		c.Logf("emergency purge: removed %d oldest segment(s) (%d byte(s) free, target %d)", deleted, free, target)
+	}
+}
+
+// purgeBatch deletes one batch of segment files in parallel, drops the
+// successfully-removed rows in a single index transaction, and prunes any
+// directories left empty. It returns the number of segments removed. Shared
+// by the age-based sweep (clean) and the free-space emergency purge
+// (PurgeToFree).
+func (c *Cleaner) purgeBatch(segs []index.Segment) (int, error) {
+	fpaths := make([]string, len(segs))
+	for i, s := range segs {
+		fpaths[i] = s.Fpath
+	}
+	// Parallel os.Remove: file I/O is the bottleneck (the index delete is
+	// one transaction, one fsync). Limited concurrency avoids thrashing
+	// SSDs and avoids spamming the kernel with concurrent syscalls.
+	deleted := deleteFilesParallel(fpaths, purgeFileWorkers, c.Logf)
+	// One transaction, one fsync, for all successfully-deleted rows. Rows
+	// whose file failed to delete (e.g. permission) stay in the index and
+	// are retried next pass.
+	if err := c.Index.DeleteBatch(deleted); err != nil {
+		return 0, err
+	}
+	// Targeted dir prune: only walk the parents of just-deleted files (a
+	// full-tree walk would be O(tree size) per batch).
+	c.pruneEmptyDirsAround(deleted)
+	// Yield so the recorder's per-segment INSERTs can interleave with the
+	// next batch. Without this a continuous purge (thousands of segments)
+	// could starve the writer of WAL checkpoints.
+	time.Sleep(purgeBatchPause)
+	return len(deleted), nil
 }
 
 // deleteFilesParallel removes the given file paths with up to `workers`

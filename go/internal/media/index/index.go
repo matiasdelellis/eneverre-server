@@ -118,6 +118,29 @@ func (i *Index) Expired(cutoff time.Time, limit int) ([]Segment, error) {
 		q += ` LIMIT ?`
 		args = append(args, limit)
 	}
+	return i.querySegments(q, args...)
+}
+
+// Oldest returns up to `limit` segments in start-time ascending order
+// (oldest first), regardless of age. Used by the engine's emergency
+// disk-space purge, which needs to drop the oldest footage first when
+// free space crosses below the low-water mark — without depending on
+// the configured retain window. Same limit semantics as Expired.
+func (i *Index) Oldest(limit int) ([]Segment, error) {
+	q := `SELECT fpath,path,start_ns,duration_ns,seg_number,stream_id FROM segments
+	      ORDER BY start_ns ASC`
+	args := []any{}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	return i.querySegments(q, args...)
+}
+
+// querySegments is the shared row-scan path for Expired / Oldest (and any
+// other SELECT-by-start-time that gets added later). Returning a typed
+// `[]Segment` keeps callers free of *sql.Rows.
+func (i *Index) querySegments(q string, args ...any) ([]Segment, error) {
 	rows, err := i.db.Query(q, args...)
 	if err != nil {
 		return nil, err

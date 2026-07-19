@@ -2,16 +2,21 @@
 
 package server
 
-import "golang.org/x/sys/unix"
+import "eneverre/internal/diskfree"
 
 // diskUsage returns the total and available bytes of the filesystem that holds
-// path. Available (Bavail) is the space usable by an unprivileged process, which
-// is the honest "free" figure for an operator watching recording headroom.
+// path. Wraps internal/diskfree, the shared statfs helper used by both this
+// package (the /api/status snapshot) and the media engine (low-disk watcher).
+// Available (Bavail) is the space usable by an unprivileged process, which is
+// the honest "free" figure for an operator watching recording headroom.
 func diskUsage(path string) (total, free uint64, err error) {
-	var st unix.Statfs_t
-	if err := unix.Statfs(path, &st); err != nil {
+	free, err = diskfree.Available(path)
+	if err != nil {
 		return 0, 0, err
 	}
-	bsize := uint64(st.Bsize)
-	return st.Blocks * bsize, st.Bavail * bsize, nil
+	total, err = diskfree.Total(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	return total, free, nil
 }

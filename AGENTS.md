@@ -203,7 +203,18 @@ All code lives under `go/` (module `eneverre`).
   - `index` — SQLite-backed segment index: insert / range / `Paths()` /
     `Timeline(start,end,count)` / `Gaps(start,end,minDuration)` / batched
     `Expired(cutoff,limit)` and `DeleteBatch(fpaths)` (one transaction, one
-    fsync, instead of N round-trips).
+    fsync, instead of N round-trips) / `Oldest(limit)` for the low-disk
+    emergency purge (force-remove oldest-first, ignoring `[media] retain`).
+  - `diskmonitor` — polls free space on the recording volume and fires
+    `OnLow` / `OnRecovered` callbacks when the free-bytes figure crosses
+    below `[media] min_free_bytes` (default 1 GiB; `0` disables). Hysteresis
+    (enter below the threshold, exit at 2x) keeps the watcher from
+    flapping. On `OnLow` the engine runs `retention.Cleaner.PurgeToFree`,
+    force-removing the oldest segments (ignoring `[media] retain`) until
+    free space is back above the high-water mark. Recording is never
+    paused — the oldest footage is dropped to make room for the newest. The
+    state is exposed on `GET /api/status` under `storage.low_space` and
+    `storage.low_space_since`.
   - `liverelay` — raw RTP passthrough of the recorder's RTP packets, served
     over RTSP on `[media] rtsp_address` (default `:8554`). Auth validates
     against the rotating credential pair (current + grace, via
@@ -222,11 +233,19 @@ All code lives under `go/` (module `eneverre`).
     helper that generates a black "NO RECORDING" frame via ffmpeg, caches
     it to `<cache_dir>/gapfill/<WxH>-<msghash>.h264` and reuses it across
     restarts. Codec-agnostic (it just re-muxes the segment data).
-  - `retention` — periodic cleaner: queries `Expired` in batches,
-    `os.Remove`s the files with bounded parallel workers, calls
-    `DeleteBatch` (one tx, one fsync), and prunes the now-empty parents of
-    the just-deleted files (cheaper than walking the whole record tree on
-    every pass).
+  - `retention` — segment cleaner. The periodic sweep (`clean`) queries
+    `Expired` in batches, `os.Remove`s the files with bounded parallel
+    workers, calls `DeleteBatch` (one tx, one fsync), and prunes the
+    now-empty parents of the just-deleted files (cheaper than walking the
+    whole record tree). `PurgeToFree` reuses the same per-batch machinery
+    (`purgeBatch`) but queries `Oldest` and stops on a free-space target
+    instead of an age cutoff — this is the engine's low-disk emergency valve.
+- `go/internal/diskfree` — shared statfs wrapper (`Available(path)`,
+  `Total(path)`) used by both `internal/server` (the `/api/status` snapshot)
+  and the media engine's low-disk watcher. Build-tag-split into unix
+  (`statfs`) and Windows (`GetDiskFreeSpaceEx`). Returns the caller-available
+  figure, which is the honest "free space" for an unprivileged process
+  watching recording headroom.
 - `go/internal/server` — `App` (holds cfg, db, cred store, cameras, the
   optional `*media.Engine` set via `SetMediaEngine`, static FS, per-track
   update stores) and all handlers, split across `server.go`, `helpers.go`,

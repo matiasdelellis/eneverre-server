@@ -2,18 +2,19 @@
 
 package server
 
-import "golang.org/x/sys/windows"
+import "eneverre/internal/diskfree"
 
 // diskUsage returns the total and caller-available bytes of the volume that
-// holds path, via GetDiskFreeSpaceEx (the Windows counterpart of statfs).
+// holds path, via GetDiskFreeSpaceEx (the Windows counterpart of statfs). See
+// internal/diskfree for the shared implementation.
 func diskUsage(path string) (total, free uint64, err error) {
-	p, err := windows.UTF16PtrFromString(path)
+	free, err = diskfree.Available(path)
 	if err != nil {
 		return 0, 0, err
 	}
-	var freeToCaller, totalBytes, totalFree uint64
-	if err := windows.GetDiskFreeSpaceEx(p, &freeToCaller, &totalBytes, &totalFree); err != nil {
+	total, err = diskfree.Total(path)
+	if err != nil {
 		return 0, 0, err
 	}
-	return totalBytes, freeToCaller, nil
+	return total, free, nil
 }

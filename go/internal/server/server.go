@@ -761,6 +761,12 @@ type statusStorage struct {
 	TotalBytes uint64 `json:"total_bytes"`
 	FreeBytes  uint64 `json:"free_bytes"`
 	UsedBytes  uint64 `json:"used_bytes"`
+	// Low-space alert from the engine's disk monitor. MinFreeBytes is 0
+	// when the monitor is disabled (recording off or [media] min_free_bytes=0),
+	// in which case Low stays false and LowSince is omitted.
+	MinFreeBytes uint64     `json:"min_free_bytes"`
+	Low          bool       `json:"low_space"`
+	LowSince     *time.Time `json:"low_space_since,omitempty"`
 }
 
 // handleStatus serves an admin-only operational snapshot: per-camera
@@ -830,15 +836,30 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Disk headroom for the recording volume (best-effort: a statfs failure just
-	// omits the block rather than failing the whole status).
+	// omits the block rather than failing the whole status). The low-space
+	// alert is sourced from the engine's disk monitor when recording is on —
+	// the same watcher that force-purges the oldest segments when the volume
+	// crosses below [media] min_free_bytes.
 	if recordDir != "" {
 		if total, free, err := diskUsage(recordDir); err == nil {
-			resp["storage"] = statusStorage{
+			st := statusStorage{
 				RecordDir:  recordDir,
 				TotalBytes: total,
 				FreeBytes:  free,
 				UsedBytes:  total - free,
 			}
+			if a.engine != nil {
+				ds := a.engine.LowDiskState()
+				if ds.Enabled {
+					st.MinFreeBytes = ds.MinFree
+					st.Low = ds.Low
+					if ds.Low && !ds.LowSince.IsZero() {
+						t := ds.LowSince
+						st.LowSince = &t
+					}
+				}
+			}
+			resp["storage"] = st
 		} else {
 			slog.Debug("status: disk usage unavailable", "dir", recordDir, "err", err)
 		}

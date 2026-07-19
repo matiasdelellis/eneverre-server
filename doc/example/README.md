@@ -119,6 +119,7 @@ refresh_token_ttl_days = 90
 ;part_duration    = 1s        ; fMP4 fragment length (crash recovery-point)
 ;max_part_size    = 50M       ; safety cap on a single fMP4 fragment (RAM valve)
 ;retain        = 7d           ; default 7d; set 0 to keep forever; accepts ParseDuration + "d" days
+;min_free_bytes = 1G           ; pause + force-purge oldest below this; 0 disables; accepts K/M/G/T
 ;rtsp_address  = :8554
 ;transport     = auto         ; auto | tcp | udp
 ;gap_message   = NO RECORDING ; caption burned into gap-fill black frames

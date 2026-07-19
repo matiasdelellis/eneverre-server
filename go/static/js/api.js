@@ -182,3 +182,13 @@ export async function probeCamera(source, transport) {
     body: JSON.stringify({ source, transport }),
   });
 }
+
+/**
+ * Admin-only operational snapshot: service/version/uptime, per-camera
+ * connectivity/recording/privacy, aggregate totals, and (when recording)
+ * storage headroom with the low-disk alert. Powers the server-status screen
+ * and the low-disk banner. Throws on non-2xx (including 403 for non-admins).
+ */
+export async function fetchStatus() {
+  return api("/api/status");
+}

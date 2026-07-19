@@ -107,6 +107,9 @@
               <li role="none">
                 <button id="cameras-btn" class="user-menu-item" role="menuitem" hidden data-i18n="menu.manage_cameras">Manage cameras</button>
               </li>
+              <li role="none">
+                <button id="status-btn" class="user-menu-item" role="menuitem" hidden data-i18n="menu.server_status">Server status</button>
+              </li>
               <li role="none" class="user-menu-item-sm" hidden>
                 <button id="theme-toggle-menu" class="user-menu-item" role="menuitem" hidden data-i18n="menu.theme">Toggle theme</button>
               </li>
@@ -121,6 +124,11 @@
           </div>
         </div>
       </header>
+      <div id="disk-alert" class="disk-alert" role="alert" hidden>
+        <span class="disk-alert-icon" aria-hidden="true" data-icon="alert-triangle"></span>
+        <span class="disk-alert-text" id="disk-alert-text"></span>
+        <button type="button" id="disk-alert-open" class="disk-alert-btn" data-i18n="status.view">View status</button>
+      </div>
       <main>
         <div class="main-body">
           <div class="content-area" id="content-area">
@@ -175,6 +183,19 @@
         </div>
         <p id="device-auth-result" class="error" hidden></p>
       </div>
+    </div>
+  </section>
+
+  <section id="status-view" class="users-view" hidden>
+    <header class="topbar">
+      <button id="status-back" class="ghost" data-icon="arrow-left"><span class="back-label">Back to Live</span></button>
+      <strong id="status-view-title" data-i18n="status.title">Server status</strong>
+      <span class="grow"></span>
+      <button id="status-refresh" class="ghost" data-i18n="status.refresh">Refresh</button>
+    </header>
+    <div class="users-body">
+      <p id="status-error" class="error" hidden></p>
+      <div id="status-body"></div>
     </div>
   </section>
 

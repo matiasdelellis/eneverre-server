@@ -97,9 +97,43 @@ For every camera that has a `source` RTSP URL, the engine:
    `GET /api/camera/<id>/recordings/{list,get}` endpoints — no proxy hop.
 5. **Retains** recordings for a configurable age, deleting expired files, index
    rows and empty directories.
+6. **Watches the recording volume** and force-purges the oldest segments when
+   free space crosses below `[media] min_free_bytes` (default 1 GiB), so a
+   runaway retention window or a sudden surge in throughput can't fill the disk
+   and silently kill recording. See [Low-disk safety](#low-disk-safety) below.
 
 It is a single binary and a single systemd unit — no separate streamer to
 install, configure or supervise.
+
+### Low-disk safety
+
+A naive recorder happily writes until the disk is full, at which point every
+`os.Write` returns `ENOSPC`. The retry loop reconnects and the next segment
+fails the same way — silently, in a 1-Hz `WARN` storm — until the operator
+notices. With the engine's default of `record = false` plus a `retain = 0`
+install (e.g. an old config), nothing else cleans up.
+
+`[media] min_free_bytes` (default `1G`) is the safety net:
+
+- A goroutine in the engine polls the recording volume every 30 s and compares
+  the free-bytes figure against the threshold.
+- On cross-below, a `level=WARN` line is logged with the free bytes, the
+  threshold and the record dir; the same state is exposed on `GET /api/status`
+  under `storage.low_space` and `storage.low_space_since`.
+- An **emergency purge** goroutine (`retention.Cleaner.PurgeToFree`, the same
+  batch machinery as the age-based sweep) force-removes the oldest segments
+  first — `index.Oldest(500)` + parallel `os.Remove` + batched `DeleteBatch` +
+  empty-dir prune — regardless of `[media] retain`. Recording is **never
+  paused**: the oldest footage is sacrificed to make room for the newest, so
+  the disk never fills. The loop stops when free space is back above the
+  high-water mark (`2x min_free_bytes`) or the index is empty (the operator
+  needs to free space by hand; the log line is loud).
+- Hysteresis (`2x` for recovery) keeps the purge from re-triggering on every
+  poll; a `level=INFO` line confirms recovery.
+
+Set `min_free_bytes = 0` to disable the watcher entirely (the operator takes
+responsibility for disk headroom). When the watcher is disabled, `LowDiskState`
+on the engine is the zero value and `/api/status` omits the `low_space` fields.
 
 ### Crash recovery
 
@@ -206,6 +240,7 @@ segment_duration = 60s
 part_duration    = 1s          ; recovery-point objective (crash loses ≤ this)
 ;max_part_size   = 50M         ; force a part out past this size (K/M/G, base 1024)
 retain           = 7d          ; default 7d; 0 = keep forever
+;min_free_bytes  = 1G          ; force-purge oldest recordings below this; 0 disables (K/M/G/T)
 rtsp_address     = :8554       ; RTSP relay listen address
 ;rtsp_host       = nvr.example.com  ; pin the public host in the `rtsp` URL (else the request host)
 transport        = auto        ; source transport: auto (default) | tcp | udp

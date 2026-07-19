@@ -75,6 +75,8 @@ export function refreshUserMenu(user) {
   if (usersBtn) usersBtn.hidden = !(user && user.is_admin);
   const camerasBtn = document.getElementById("cameras-btn");
   if (camerasBtn) camerasBtn.hidden = !(user && user.is_admin);
+  const statusBtn = document.getElementById("status-btn");
+  if (statusBtn) statusBtn.hidden = !(user && user.is_admin);
 }
 
 export function initUserMenu() {

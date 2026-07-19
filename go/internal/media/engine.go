@@ -31,6 +31,8 @@ import (
 
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
+	"eneverre/internal/diskfree"
+	"eneverre/internal/media/diskmonitor"
 	"eneverre/internal/media/index"
 	"eneverre/internal/media/live"
 	"eneverre/internal/media/liverelay"
@@ -69,6 +71,7 @@ type Options struct {
 	PartDuration    time.Duration // fMP4 fragment length (default 1s)
 	MaxPartSize     uint64        // max fMP4 part size in bytes (default 50 MiB)
 	Retain          time.Duration // delete recordings older than this; 0 = keep forever (default 7d)
+	MinFreeBytes    uint64        // purge oldest recordings when free space drops below this; 0 disables (default 1 GiB)
 	RTSPAddress     string        // relay listen address (default ":8554")
 	Transport       string        // RTSP source transport: auto|tcp|udp (default auto)
 	// RelayCredsFn supplies the currently-valid [user, pass] pairs the RTSP relay
@@ -86,10 +89,11 @@ func DefaultOptions() Options {
 		MSEEnabled:   true,
 		RelayEnabled: true,
 		// RecordEnabled: false (zero value) — recording is off by default.
-		MaxPartSize: 50 * 1024 * 1024,
-		Retain:      7 * 24 * time.Hour,
-		RTSPAddress: ":8554",
-		Transport:   "auto",
+		MaxPartSize:  50 * 1024 * 1024,
+		Retain:       7 * 24 * time.Hour,
+		MinFreeBytes: 1 << 30, // 1 GiB; force-purge oldest recordings below this
+		RTSPAddress:  ":8554",
+		Transport:    "auto",
 	}
 }
 
@@ -115,6 +119,7 @@ func OptionsFromSection(sec config.Section) Options {
 	o.PartDuration = durationOr("part_duration", sec.Get("part_duration", ""), time.Second)
 	o.MaxPartSize = sizeOr("max_part_size", sec.Get("max_part_size", ""), 50*1024*1024)
 	o.Retain = durationOr("retain", sec.Get("retain", ""), 7*24*time.Hour)
+	o.MinFreeBytes = sizeOr("min_free_bytes", sec.Get("min_free_bytes", ""), 1<<30)
 	o.RTSPAddress = sec.Get("rtsp_address", ":8554")
 	o.Transport = sec.Get("transport", "auto")
 	return o
@@ -169,6 +174,17 @@ type Engine struct {
 	relay    *liverelay.Relay
 	playback *playback.Handler
 
+	// diskMon watches the recording volume; when free space drops below
+	// [media] min_free_bytes it triggers an emergency purge of the oldest
+	// segments (see onLowDisk). Nil when recording is off or the operator
+	// opts out (min_free_bytes=0).
+	diskMon *diskmonitor.Watcher
+
+	// cleaner owns segment deletion. The periodic retention sweep (Start)
+	// and the low-disk emergency purge (onLowDisk) both drive it. Nil when
+	// recording is off (no index to purge).
+	cleaner *retention.Cleaner
+
 	mu           sync.RWMutex
 	broadcasters map[string]*live.Broadcaster // camera id -> live MSE broadcaster
 	recorders    []*recorder.Recorder
@@ -197,7 +213,7 @@ type Engine struct {
 type camCtrl struct {
 	rec      *recorder.Recorder
 	mu       sync.Mutex
-	paused   bool
+	paused   bool          // privacy pause
 	resumeCh chan struct{} // closed to wake waiters; replaced on each resume
 	// cancel stops this camera's retry-loop goroutine independently of the
 	// engine-wide shutdown, so RemoveCamera can detach a single camera at
@@ -212,7 +228,7 @@ func (c *camCtrl) isPaused() bool {
 	return c.paused
 }
 
-// setPaused updates the paused flag and wakes any waiter when resuming.
+// setPaused updates the privacy pause flag and wakes any waiter when resuming.
 // Returns true if the state actually changed.
 func (c *camCtrl) setPaused(p bool) bool {
 	c.mu.Lock()
@@ -298,6 +314,25 @@ func New(opts Options) (*Engine, error) {
 		cancel:       cancel,
 	}
 	if idx != nil {
+		// One cleaner drives both the periodic retention sweep (Start) and
+		// the low-disk emergency purge (onLowDisk).
+		e.cleaner = &retention.Cleaner{
+			Index:      idx,
+			Retain:     opts.Retain,
+			RecordPath: opts.RecordPath,
+			Logf:       func(f string, a ...any) { slog.Info("media/retention: " + fmt.Sprintf(f, a...)) },
+		}
+	}
+	if idx != nil && opts.MinFreeBytes > 0 {
+		// The disk monitor only runs when recording is enabled (idx is the
+		// canary for "we have a record dir to watch"). MinFreeBytes=0 is
+		// the operator's opt-out and skips the watcher entirely.
+		w := diskmonitor.New(opts.RecordDir, opts.MinFreeBytes)
+		w.OnLow = e.onLowDisk
+		w.OnRecovered = e.onDiskRecovered
+		e.diskMon = w
+	}
+	if idx != nil {
 		// Buffered well beyond the real rate (segments rotate ~once/minute per
 		// camera), so the non-blocking enqueue in enqueueIndex effectively never
 		// spills to its synchronous fallback in normal operation.
@@ -363,19 +398,21 @@ func (e *Engine) Start(cams []camera.Camera) {
 		}
 	}
 
-	if e.opts.Retain > 0 && e.idx != nil {
-		cl := &retention.Cleaner{
-			Index:      e.idx,
-			Retain:     e.opts.Retain,
-			RecordPath: e.opts.RecordPath,
-			Logf:       func(f string, a ...any) { slog.Info("media/retention: " + fmt.Sprintf(f, a...)) },
-		}
+	if e.opts.Retain > 0 && e.cleaner != nil {
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
-			cl.Run(e.ctx)
+			e.cleaner.Run(e.ctx)
 		}()
 		slog.Info("media: retention enabled", "older_than", e.opts.Retain)
+	}
+	if e.diskMon != nil {
+		e.wg.Add(1)
+		go func() {
+			defer e.wg.Done()
+			e.diskMon.Run(e.ctx)
+		}()
+		slog.Info("media: low-disk watcher enabled", "min_free_bytes", e.opts.MinFreeBytes, "record_dir", e.opts.RecordDir)
 	}
 	mode := "live-only"
 	if e.opts.RecordEnabled {
@@ -395,6 +432,67 @@ func (e *Engine) Start(cams []camera.Camera) {
 	if e.opts.RecordEnabled {
 		slog.Info("media recording paths", "record_dir", e.opts.RecordDir, "cache_dir", e.opts.CacheDir)
 	}
+}
+
+// onLowDisk is the diskmonitor's OnLow callback: the recording volume just
+// dropped below [media] min_free_bytes. Rather than pause recording, we force
+// a purge of the oldest segments — ignoring the retain window — until free
+// space climbs back above the high-water mark (2x min_free_bytes) or there's
+// nothing left to delete. Recording keeps running throughout; the oldest
+// footage is sacrificed to make room for the newest.
+//
+// The purge runs in its own goroutine so the watcher's poll loop stays
+// responsive. OnLow fires once per low episode (the monitor's hysteresis
+// won't re-fire until free recovers above the high-water mark), so at most
+// one purge goroutine is in flight.
+func (e *Engine) onLowDisk(free uint64) {
+	slog.Warn("media: disk space low, purging oldest segments",
+		"free_bytes", free,
+		"min_free_bytes", e.opts.MinFreeBytes,
+		"record_dir", e.opts.RecordDir)
+
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		high := 2 * e.opts.MinFreeBytes
+		e.cleaner.PurgeToFree(e.ctx, e.opts.RecordDir, high, diskfree.Available)
+	}()
+}
+
+// onDiskRecovered is the diskmonitor's OnRecovered callback: free space climbed
+// back above the high-water mark. Informational only — recording was never
+// paused, so there is nothing to resume.
+func (e *Engine) onDiskRecovered(free uint64) {
+	slog.Info("media: disk space recovered", "free_bytes", free)
+}
+
+// LowDiskState reports the disk monitor's current state. Returns the zero
+// DiskState when the monitor is disabled (recording off or min_free_bytes=0).
+// Exposed for /api/status so the web UI can flag a low-disk alert.
+func (e *Engine) LowDiskState() DiskState {
+	if e.diskMon == nil {
+		return DiskState{}
+	}
+	return DiskState{
+		Enabled:   true,
+		MinFree:   e.diskMon.LowWaterBytes(),
+		FreeBytes: e.diskMon.LastFree(),
+		Low:       e.diskMon.Paused(),
+		LowSince:  e.diskMon.PausedSince(),
+		RecordDir: e.opts.RecordDir,
+	}
+}
+
+// DiskState is the operational snapshot of the low-disk watcher. Zero-value
+// when the watcher is disabled (recording off or min_free_bytes=0). Free is
+// the most recent sample; Low flips when the sample crossed below MinFree.
+type DiskState struct {
+	Enabled   bool      // true when the watcher is running
+	MinFree   uint64    // configured low-water mark in bytes
+	FreeBytes uint64    // most recent free-bytes sample
+	Low       bool      // currently below MinFree
+	LowSince  time.Time // when Low flipped to true; zero when not Low
+	RecordDir string    // watched directory
 }
 
 // AddCamera engages a camera in the running engine, exactly as Start does at

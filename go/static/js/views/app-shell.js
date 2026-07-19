@@ -54,6 +54,7 @@ export async function logout(silent = false) {
     { hidePtzModal },
     { exitUsersView },
     { exitCamerasView },
+    { exitStatusView, stopDiskAlertPolling },
     { hideDeviceAuth },
     { stopSidebarThumbRefresh },
   ] = await Promise.all([
@@ -62,6 +63,7 @@ export async function logout(silent = false) {
     import("./ptz.js"),
     import("./users.js"),
     import("./cameras.js"),
+    import("./status.js"),
     import("./device-auth.js"),
     import("./sidebar.js"),
   ]);
@@ -70,6 +72,8 @@ export async function logout(silent = false) {
   hidePtzModal();
   exitUsersView();
   exitCamerasView();
+  exitStatusView();
+  stopDiskAlertPolling();
   hideDeviceAuth();
   $("#wall").innerHTML = "";
   const sideScroll = $("#viewer-side-scroll");
@@ -238,6 +242,10 @@ export async function showApp() {
     showDeviceAuth(pending, pendingName);
     return;
   }
+  // Low-disk banner: admins get a background poll of /api/status that shows
+  // a persistent banner while the recording volume is low. Lazy import keeps
+  // status.js (which imports from this module) out of a static cycle.
+  import("./status.js").then(({ startDiskAlertPolling }) => startDiskAlertPolling());
   const urlState = parseUrlState();
   if (urlState) {
     applyUrlState(urlState);
@@ -310,7 +318,7 @@ export function moveGlobalControlsTo(targetTopbar) {
 // this when entering an overlay keeps exactly one open, so "Back to cameras"
 // always lands on the live wall rather than the previously-open panel.
 export function closeOverlayViews() {
-  for (const id of ["users-view", "user-edit-modal", "cameras-view", "cam-wizard-modal"]) {
+  for (const id of ["status-view", "users-view", "user-edit-modal", "cameras-view", "cam-wizard-modal"]) {
     const el = document.getElementById(id);
     if (el) el.hidden = true;
   }
