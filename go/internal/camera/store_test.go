@@ -211,7 +211,9 @@ func TestStoreCapabilitiesDerived(t *testing.T) {
 	s.ThinginoURL = "http://10.0.0.1"
 	s.ThinginoAPIKey = "key123"
 	s.PTZ = true
-	s.HomeX, s.HomeY = 1065, 800
+	// home_x/y are now in degrees; 180/90 are the same physical positions
+	// the old step values 1065/800 mapped to with the default calibration.
+	s.HomeX, s.HomeY = 180, 90
 	if _, err := st.Create(s, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -223,14 +225,113 @@ func TestStoreCapabilitiesDerived(t *testing.T) {
 	if !caps.PTZ || !caps.Thumbnail || !caps.Talk || !caps.Privacy {
 		t.Errorf("capabilities = %+v; want PTZ+Thumbnail+Talk+Privacy all true", caps)
 	}
-	if got.HomeX != 1065 || got.HomeY != 800 {
-		t.Errorf("home coords = %v,%v; want 1065,800", got.HomeX, got.HomeY)
+	if got.HomeX != 180 || got.HomeY != 90 {
+		t.Errorf("home coords = %v,%v; want 180,90 (degrees)", got.HomeX, got.HomeY)
 	}
 	// Private credential fields must survive the round-trip (they drive the
 	// engine and thingino calls) even though they are json:"-" in responses.
 	if got.ThinginoAPIKey != "key123" || got.Backchannel == "" {
 		t.Errorf("credentials lost on round-trip: %+v", got)
 	}
+}
+
+// TestStorePTZCalibrationRoundTrip pins the schema and the column order: a
+// spec with custom PTZ calibration must come back identical through Create
+// → Get, and an Update that changes one field must not lose the others. The
+// default-applied columns (no key in the spec) must also surface on the
+// public model via the calibration defaults.
+func TestStorePTZCalibrationRoundTrip(t *testing.T) {
+	t.Run("custom values persist", func(t *testing.T) {
+		st := NewStore(testDB(t))
+		s := sampleSpec()
+		s.ID = "ptz1"
+		s.PTZ = true
+		s.PanSteps = 1234
+		s.PanDegrees = 270
+		s.TiltSteps = 999
+		s.TiltDegrees = 120
+		s.FOVH = 87.5
+		if _, err := st.Create(s, 1); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := st.Get("ptz1")
+		if err != nil || !ok {
+			t.Fatalf("Get = ok:%v err:%v", ok, err)
+		}
+		// Server-side calibration round-trips through the internal fields.
+		if got.PanSteps != 1234 || got.PanDegrees != 270 {
+			t.Errorf("pan = %d/%d; want 1234/270", got.PanSteps, got.PanDegrees)
+		}
+		if got.TiltSteps != 999 || got.TiltDegrees != 120 {
+			t.Errorf("tilt = %d/%d; want 999/120", got.TiltSteps, got.TiltDegrees)
+		}
+		// Public ptz block exposes only the metadata.
+		if got.PTZ == nil {
+			t.Fatal("PTZ block missing on a PTZ camera")
+		}
+		if got.PTZ.PanRange != 270 || got.PTZ.TiltRange != 120 {
+			t.Errorf("public range = %v, %v; want 270, 120", got.PTZ.PanRange, got.PTZ.TiltRange)
+		}
+		if got.PTZ.FOVH != 87.5 {
+			t.Errorf("public fov_h = %v; want 87.5", got.PTZ.FOVH)
+		}
+	})
+
+	t.Run("defaults fill empty columns", func(t *testing.T) {
+		// A spec with PTZ=true but zero calibration should still come back
+		// with the default 2130/360/1600/180/113 (DB column defaults), and
+		// the public block should reflect those.
+		st := NewStore(testDB(t))
+		s := sampleSpec()
+		s.ID = "ptz-defaults"
+		s.PTZ = true
+		if _, err := st.Create(s, 1); err != nil {
+			t.Fatal(err)
+		}
+		got, _, _ := st.Get("ptz-defaults")
+		if got.PTZ == nil {
+			t.Fatal("PTZ block missing")
+		}
+		if got.PTZ.PanRange != DefaultPanDegrees || got.PTZ.TiltRange != DefaultTiltDegrees {
+			t.Errorf("default range = %v, %v; want %v, %v",
+				got.PTZ.PanRange, got.PTZ.TiltRange, DefaultPanDegrees, DefaultTiltDegrees)
+		}
+		if got.PTZ.FOVH != DefaultFOVH {
+			t.Errorf("default fov_h = %v; want %v", got.PTZ.FOVH, DefaultFOVH)
+		}
+	})
+
+	t.Run("update preserves untouched fields", func(t *testing.T) {
+		st := NewStore(testDB(t))
+		s := sampleSpec()
+		s.ID = "ptz-up"
+		s.PTZ = true
+		s.PanSteps = 2000
+		s.FOVH = 95
+		if _, err := st.Create(s, 1); err != nil {
+			t.Fatal(err)
+		}
+		// Update only the name; calibration must come back unchanged.
+		upd := sampleSpec()
+		upd.ID = "ptz-up"
+		upd.Name = "Renamed"
+		upd.PTZ = true
+		upd.PanSteps = 2000
+		upd.FOVH = 95
+		if err := st.Update(upd); err != nil {
+			t.Fatal(err)
+		}
+		// GetSpec returns the persisted columns (including the internal
+		// calibration), not the public Camera projection.
+		spec, _, _ := st.GetSpec("ptz-up")
+		if spec.PanSteps != 2000 || spec.FOVH != 95 {
+			t.Errorf("calibration lost on update: %+v", spec)
+		}
+		// Defaults still applied for the columns the update didn't touch.
+		if spec.PanDegrees != DefaultPanDegrees {
+			t.Errorf("pan_degrees = %d; want default %d", spec.PanDegrees, DefaultPanDegrees)
+		}
+	})
 }
 
 func TestSeedFromINI(t *testing.T) {

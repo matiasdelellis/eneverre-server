@@ -63,7 +63,7 @@ function applyThumbPrivacy(tile, on) {
     if (!lock) {
       lock = document.createElement("span");
       lock.className = "thumb-privacy";
-      lock.innerHTML = icon("lock");
+      lock.innerHTML = icon("camera-off");
       lock.title = t("sidebar.privacy");
       lock.setAttribute("aria-label", t("sidebar.privacy"));
       // Before the caption so the camera name stays readable on top.

@@ -6,7 +6,14 @@ import { alertModal } from "../ui/dialog.js";
 import { icon } from "../ui/icons.js";
 import { t } from "../i18n.js";
 
-const STEP = 50;
+// Per-click pan/tilt step, in degrees. The old STEP=50 was firmware-native
+// steps (which translated to ~8° pan / ~5° tilt on the default gimbal); the
+// new value is the same physical move expressed in the public unit. 10° is
+// big enough to feel responsive, small enough to land on a target without
+// over-shooting. The server clamps the resulting relative move to the
+// camera's full range, so a single tap can never command more than a half
+// revolution in either axis.
+const STEP_DEG = 10;
 const PTZ_MODAL_POS_KEY = "eneverre.ptzModalPos";
 
 let ptzModalDrag = null;
@@ -152,7 +159,10 @@ function syncPrivacyButton() {
   const on = cam.privacy === true;
   btn.classList.toggle("active", on);
   btn.setAttribute("aria-pressed", on ? "true" : "false");
-  btn.innerHTML = on ? icon("lock") : icon("lock-open");
+  // Action button: the icon suggests what a click will DO, not the current
+  // state. Privacy off → clicking enables it → show the crossed camera;
+  // privacy on → clicking restores the feed → show the live camera.
+  btn.innerHTML = on ? icon("camera") : icon("camera-off");
   btn.title = on ? t("privacy.on") : t("privacy.enable");
   btn.setAttribute("aria-label", btn.title);
 }
@@ -185,27 +195,31 @@ async function togglePrivacy(cam) {
 // topbar), so it always renders the pad + Home for a PTZ-capable camera.
 function buildPtzPanel(cam) {
   const wrap = document.createElement("div");
+  wrap.className = "ptz-panel";
+  // Circular joystick-style pad: four directional buttons hug the ring
+  // (absolutely positioned at N/E/S/W) around a central Home button that
+  // recenters the camera. The old separate x0/y0 "center" no-op move was
+  // dropped — Home is the meaningful recenter action.
   wrap.innerHTML = `
-    <h3>${t("ptz.title")}</h3>
-    <div class="ptz-pad">
-      <span class="empty"></span>
-      <button data-dx="0" data-dy="-${STEP}" title="${t("ptz.up")}">${icon("arrow-up")}</button>
-      <span class="empty"></span>
-      <button data-dx="-${STEP}" data-dy="0" title="${t("ptz.left")}">${icon("arrow-left")}</button>
-      <button data-dx="0" data-dy="0" title="${t("ptz.center")}">${icon("circle")}</button>
-      <button data-dx="${STEP}" data-dy="0" title="${t("ptz.right")}">${icon("arrow-right")}</button>
-      <span class="empty"></span>
-      <button data-dx="0" data-dy="${STEP}" title="${t("ptz.down")}">${icon("arrow-down")}</button>
-      <span class="empty"></span>
+    <div class="ptz-pad" role="group" aria-label="${t("ptz.title")}">
+      <span class="ptz-ring" aria-hidden="true"></span>
+      <button class="ptz-dir up"    data-dpan="0"  data-dtilt="-${STEP_DEG}" title="${t("ptz.up")}"    aria-label="${t("ptz.up")}">${icon("arrow-up")}</button>
+      <button class="ptz-dir right" data-dpan="${STEP_DEG}" data-dtilt="0"  title="${t("ptz.right")}" aria-label="${t("ptz.right")}">${icon("arrow-right")}</button>
+      <button class="ptz-dir down"  data-dpan="0"  data-dtilt="${STEP_DEG}"  title="${t("ptz.down")}"  aria-label="${t("ptz.down")}">${icon("arrow-down")}</button>
+      <button class="ptz-dir left"  data-dpan="-${STEP_DEG}" data-dtilt="0" title="${t("ptz.left")}"  aria-label="${t("ptz.left")}">${icon("arrow-left")}</button>
+      <button class="ptz-home" data-go="home" title="${t("ptz.home")}" aria-label="${t("ptz.home")}">${icon("home")}</button>
     </div>
-    <div class="ptz-actions"><button data-go="home">${t("ptz.home")}</button></div>`;
+    <p class="ptz-hint">${t("ptz.hint")}</p>`;
   wrap.addEventListener("click", async (e) => {
     const btn = e.target.closest("button");
     if (!btn) return;
     const base = `/api/camera/${encodeURIComponent(cam.id)}/ptz`;
     let path;
-    if (btn.dataset.dx !== undefined) {
-      path = `${base}/move?x=${Number(btn.dataset.dx)}&y=${Number(btn.dataset.dy)}`;
+    if (btn.dataset.dpan !== undefined) {
+      // Public API: pan/tilt in degrees. The server converts to firmware
+      // steps using the camera's calibration and clamps to the full range,
+      // so a runaway request can't command an unbounded rotation.
+      path = `${base}/move?pan=${Number(btn.dataset.dpan)}&tilt=${Number(btn.dataset.dtilt)}`;
     } else if (btn.dataset.go === "home") {
       path = `${base}/home`;
     } else return;
@@ -294,19 +308,23 @@ function initPtzKeyboard() {
       return;
     }
 
-    // Live mode + single cam + PTZ capable: arrow keys move PTZ
+    // Live mode + single cam + PTZ capable: arrow keys move PTZ. Same public
+    // unit (degrees) as the dpad, same per-press step. Holding the key fires
+    // native key repeat on the browser side, so the user can scrub by holding
+    // — the server's range clamp still bounds the cumulative travel to a
+    // half revolution per direction.
     if (viewMode === "live" && wallFilter.type === "cam" && lastPtzCam?.capabilities?.ptz) {
       const map = {
-        ArrowUp:    { x: 0, y: -50 },
-        ArrowDown:  { x: 0, y: 50 },
-        ArrowLeft:  { x: -50, y: 0 },
-        ArrowRight: { x: 50, y: 0 },
+        ArrowUp:    { pan: 0,  tilt: -STEP_DEG },
+        ArrowDown:  { pan: 0,  tilt: STEP_DEG },
+        ArrowLeft:  { pan: -STEP_DEG, tilt: 0 },
+        ArrowRight: { pan: STEP_DEG,  tilt: 0 },
       };
       const dir = map[e.key];
       if (dir) {
         e.preventDefault();
         try {
-          await api(`/api/camera/${encodeURIComponent(lastPtzCam.id)}/ptz/move?x=${dir.x}&y=${dir.y}`, { method: "POST" });
+          await api(`/api/camera/${encodeURIComponent(lastPtzCam.id)}/ptz/move?pan=${dir.pan}&tilt=${dir.tilt}`, { method: "POST" });
         } catch (err) {
           const { alertModal } = await import("../ui/dialog.js");
           alertModal(`PTZ failed: ${err.message}`, { title: "PTZ error" });

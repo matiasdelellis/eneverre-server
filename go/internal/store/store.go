@@ -96,6 +96,11 @@ var schema = []string{
 		home_y REAL NOT NULL DEFAULT -1,
 		privacy_x REAL NOT NULL DEFAULT -1,
 		privacy_y REAL NOT NULL DEFAULT -1,
+		pan_steps INTEGER NOT NULL DEFAULT 2130,
+		pan_degrees INTEGER NOT NULL DEFAULT 360,
+		tilt_steps INTEGER NOT NULL DEFAULT 1600,
+		tilt_degrees INTEGER NOT NULL DEFAULT 180,
+		fov_h REAL NOT NULL DEFAULT 113.0,
 		sort_order INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL DEFAULT 0
 	)`,
@@ -200,6 +205,17 @@ func migrateColumns(db *sql.DB) error {
 		// Generic per-camera still-JPEG URL, proxied by the thumbnail route so
 		// non-Thingino cameras get a snapshot. Older DBs predate the column.
 		{"cameras", "snapshot_url", "TEXT NOT NULL DEFAULT ''"},
+		// PTZ calibration: total steps per axis and the angular range they
+		// cover, plus the horizontal lens FOV (vertical is derived from the
+		// aspect at read time). Defaults match the typical thingino gimbal so
+		// existing installs work without any admin change. Older DBs predate
+		// these columns; the ALTER TABLE fills every existing row with the
+		// same default, which is what a fresh install would have picked too.
+		{"cameras", "pan_steps", "INTEGER NOT NULL DEFAULT 2130"},
+		{"cameras", "pan_degrees", "INTEGER NOT NULL DEFAULT 360"},
+		{"cameras", "tilt_steps", "INTEGER NOT NULL DEFAULT 1600"},
+		{"cameras", "tilt_degrees", "INTEGER NOT NULL DEFAULT 180"},
+		{"cameras", "fov_h", "REAL NOT NULL DEFAULT 113.0"},
 	}
 	for _, m := range migrations {
 		exists, err := tableExists(db, m.table)

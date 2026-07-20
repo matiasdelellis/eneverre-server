@@ -12,6 +12,18 @@ import { getState, setCamerasCache } from "./state.js";
  */
 
 /**
+ * Public PTZ metadata block on a Camera, present only when
+ * `capabilities.ptz` is true. Exposes the lens FOV and the angular range so
+ * the UI can translate a pixel drag into a relative move in degrees; the
+ * steps↔degrees calibration is server-side and never reaches the wire.
+ * @typedef {object} CameraPTZ
+ * @property {number} fov_h    horizontal FOV, degrees
+ * @property {number} fov_v    vertical FOV, degrees (derived from fov_h and aspect)
+ * @property {number} pan_range  total pan range, degrees
+ * @property {number} tilt_range total tilt range, degrees
+ */
+
+/**
  * Camera object as returned by GET /api/cameras. Field set depends on the
  * active mode (embedded [media] vs none):
  *  - rtsp:     RTSP relay URL (embedded: relay with rotating credentials;
@@ -25,17 +37,12 @@ import { getState, setCamerasCache } from "./state.js";
  * @property {string} [comment]
  * @property {string} [location]
  * @property {CameraCapabilities} capabilities
+ * @property {CameraPTZ} [ptz]
  * @property {string} [rtsp]
  * @property {string} [live_mse]
  * @property {number} [width]
  * @property {number} [height]
- * @property {number} [home_x]
- * @property {number} [home_y]
- * @property {number} [privacy_x]
- * @property {number} [privacy_y]
  * @property {boolean} privacy
- * @property {boolean} [playback]
- * @property {boolean} [ptz]
  */
 
 let onUnauthorized = () => { location.reload(); };

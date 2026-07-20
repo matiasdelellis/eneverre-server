@@ -38,6 +38,27 @@ type Capabilities struct {
 	TalkCodecs []string `json:"talk_codecs,omitempty"`
 }
 
+// PTZMetadata is the public PTZ capability block on a Camera, present only
+// when capabilities.ptz is true. The server is the only thing that knows the
+// hardware details (motor steps, gear ratios, mechanical limits); clients see
+// only the lens FOV and the angular range so a pixel drag in the UI can be
+// translated to a relative move in degrees without any per-camera constants.
+type PTZMetadata struct {
+	// FOVH is the horizontal field of view of the lens, in degrees. Drives
+	// the pixel→degree mapping for drag gestures in the UI.
+	FOVH float64 `json:"fov_h"`
+	// FOVV is the vertical field of view, in degrees. Derived from FOVH and
+	// the sensor aspect ratio at the time the spec is loaded (it is not
+	// separately configurable in the INI; lenses don't usually have an
+	// independent vertical FOV).
+	FOVV float64 `json:"fov_v"`
+	// PanRange is the total pan range of the gimbal, in degrees (e.g. 360 for
+	// a continuous-rotation mount).
+	PanRange float64 `json:"pan_range"`
+	// TiltRange is the total tilt range of the gimbal, in degrees.
+	TiltRange float64 `json:"tilt_range"`
+}
+
 // Camera is the public-facing camera model. The Thingino credential fields are
 // tagged json:"-" so marshaling a Camera never leaks them.
 type Camera struct {
@@ -47,6 +68,13 @@ type Camera struct {
 	Location string `json:"location"`
 
 	Capabilities Capabilities `json:"capabilities"`
+
+	// PTZ is the public PTZ metadata block. Present only when
+	// capabilities.ptz is true; omitted otherwise. Exposes only the lens FOV
+	// and the angular range — the steps/degrees calibration that maps the
+	// API's pan/tilt (in degrees) to the firmware's x/y (in steps) is server-
+	// side and never reaches the wire (see PanSteps et al. below).
+	PTZ *PTZMetadata `json:"ptz,omitempty"`
 
 	RTSP string `json:"rtsp"`
 	// LiveMSE is the same-origin path a browser streams live fMP4 from (fed by
@@ -106,16 +134,33 @@ type Camera struct {
 	// and no relay entry is registered.
 	Relay bool `json:"-"`
 
-	HomeX    float64 `json:"home_x"`
-	HomeY    float64 `json:"home_y"`
-	PrivacyX float64 `json:"privacy_x"`
-	PrivacyY float64 `json:"privacy_y"`
+	// PTZ calibration (pan/tilt motor steps and the angular range they cover).
+	// Server-side only: kept off the wire so a future ONVIF or generic
+	// continuous-rotation PTZ camera can plug in without the API ever
+	// promising a step-based contract to clients. The PTZ handler uses these
+	// to convert a relative pan/tilt (degrees) from the API into firmware
+	// x/y (steps) for json-motor.cgi?d=g.
+	PanSteps    int `json:"-"`
+	PanDegrees  int `json:"-"`
+	TiltSteps   int `json:"-"`
+	TiltDegrees int `json:"-"`
+
+	// HomeX / HomeY are the configured absolute "home" position in
+	// degrees (pan, tilt), sent to json-motor.cgi?d=x when /ptz/home is
+	// called or when privacy is disabled. -1 means "unset" — the
+	// corresponding absolute move is skipped. The server converts to
+	// firmware x/y at move time using the camera's calibration. Server-side
+	// only: a client never needs the raw coordinate, only the /ptz/home
+	// action, so it stays off the wire (json:"-").
+	HomeX float64 `json:"-"`
+	HomeY float64 `json:"-"`
+	// PrivacyX / PrivacyY are the configured absolute "privacy" position
+	// in degrees (pan, tilt), sent to json-motor.cgi?d=x when privacy is
+	// enabled. Same -1 sentinel and off-the-wire reasoning as HomeX/HomeY.
+	PrivacyX float64 `json:"-"`
+	PrivacyY float64 `json:"-"`
 
 	Privacy bool `json:"privacy"`
-
-	// Compatibility aliases for older clients.
-	PlaybackAlias bool `json:"playback"`
-	PTZAlias      bool `json:"ptz"`
 }
 
 // Spec is the persistable configuration of a camera: the raw fields stored in
@@ -158,6 +203,18 @@ type Spec struct {
 	HomeY          float64 `json:"home_y"`
 	PrivacyX       float64 `json:"privacy_x"`
 	PrivacyY       float64 `json:"privacy_y"`
+
+	// PTZ calibration: total steps per axis and the angular range those steps
+	// cover. Defaults match the typical thingino gimbal (2130/360 pan,
+	// 1600/180 tilt) so existing installs work without any INI change; the
+	// FOVH is the horizontal lens FOV in degrees (vertical is derived from the
+	// aspect at conversion time). These never leave the server — the public
+	// Camera model only exposes the angular range and the FOV (PTZMetadata).
+	PanSteps    int     `json:"pan_steps"`
+	PanDegrees  int     `json:"pan_degrees"`
+	TiltSteps   int     `json:"tilt_steps"`
+	TiltDegrees int     `json:"tilt_degrees"`
+	FOVH        float64 `json:"fov_h"`
 }
 
 // Camera expands a Spec into the public Camera model, deriving capabilities
@@ -171,7 +228,7 @@ func (s Spec) Camera() Camera {
 	// key; advertise the capability on the same condition so it never claims a
 	// thumbnail the endpoint would answer 404 for.
 	hasThinginoThumb := s.ThinginoURL != "" && s.ThinginoAPIKey != ""
-	return Camera{
+	cam := Camera{
 		ID:       s.ID,
 		Name:     s.Name,
 		Comment:  s.Comment,
@@ -193,6 +250,10 @@ func (s Spec) Camera() Camera {
 		Record:         s.Record,
 		MSE:            s.MSE,
 		Relay:          s.Relay,
+		PanSteps:       s.PanSteps,
+		PanDegrees:     s.PanDegrees,
+		TiltSteps:      s.TiltSteps,
+		TiltDegrees:    s.TiltDegrees,
 		Width:          s.Width,
 		Height:         s.Height,
 		ThinginoURL:    s.ThinginoURL,
@@ -202,9 +263,28 @@ func (s Spec) Camera() Camera {
 		PrivacyX:       s.PrivacyX,
 		PrivacyY:       s.PrivacyY,
 		Privacy:        false,
-		PlaybackAlias:  s.Playback,
-		PTZAlias:       s.PTZ,
 	}
+	// Build the public PTZ block only when the camera actually has PTZ — the
+	// capability flag is the public contract for "this metadata is present".
+	// The block exposes only the lens FOV and the angular range; the
+	// steps↔degrees mapping is server-side (see PTZMetadata).
+	if s.PTZ {
+		fovH := s.FOVH
+		if fovH <= 0 {
+			fovH = DefaultFOVH
+		}
+		fovV := fovH
+		if s.Width > 0 {
+			fovV = fovH * float64(s.Height) / float64(s.Width)
+		}
+		cam.PTZ = &PTZMetadata{
+			FOVH:      fovH,
+			FOVV:      fovV,
+			PanRange:  float64(s.PanDegrees),
+			TiltRange: float64(s.TiltDegrees),
+		}
+	}
+	return cam
 }
 
 func toFloat(value string, def float64) float64 {
@@ -218,6 +298,33 @@ func toFloat(value string, def float64) float64 {
 	}
 	return n
 }
+
+func toInt(value string, def int) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return def
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// Default PTZ calibration values used when a camera declares PTZ but the
+// operator hasn't customized the [thingino] section. The numbers match the
+// typical thingino gimbal (2130/360 pan, 1600/180 tilt) so existing installs
+// keep behaving as before; the 113° horizontal FOV is a sensible default for
+// the wide-angle lenses these cameras ship with. They are also the DB
+// column defaults (see store.go's migration), so a brand-new camera row
+// that bypasses the INI loader still gets the same starting point.
+const (
+	DefaultPanSteps    = 2130
+	DefaultPanDegrees  = 360
+	DefaultTiltSteps   = 1600
+	DefaultTiltDegrees = 180
+	DefaultFOVH        = 113.0
+)
 
 // LoadSpecs reads every *.ini under the cameras dir (sorted, in filename order)
 // and returns their raw configuration specs. It is the reader behind the
@@ -316,6 +423,11 @@ func loadSpec(path string) (Spec, bool) {
 		HomeY:          toFloat(thingino["home_y"], -1),
 		PrivacyX:       toFloat(thingino["privacy_x"], -1),
 		PrivacyY:       toFloat(thingino["privacy_y"], -1),
+		PanSteps:       toInt(thingino["pan_steps"], DefaultPanSteps),
+		PanDegrees:     toInt(thingino["pan_degrees"], DefaultPanDegrees),
+		TiltSteps:      toInt(thingino["tilt_steps"], DefaultTiltSteps),
+		TiltDegrees:    toInt(thingino["tilt_degrees"], DefaultTiltDegrees),
+		FOVH:           toFloat(thingino["fov_h"], DefaultFOVH),
 	}, true
 }
 
@@ -348,6 +460,66 @@ func (c Camera) ResolveFeatures(globalMSE, globalRelay, globalRecord bool) Featu
 		Relay:  globalRelay && c.Relay,
 		Record: globalRecord && c.Record,
 	}
+}
+
+// PTZDeltaToSteps converts a relative pan/tilt in degrees (the unit the public
+// API uses) into firmware-native x/y in steps (the unit json-motor.cgi?d=g
+// speaks). Each axis is clamped to the camera's full mechanical range so a
+// single bad request can't command an unbounded rotation — a relative move
+// of more than half the range in either direction lands at the end of the
+// axis instead. Sign convention: pan > 0 = right, tilt > 0 = down.
+func (c Camera) PTZDeltaToSteps(pan, tilt float64) (x, y float64) {
+	if c.PanDegrees > 0 && c.PanSteps > 0 {
+		half := float64(c.PanSteps) / 2
+		x = pan * float64(c.PanSteps) / float64(c.PanDegrees)
+		if x > half {
+			x = half
+		} else if x < -half {
+			x = -half
+		}
+	}
+	if c.TiltDegrees > 0 && c.TiltSteps > 0 {
+		half := float64(c.TiltSteps) / 2
+		y = tilt * float64(c.TiltSteps) / float64(c.TiltDegrees)
+		if y > half {
+			y = half
+		} else if y < -half {
+			y = -half
+		}
+	}
+	return x, y
+}
+
+// PTZStepsToDegrees converts a firmware x/y in steps into a pan/tilt in
+// degrees, using the same calibration. Used to render the cached
+// /ptz/position in the unit the public API speaks. The reported position is
+// always within the mechanical range, so no clamping is applied.
+func (c Camera) PTZStepsToDegrees(x, y float64) (pan, tilt float64) {
+	if c.PanSteps > 0 {
+		pan = x * float64(c.PanDegrees) / float64(c.PanSteps)
+	}
+	if c.TiltSteps > 0 {
+		tilt = y * float64(c.TiltDegrees) / float64(c.TiltSteps)
+	}
+	return pan, tilt
+}
+
+// PTZDegreesToSteps converts an absolute pan/tilt in degrees to firmware
+// x/y in steps, using the same calibration as the relative-move path. Used
+// for the configured absolute positions (home, privacy): the server stores
+// them in the public unit and converts at move time, so an operator can
+// re-tune the calibration without rewriting the INI. No range clamp is
+// applied: absolute moves target a specific position inside the
+// mechanical range (or exactly on its boundary), and the firmware is the
+// authority on its own end-stops.
+func (c Camera) PTZDegreesToSteps(pan, tilt float64) (x, y float64) {
+	if c.PanDegrees > 0 && c.PanSteps > 0 {
+		x = pan * float64(c.PanSteps) / float64(c.PanDegrees)
+	}
+	if c.TiltDegrees > 0 && c.TiltSteps > 0 {
+		y = tilt * float64(c.TiltSteps) / float64(c.TiltDegrees)
+	}
+	return x, y
 }
 
 // WithEngineURLs returns a copy with URLs rebuilt for the embedded media engine.

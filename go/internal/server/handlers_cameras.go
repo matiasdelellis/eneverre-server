@@ -47,6 +47,16 @@ type createCameraReq struct {
 	HomeY          *float64 `json:"home_y"`
 	PrivacyX       *float64 `json:"privacy_x"`
 	PrivacyY       *float64 `json:"privacy_y"`
+	// PTZ calibration (pan/tilt motor steps and the angular range they cover,
+	// plus the horizontal lens FOV). Pointers so an omitted key falls back to
+	// the same defaults the INI loader applies (camera.DefaultPanSteps et al.
+	// in the camera package). Omitted fields mean "use the default", not
+	// "use zero", so a wizard that hides these fields still works.
+	PanSteps    *int     `json:"pan_steps"`
+	PanDegrees  *int     `json:"pan_degrees"`
+	TiltSteps   *int     `json:"tilt_steps"`
+	TiltDegrees *int     `json:"tilt_degrees"`
+	FOVH        *float64 `json:"fov_h"`
 }
 
 func boolOr(p *bool, def bool) bool {
@@ -111,6 +121,11 @@ func (req createCameraReq) spec() (camera.Spec, string) {
 		HomeY:          floatOr(req.HomeY, -1),
 		PrivacyX:       floatOr(req.PrivacyX, -1),
 		PrivacyY:       floatOr(req.PrivacyY, -1),
+		PanSteps:       intOr(req.PanSteps, camera.DefaultPanSteps),
+		PanDegrees:     intOr(req.PanDegrees, camera.DefaultPanDegrees),
+		TiltSteps:      intOr(req.TiltSteps, camera.DefaultTiltSteps),
+		TiltDegrees:    intOr(req.TiltDegrees, camera.DefaultTiltDegrees),
+		FOVH:           floatOr(req.FOVH, camera.DefaultFOVH),
 	}, ""
 }
 
@@ -155,6 +170,7 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 	}
 	a.addCamera(cam)
 	a.seedPrivacyFor(cam)
+	a.seedPTZPositionsFor(cam)
 	a.seedTalkCodecsFor(cam)
 
 	slog.Info("camera created", "id", cam.ID, "name", cam.Name)
@@ -235,7 +251,11 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 	a.talkCodecsMu.Lock()
 	delete(a.talkCodecs, id)
 	a.talkCodecsMu.Unlock()
+	a.ptzPosMu.Lock()
+	delete(a.ptzPos, id)
+	a.ptzPosMu.Unlock()
 	a.seedPrivacyFor(cam)
+	a.seedPTZPositionsFor(cam)
 	a.seedTalkCodecsFor(cam)
 
 	slog.Info("camera updated", "id", id, "name", cam.Name)
@@ -274,6 +294,9 @@ func (a *App) handleDeleteCamera(w http.ResponseWriter, r *http.Request) {
 	a.talkCodecsMu.Lock()
 	delete(a.talkCodecs, id)
 	a.talkCodecsMu.Unlock()
+	a.ptzPosMu.Lock()
+	delete(a.ptzPos, id)
+	a.ptzPosMu.Unlock()
 
 	slog.Info("camera deleted", "id", id)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Camera deleted"})

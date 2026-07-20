@@ -29,3 +29,16 @@ export function removeTileBuffering(tile) {
   const el = tile && tile.querySelector(".wall-buffering");
   if (el) el.remove();
 }
+
+// loadingStatus builds a full-panel "Loading…" message that spins the same
+// loader glyph as the per-tile overlay. Used for wall-level states (e.g.
+// fetching the recording list) that replace the whole grid, so they don't
+// drift into a plain static line while tiles get an animated spinner.
+export function loadingStatus(text) {
+  const p = document.createElement("p");
+  p.className = "wall-status wall-loading-status";
+  p.setAttribute("role", "status");
+  p.setAttribute("aria-live", "polite");
+  p.innerHTML = `<span class="spinner-icon" aria-hidden="true">${icon("loader")}</span><span>${text}</span>`;
+  return p;
+}

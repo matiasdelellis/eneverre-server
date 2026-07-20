@@ -159,7 +159,7 @@ internal/media/               embedded media engine (active when [media] is conf
   playback/                   VOD muxer: /get with gap fill + HLS VOD playlist
   retention/                  periodic cleaner (batched delete + dir prune)
 internal/server               HTTP routes + handlers
-  server.go                   App + mux + handler registry + deprecatedAlias
+  server.go                   App + mux + handler registry
   handlers_auth.go            login/logout/refresh, device login
   handlers_events.go          webhook + list/delete events
   handlers_live.go            live/info + live/stream (embedded engine, MSE fMP4)
@@ -183,10 +183,7 @@ adds a separate surface of its own, mounted under `/api/camera/{id}/`:
 
 - `live/{info,stream}` — MSE fMP4 live feed (browser).
 - `recordings/{list,get,timeline,gaps,hls/*}` — VOD from the in-process
-  segment index. The legacy `playback/{list,get}` paths are kept as
-  deprecated aliases (RFC 8594 `Deprecation: true` + `Warning` header) so
-  existing clients keep working while they migrate. New clients should hit
-  the canonical `/recordings/*` routes.
+  segment index.
 - `GET /api/recordings/paths` — camera ids that have recordings.
 
 `GET /api/metrics` (+ `/api/metrics/json`) exposes Prometheus instrumentation,

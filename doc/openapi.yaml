@@ -476,18 +476,31 @@ paths:
   /api/camera/{camera_id}/ptz/move:
     post:
       summary: Move camera (PTZ)
+      description: >-
+        Issues a relative PTZ move given **pan/tilt in degrees** — the server
+        converts to firmware steps using the camera's calibration and clamps
+        to the full mechanical range so a runaway request can't command an
+        unbounded rotation.
       parameters:
         - $ref: '#/components/parameters/camera_id'
-        - name: x
+        - name: pan
           in: query
+          description: >-
+            Pan delta in degrees (positive = right, negative = left).
+            Converted to firmware steps and clamped to ±pan_range/2 by the
+            server.
           schema:
             type: number
-          example: 1
-        - name: y
+          example: 10
+        - name: tilt
           in: query
+          description: >-
+            Tilt delta in degrees (positive = down, negative = up).
+            Converted to firmware steps and clamped to ±tilt_range/2 by the
+            server.
           schema:
             type: number
-          example: -1
+          example: -5
       responses:
         '200':
           description: Raw response from the Thingino camera
@@ -495,11 +508,50 @@ paths:
             application/json:
               schema:
                 type: object
-
         '404':
           $ref: '#/components/responses/NotFound'
         '502':
           $ref: '#/components/responses/BadGateway'
+
+  /api/camera/{camera_id}/ptz/position:
+    get:
+      summary: Get the current PTZ position
+      description: >-
+        Returns the camera's last known motor position in degrees as
+        `{"pan": …, "tilt": …}`. The position is cached from the last
+        successful PTZ move (and primed at startup) and converted to degrees
+        using the camera's calibration. Returns 503 when the cache is cold
+        (no move recorded and the startup probe did not reach the camera) so
+        the caller can distinguish "no data" from a permanent failure.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: Current position in degrees
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pan, tilt]
+                properties:
+                  pan:
+                    type: number
+                    description: Current pan in degrees
+                    example: 12.3
+                  tilt:
+                    type: number
+                    description: Current tilt in degrees
+                    example: -4.5
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          description: PTZ position is unknown — the camera has not been moved and the startup probe did not reach it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/camera/{camera_id}/ptz/home:
     post:
@@ -661,101 +713,6 @@ paths:
                   value: ["calle", "frente", "galeria", "interior", "jardin"]
         '404':
           $ref: '#/components/responses/NotFound'
-
-  /api/camera/{camera_id}/playback/list:
-    get:
-      deprecated: true
-      summary: List recordings (deprecated alias)
-      description: |
-        **Deprecated compatibility alias** for
-        `GET /api/camera/{camera_id}/recordings/list`, kept only during the
-        transition while clients migrate. Identical behavior; responses carry
-        `Deprecation: true` and `Warning` headers pointing at the successor
-        path. Use the `recordings/` path in new code.
-      parameters:
-        - $ref: '#/components/parameters/camera_id'
-        - name: start
-          in: query
-          required: true
-          schema:
-            type: string
-            format: date-time
-        - name: end
-          in: query
-          required: true
-          schema:
-            type: string
-            format: date-time
-      responses:
-        '200':
-          description: Recording segments
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Recording'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '422':
-          description: start and end are required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Message'
-
-  /api/camera/{camera_id}/playback/get:
-    get:
-      deprecated: true
-      summary: Download recorded video clip (deprecated alias)
-      description: |
-        **Deprecated compatibility alias** for
-        `GET /api/camera/{camera_id}/recordings/get`, kept only during the
-        transition while clients migrate. Identical behavior (including gap
-        fill / `fill_gaps`); responses carry `Deprecation: true` and
-        `Warning` headers pointing at the successor path. Use the
-        `recordings/` path in new code.
-      parameters:
-        - $ref: '#/components/parameters/camera_id'
-        - name: start
-          in: query
-          required: true
-          description: Clip start (RFC3339, UTC).
-          schema:
-            type: string
-            format: date-time
-        - name: duration
-          in: query
-          required: true
-          description: Clip length in seconds.
-          schema:
-            type: number
-        - name: fill_gaps
-          in: query
-          required: false
-          schema:
-            type: boolean
-            default: true
-      responses:
-        '200':
-          description: fragmented-MP4 clip (video/mp4).
-          content:
-            video/mp4:
-              schema:
-                type: string
-                format: binary
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '422':
-          description: start and duration are required, or duration exceeds the export limit
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Message'
 
   /api/camera/{camera_id}/recordings/list:
     get:
@@ -1082,59 +1039,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /api/cameras/{camera_id}/events:
-    get:
-      deprecated: true
-      summary: List motion events (deprecated alias)
-      description: |
-        **Deprecated compatibility alias** for
-        `GET /api/camera/{camera_id}/events` (note the singular `camera`), kept
-        only during the transition while clients migrate. Identical behavior;
-        responses carry `Deprecation: true` and `Warning` headers pointing at
-        the successor path. Use the singular path in
-        new code.
-      parameters:
-        - $ref: '#/components/parameters/camera_id'
-        - name: since
-          in: query
-          schema:
-            type: string
-          description: Start timestamp (unix seconds or RFC3339). Optional.
-        - name: until
-          in: query
-          schema:
-            type: string
-          description: End timestamp (unix seconds or RFC3339). Optional.
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 1000
-            default: 100
-        - name: offset
-          in: query
-          schema:
-            type: integer
-            minimum: 0
-            default: 0
-      responses:
-        '200':
-          description: Event list + total
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  events:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Event'
-                  total:
-                    type: integer
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -1872,6 +1776,8 @@ components:
           type: string
         capabilities:
           $ref: '#/components/schemas/Capabilities'
+        ptz:
+          $ref: '#/components/schemas/PTZMetadata'
         rtsp:
           type: string
           description: >-
@@ -1893,30 +1799,12 @@ components:
           type: integer
         height:
           type: integer
-        home_x:
-          type: number
-          description: PTZ home X (-1 if unset).
-        home_y:
-          type: number
-          description: PTZ home Y (-1 if unset).
-        privacy_x:
-          type: number
-          description: PTZ privacy-position X (-1 if unset).
-        privacy_y:
-          type: number
-          description: PTZ privacy-position Y (-1 if unset).
         privacy:
           type: boolean
           description: >-
             Current privacy state. When true the camera is paused: recording and
             transmission are stopped (and `live_mse`/`rtsp` are withheld), plus
             the firmware lens blackout on thingino cameras.
-        playback:
-          type: boolean
-          description: Compatibility alias for `capabilities.playback`.
-        ptz:
-          type: boolean
-          description: Compatibility alias for `capabilities.ptz`.
 
     Capabilities:
       type: object
@@ -1947,6 +1835,37 @@ components:
             backchannel SDP at startup. Clients send AAC when `aac` is listed,
             otherwise G.711. Absent/empty when talk is false or the camera was
             unreachable at probe time (assume G.711).
+
+    PTZMetadata:
+      type: object
+      description: >-
+        Public PTZ metadata block. Present only when `capabilities.ptz` is true;
+        omitted otherwise. Exposes only the lens FOV and the angular range so
+        a pixel drag in the UI can be translated to a relative move in degrees
+        without any per-camera constants. The steps↔degrees calibration that
+        maps pan/tilt to firmware x/y is server-side and is not exposed here —
+        a future ONVIF or generic continuous-rotation camera can plug in
+        without the API ever promising a step-based contract to clients.
+      required: [fov_h, fov_v, pan_range, tilt_range]
+      properties:
+        fov_h:
+          type: number
+          description: Horizontal field of view of the lens, in degrees. Drives the pixel→degree mapping for drag gestures in the UI.
+          example: 113
+        fov_v:
+          type: number
+          description: >-
+            Vertical field of view, in degrees. Derived from `fov_h` and the
+            sensor aspect ratio (`fov_h × height / width`).
+          example: 63.5
+        pan_range:
+          type: number
+          description: Total pan range of the gimbal, in degrees (e.g. 360 for a continuous-rotation mount).
+          example: 360
+        tilt_range:
+          type: number
+          description: Total tilt range of the gimbal, in degrees.
+          example: 180
 
     CameraSpec:
       type: object
@@ -2028,15 +1947,53 @@ components:
         home_x:
           type: number
           default: -1
+          description: >-
+            PTZ home pan in degrees. The camera returns to this position on
+            `POST /api/camera/{id}/ptz/home` and when privacy is disabled.
+            -1 (default) means "no auto-move" — the corresponding
+            absolute move is skipped. The server converts to firmware
+            x/y at call time using the camera's calibration.
         home_y:
           type: number
           default: -1
+          description: PTZ home tilt in degrees. See `home_x`.
         privacy_x:
           type: number
           default: -1
+          description: >-
+            PTZ privacy-position pan in degrees. The camera moves here
+            when privacy is enabled. -1 (default) means "no auto-move".
         privacy_y:
           type: number
           default: -1
+          description: PTZ privacy-position tilt in degrees. See `privacy_x`.
+        pan_steps:
+          type: integer
+          default: 2130
+          description: >-
+            Total pan steps the gimbal reports for a full pan revolution.
+            Defaults to 2130 (typical thingino gimbal); only change if your
+            hardware reports a different value. Server-side: never returned in
+            public responses.
+        pan_degrees:
+          type: integer
+          default: 360
+          description: Angular range `pan_steps` covers, in degrees. Defaults to 360 (full revolution).
+        tilt_steps:
+          type: integer
+          default: 1600
+          description: Total tilt steps for the gimbal's full vertical travel. Defaults to 1600.
+        tilt_degrees:
+          type: integer
+          default: 180
+          description: Angular range `tilt_steps` covers, in degrees. Defaults to 180.
+        fov_h:
+          type: number
+          default: 113
+          description: >-
+            Horizontal field of view of the lens, in degrees. Used by the
+            client to translate a pixel drag into a pan/tilt move. Defaults to
+            113 (typical wide-angle lens on a 16:9 sensor).
 
     Recording:
       type: object

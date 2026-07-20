@@ -127,10 +127,28 @@ type App struct {
 	talk   map[string]*backchannel.Session
 
 	// talkCodecs holds the push-to-talk codecs each camera accepts, discovered by
-	// probing its backchannel SDP once at startup (see seedTalkCodecs). Guarded by
-	// talkCodecsMu since the background probe writes it while /api/cameras reads.
+	// probing its backchannel SDP once at startup (see seedTalkCodecs). Guarded
+	// by talkCodecsMu since the background probe writes it while /api/cameras reads.
 	talkCodecsMu sync.RWMutex
 	talkCodecs   map[string][]string
+
+	// ptzPos holds the last known motor position per camera, in firmware
+	// xpos/ypos (steps). Seeded at startup by seedPTZPositions (best-effort:
+	// unreachable cameras stay empty) and updated by every successful PTZ
+	// move handler from the camera's echo, if any. GET /ptz/position returns
+	// the cached value in degrees (503 when the camera has never reported).
+	// Guarded by ptzPosMu — the move handlers write on every call, so the
+	// hot path needs more than an atomic.
+	ptzPosMu sync.RWMutex
+	ptzPos   map[string]ptzPos
+
+	// ptzPosOps serializes startup / on-create position seeding per camera:
+	// the seed calls the slow thingino heartbeat-equivalent (json-motor.cgi?d=j)
+	// and must not interleave with a concurrent move that would also be
+	// updating the cache. Per-camera (not camMutateMu) so a slow probe on
+	// one camera doesn't block others.
+	ptzPosOpsMu sync.Mutex
+	ptzPosOps   map[string]*sync.Mutex
 
 	// metrics exposes Prometheus and JSON instrumentation for the entire service.
 	// Nil when not configured (tests).
@@ -141,6 +159,13 @@ type App struct {
 	version string
 	// startedAt is when the App was constructed, used for the status uptime.
 	startedAt time.Time
+}
+
+// ptzPos is the cached last-known motor position for a single camera, in
+// firmware-native steps. Converted to degrees at read time using the
+// camera's calibration (see Camera.PTZStepsToDegrees).
+type ptzPos struct {
+	X, Y float64
 }
 
 // Token-lifetime defaults, used when nothing (flag/env/[auth]) sets them.
@@ -194,6 +219,8 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		updatesRegistry:    updatesRegistry,
 		talk:               make(map[string]*backchannel.Session),
 		talkCodecs:         make(map[string][]string),
+		ptzPos:             make(map[string]ptzPos),
+		ptzPosOps:          make(map[string]*sync.Mutex),
 		startedAt:          time.Now(),
 	}
 	// Precompute the embedded UI (ETag + gzip) so repeat loads revalidate
@@ -204,6 +231,11 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 	// Seed live privacy state in the background — the slow heartbeat must not
 	// delay serving, and any camera that's unreachable just stays at false.
 	go a.seedPrivacy()
+	// Seed the PTZ position cache the same way: prime once at startup so the
+	// first /ptz/position request has something to return even before any move.
+	// Unreachable cameras leave the cache empty; the next move handler will
+	// fill it if the firmware echoes the position on d=g / d=x.
+	go a.seedPTZPositions()
 	// Discover per-camera talk codecs in the background, for the same reason: the
 	// RTSP probe must not delay serving, and unreachable cameras just report no
 	// codecs (clients then assume G.711).
@@ -451,6 +483,70 @@ func (a *App) seedPrivacyFor(c camera.Camera) {
 	}()
 }
 
+// seedPTZPositions reads each PTZ camera's motor position once at startup so
+// /ptz/position has something to return before any move has happened. The
+// firmware call is per-camera and serialized through ptzPosOps so a slow probe
+// on one camera doesn't block another's startup work. Unreachable cameras
+// leave the cache empty — the first move handler will populate it if the
+// firmware echoes the position on d=g/d=x, and a cold /ptz/position returns
+// 503 (transient state, not a permanent failure).
+func (a *App) seedPTZPositions() {
+	for _, c := range a.listCameras() {
+		a.seedPTZPositionsFor(c)
+	}
+}
+
+func (a *App) seedPTZPositionsFor(c camera.Camera) {
+	if !c.Capabilities.PTZ || c.ThinginoURL == "" || c.ThinginoAPIKey == "" {
+		return
+	}
+	mu := a.ptzPosOp(c.ID)
+	mu.Lock()
+	defer mu.Unlock()
+	x, y, err := thingino.Position(c.ThinginoURL, c.ThinginoAPIKey)
+	if err != nil {
+		slog.Debug("ptz position seed failed", "camera", c.ID, "err", err)
+		return
+	}
+	a.ptzPosMu.Lock()
+	a.ptzPos[c.ID] = ptzPos{X: x, Y: y}
+	a.ptzPosMu.Unlock()
+}
+
+// ptzPosOp returns (creating if needed) the per-camera position-seed mutex,
+// mirroring privacyOp for the same reason: the slow thingino position read
+// must not interleave with a concurrent move that would also be touching the
+// cache, and other cameras' seeds must not block.
+func (a *App) ptzPosOp(camID string) *sync.Mutex {
+	a.ptzPosOpsMu.Lock()
+	defer a.ptzPosOpsMu.Unlock()
+	if a.ptzPosOps == nil { // tests build App without New
+		a.ptzPosOps = make(map[string]*sync.Mutex)
+	}
+	mu := a.ptzPosOps[camID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		a.ptzPosOps[camID] = mu
+	}
+	return mu
+}
+
+// updatePTZPos parses a json-motor.cgi response and, if the firmware echoed
+// xpos/ypos, updates the cached position for cam.ID. Silently no-ops when the
+// response doesn't carry a position (some firmwares only echo on d=j, not on
+// d=g/d=x) or when the fields aren't parseable as floats — the cache is then
+// stale-but-not-wrong, and a subsequent /ptz/position call will reflect that
+// honestly.
+func (a *App) updatePTZPos(cam camera.Camera, body []byte) {
+	x, y, ok := thingino.ParseMotorPos(body)
+	if !ok {
+		return
+	}
+	a.ptzPosMu.Lock()
+	a.ptzPos[cam.ID] = ptzPos{X: x, Y: y}
+	a.ptzPosMu.Unlock()
+}
+
 func resolveStaticDir() string {
 	if d := os.Getenv("ENEVERRE_STATIC_DIR"); d != "" {
 		return d
@@ -498,6 +594,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/camera/{cam_id}", a.handleUpdateCamera)
 	mux.HandleFunc("DELETE /api/camera/{cam_id}", a.handleDeleteCamera)
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/move", a.handlePTZMove)
+	mux.HandleFunc("GET /api/camera/{cam_id}/ptz/position", a.handlePTZPosition)
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/home", a.handlePTZHome)
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/recalibrate", a.handlePTZRecalibrate)
 	mux.HandleFunc("POST /api/camera/{cam_id}/privacy", a.handlePrivacy)
@@ -519,16 +616,6 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/hls/init.mp4", a.handlePlaybackHLSInit)
 	mux.HandleFunc("GET /api/camera/{cam_id}/recordings/hls/segment.m4s", a.handlePlaybackHLSSegment)
 
-	// DEPRECATED — legacy /playback/{list,get} aliases, kept ONLY as a
-	// compatibility shim during the transition while clients (Android, TV, web)
-	// migrate to /recordings/*. These are the only two endpoints that existed
-	// under the old /playback/ prefix; they dispatch to the same handlers and
-	// tag every response with a `Deprecation` header. Remove once no client hits
-	// them. The new endpoints (timeline, gaps, HLS VOD) never had a /playback/
-	// form and are not aliased.
-	mux.HandleFunc("GET /api/camera/{cam_id}/playback/list", deprecatedAlias("/api/camera/{cam_id}/recordings/list", a.handlePlaybackList))
-	mux.HandleFunc("GET /api/camera/{cam_id}/playback/get", deprecatedAlias("/api/camera/{cam_id}/recordings/get", a.handlePlaybackGet))
-
 	// embedded live (MSE fMP4). The engine is always running, so these are
 	// always routed; for a camera whose `mse` feature is off there is no
 	// broadcaster, so `info` reports {"available": false} and `stream` returns
@@ -546,11 +633,6 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/camera/{cam_id}/events", a.handleWebhookEvent)
 	mux.HandleFunc("GET /api/camera/{cam_id}/events", a.handleListEvents)
 	mux.HandleFunc("DELETE /api/camera/{cam_id}/events/{event_id}", a.handleDeleteEvent)
-	// DEPRECATED — legacy plural read alias. Reading events used to live at
-	// /api/cameras/{cam_id}/events (plural); kept as a compatibility shim (tagged
-	// with a `Deprecation` header) while clients migrate to the singular
-	// /api/camera/ prefix above. Remove once no client uses it.
-	mux.HandleFunc("GET /api/cameras/{cam_id}/events", deprecatedAlias("/api/camera/{cam_id}/events", a.handleListEvents))
 
 	// auto-update. Track is an arbitrary operator/CI-chosen identifier — the
 	// server has no fixed track list, so publishing to a new track name is
@@ -593,19 +675,6 @@ func (a *App) Handler() http.Handler {
 	// logged; cors handles OPTIONS before the mux. The Origin allowlist is empty
 	// by default (permissive), or locked down via [server] cors_origins.
 	return accessLog(cors(mux, a.cfg.CORSOrigins()), a.proxyTrust)
-}
-
-// deprecatedAlias wraps a handler so a legacy route alias flags every response
-// as deprecated (RFC 8594-style), pointing at the successor path. Used for the
-// compatibility shims kept during the API migration (renamed recordings/events
-// endpoints); drop the wrapped routes once no client uses them.
-func deprecatedAlias(successor string, fn http.HandlerFunc) http.HandlerFunc {
-	warning := fmt.Sprintf(`299 - "Deprecated endpoint; use %s. This alias is a temporary compatibility shim."`, successor)
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Deprecation", "true")
-		w.Header().Set("Warning", warning)
-		fn(w, r)
-	}
 }
 
 // --- response helpers ----------------------------------------------------
@@ -919,20 +988,80 @@ func (a *App) proxyThingino(w http.ResponseWriter, r *http.Request, call func(ca
 	_, _ = w.Write(body)
 }
 
+// proxyPTZMove is like proxyThingino but also refreshes the cached motor
+// position from the response. Every move / home / privacy PTZ call goes
+// through this so /ptz/position can answer with a fresh value the moment the
+// firmware echoes it (it doesn't always — the cache update is best-effort).
+func (a *App) proxyPTZMove(w http.ResponseWriter, r *http.Request, call func(cam camera.Camera) ([]byte, error)) {
+	cam := a.ptzGate(w, r)
+	if cam == nil {
+		return
+	}
+	body, err := call(*cam)
+	if err != nil {
+		thinginoError(w, err)
+		return
+	}
+	a.updatePTZPos(*cam, body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// handlePTZMove issues a relative move given pan/tilt in degrees — the
+// public contract — converted to firmware steps via the camera's
+// calibration and clamped to the full range, so a runaway request can't
+// command an unbounded rotation.
 func (a *App) handlePTZMove(w http.ResponseWriter, r *http.Request) {
-	a.proxyThingino(w, r, func(cam camera.Camera) ([]byte, error) {
-		return thingino.Move(cam.ThinginoURL, cam.ThinginoAPIKey, queryFloat(r, "x", 0), queryFloat(r, "y", 0))
+	cam := a.ptzGate(w, r)
+	if cam == nil {
+		return
+	}
+	pan := queryFloat(r, "pan", 0)
+	tilt := queryFloat(r, "tilt", 0)
+	x, y := cam.PTZDeltaToSteps(pan, tilt)
+	a.proxyPTZMove(w, r, func(cam camera.Camera) ([]byte, error) {
+		return thingino.Move(cam.ThinginoURL, cam.ThinginoAPIKey, x, y)
 	})
 }
 
-// handlePTZHome moves the camera to its configured home position (home_x/home_y).
+// handlePTZPosition returns the last known motor position in degrees as
+// {"pan": …, "tilt": …}. The position is cached from the last successful PTZ
+// move (or primed at startup) and converted to degrees using the camera's
+// calibration; returns 503 when the cache is cold (no move has been
+// recorded and the startup probe did not reach the camera) so the caller
+// can distinguish "no data" from a permanent failure.
+func (a *App) handlePTZPosition(w http.ResponseWriter, r *http.Request) {
+	cam := a.ptzGate(w, r)
+	if cam == nil {
+		return
+	}
+	a.ptzPosMu.RLock()
+	pos, ok := a.ptzPos[cam.ID]
+	a.ptzPosMu.RUnlock()
+	if !ok {
+		httpError(w, http.StatusServiceUnavailable, "PTZ position unknown — move the camera or wait for the startup probe")
+		return
+	}
+	pan, tilt := cam.PTZStepsToDegrees(pos.X, pos.Y)
+	writeJSON(w, http.StatusOK, map[string]float64{"pan": pan, "tilt": tilt})
+}
+
+// handlePTZHome moves the camera to its configured home position
+// (home_x/home_y, in degrees). The server converts pan/tilt → firmware x/y
+// at call time using the camera's calibration, so a misconfigured or
+// stale-calibration camera never receives an unmapped absolute move.
 func (a *App) handlePTZHome(w http.ResponseWriter, r *http.Request) {
-	a.proxyThingino(w, r, func(cam camera.Camera) ([]byte, error) {
-		return thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, cam.HomeX, cam.HomeY)
+	a.proxyPTZMove(w, r, func(cam camera.Camera) ([]byte, error) {
+		x, y := cam.PTZDegreesToSteps(cam.HomeX, cam.HomeY)
+		return thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, x, y)
 	})
 }
 
-// handlePTZRecalibrate runs the motor recalibration routine.
+// handlePTZRecalibrate runs the motor recalibration routine. The firmware
+// does not echo a post-calibration position on d=r (the gimbal is still
+// settling against the end-stops), so the cache is intentionally not
+// updated here — the next /ptz/move or /ptz/position will refresh it.
 func (a *App) handlePTZRecalibrate(w http.ResponseWriter, r *http.Request) {
 	a.proxyThingino(w, r, func(cam camera.Camera) ([]byte, error) {
 		return thingino.Recalibrate(cam.ThinginoURL, cam.ThinginoAPIKey)
@@ -988,11 +1117,18 @@ func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 	if hasThingino {
 		// When enabling privacy, point the camera at its configured privacy
 		// position first (both coords default to -1 when unset, so >= 0 means set).
+		// Route through proxyPTZMove so the position cache stays in sync — the
+		// firmware echoes the post-move position on d=x, and the next
+		// /ptz/position should reflect that. privacy_x/y are stored in
+		// degrees; the server converts to firmware x/y at call time.
 		if enable && cam.PrivacyX >= 0 && cam.PrivacyY >= 0 {
-			if _, err := thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, cam.PrivacyX, cam.PrivacyY); err != nil {
-				thinginoError(w, err)
+			x, y := cam.PTZDegreesToSteps(cam.PrivacyX, cam.PrivacyY)
+			privBody, moveErr := thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, x, y)
+			if moveErr != nil {
+				thinginoError(w, moveErr)
 				return
 			}
+			a.updatePTZPos(cam, privBody)
 		}
 		body, err = thingino.SetPrivacy(cam.ThinginoURL, cam.ThinginoAPIKey, enable)
 		if err != nil {
@@ -1000,11 +1136,15 @@ func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// When disabling privacy, return the camera to its home position.
+		// Same degrees → steps conversion as the privacy path.
 		if !enable && cam.HomeX >= 0 && cam.HomeY >= 0 {
-			if _, err := thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, cam.HomeX, cam.HomeY); err != nil {
-				thinginoError(w, err)
+			x, y := cam.PTZDegreesToSteps(cam.HomeX, cam.HomeY)
+			homeBody, moveErr := thingino.MoveAbs(cam.ThinginoURL, cam.ThinginoAPIKey, x, y)
+			if moveErr != nil {
+				thinginoError(w, moveErr)
 				return
 			}
+			a.updatePTZPos(cam, homeBody)
 		}
 	}
 

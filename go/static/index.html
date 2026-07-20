@@ -162,7 +162,7 @@
   </div>
 
   <button id="ptz-fab" class="ptz-fab" hidden type="button"
-    data-i18n-aria-label="ptz.open" aria-label="Open PTZ panel" data-i18n-title="ptz.open" title="Open PTZ panel">PTZ</button>
+    data-i18n-aria-label="ptz.open" aria-label="Open PTZ panel" data-i18n-title="ptz.open" title="Open PTZ panel" data-icon="move">PTZ</button>
 
   <section id="device-auth-view" class="users-view" hidden>
     <header class="topbar">
@@ -418,6 +418,21 @@
             <label><span data-i18n="wizard.privacy_x">Privacy X</span><input name="privacy_x" type="number" step="any" placeholder="unset" /></label>
             <label><span data-i18n="wizard.privacy_y">Privacy Y</span><input name="privacy_y" type="number" step="any" placeholder="unset" /></label>
           </div>
+          <details class="cam-advanced">
+            <summary data-i18n="wizard.ptz_calibration">PTZ calibration</summary>
+            <p class="muted small" data-i18n="wizard.ptz_calibration_hint">Total steps per axis and the angular range they cover, plus the horizontal lens FOV. Defaults are the typical Thingino values — only change them if your hardware reports differently. Used server-side to convert the public pan/tilt in degrees to firmware steps.</p>
+            <div class="cam-row-2">
+              <label><span data-i18n="wizard.pan_steps">Pan steps</span><input name="pan_steps" type="number" step="any" placeholder="2130" /></label>
+              <label><span data-i18n="wizard.pan_degrees">Pan degrees</span><input name="pan_degrees" type="number" step="any" placeholder="360" /></label>
+            </div>
+            <div class="cam-row-2">
+              <label><span data-i18n="wizard.tilt_steps">Tilt steps</span><input name="tilt_steps" type="number" step="any" placeholder="1600" /></label>
+              <label><span data-i18n="wizard.tilt_degrees">Tilt degrees</span><input name="tilt_degrees" type="number" step="any" placeholder="180" /></label>
+            </div>
+            <div class="cam-row-2">
+              <label><span data-i18n="wizard.fov_h">FOV (horizontal, °)</span><input name="fov_h" type="number" step="any" placeholder="113" /></label>
+            </div>
+          </details>
         </div>
 
         <!-- Step 5: review -->

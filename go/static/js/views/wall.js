@@ -8,6 +8,7 @@ import { toast } from "../ui/toast.js";
 import { t } from "../i18n.js";
 import { setCamStatus } from "../ui/cam-status.js";
 import { icon } from "../ui/icons.js";
+import { loadingStatus } from "../ui/buffering.js";
 import { loadJson, USER_KEY } from "../util/storage.js";
 
 // Longest clip the save button will request. Guards against a forgotten
@@ -320,7 +321,7 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
       setCamStatus(cam.id, "offline");
       if (video) {
         const p = makeMsg("");
-        p.innerHTML = `${icon("lock")} ${t("wall.privacy")}`;
+        p.innerHTML = `${icon("camera-off")} ${t("wall.privacy")}`;
         video.replaceWith(p);
       }
     } else if (cam.live_mse) {
@@ -503,7 +504,8 @@ export async function loadWall(mode = "live") {
   wall.style.setProperty("--cols", cols);
   wall.style.setProperty("--tile-w", `${tilePct}%`);
   if (mode === "playback") {
-    wall.innerHTML = `<p class='muted wall-status'>${t("wall.loading_recordings")}</p>`;
+    wall.innerHTML = "";
+    wall.appendChild(loadingStatus(t("wall.loading_recordings")));
     updateSidebarActive();
     await applyPlayback(filtered);
     updateSidebarActive();

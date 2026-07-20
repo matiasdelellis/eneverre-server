@@ -1082,6 +1082,21 @@ button.icon-btn {
   gap: var(--gap);
 }
 .wall-status { padding: 20px; }
+/* Full-panel loading line with the shared spinner (see loadingStatus). */
+.wall-loading-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+}
+.spinner-icon {
+  display: inline-flex;
+  line-height: 1;
+  font-size: 20px;
+  opacity: 0.7;
+  animation: wall-buffering-spin 1s linear infinite;
+}
 /* Empty state for a wall with no cameras at all (fresh install). Centered
    column: large muted icon, heading, one line of guidance, optional CTA. */
 .wall-empty {
@@ -1345,17 +1360,102 @@ button.icon-btn {
 .modal-body > header h2 { margin: 0; font-size: 18px; }
 .modal-body > header button.ghost { font-size: 24px; padding: 0 14px; }
 
-.ptz-pad {
-  display: grid;
-  grid-template-columns: repeat(3, 60px);
-  grid-template-rows: repeat(3, 60px);
-  gap: 6px;
-  justify-content: center;
+/* ---------- PTZ joystick pad ----------
+   A circular "disc" with four directional buttons hugging the ring and a
+   central Home button. The disc reads as a physical control via a soft
+   radial fill and an inset shadow; the directional buttons are absolutely
+   positioned so the Home button stays perfectly centered. */
+.ptz-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
 }
-.ptz-pad button { padding: 0; font-size: 22px; }
-.ptz-pad .empty { visibility: hidden; }
-
-.ptz-actions { display: flex; flex-direction: column; gap: 8px; }
+.ptz-pad {
+  position: relative;
+  width: 188px;
+  height: 188px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% 38%, var(--panel-2) 0%, var(--panel) 72%);
+  border: 1px solid var(--border-strong);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    inset 0 0 26px rgba(0, 0, 0, 0.28);
+}
+/* Faint concentric guide ring between the arrows and the hub. */
+.ptz-ring {
+  position: absolute;
+  inset: 24px;
+  border-radius: 50%;
+  border: 1px dashed var(--border);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.ptz-dir {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font-size: 20px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  color: var(--fg);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease,
+    color 0.12s ease, box-shadow 0.12s ease;
+}
+.ptz-dir:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* :active uses filter/shadow rather than transform so it never fights the
+   translate that positions each button on its axis. */
+.ptz-dir:active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.ptz-dir.up    { top: 6px;    left: 50%; transform: translateX(-50%); }
+.ptz-dir.down  { bottom: 6px; left: 50%; transform: translateX(-50%); }
+.ptz-dir.left  { left: 6px;   top: 50%;  transform: translateY(-50%); }
+.ptz-dir.right { right: 6px;  top: 50%;  transform: translateY(-50%); }
+.ptz-home {
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  border-radius: 50%;
+  background: var(--accent) var(--accent-grad);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow:
+    0 4px 14px rgba(59, 130, 246, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  cursor: pointer;
+  transition: filter 0.12s ease, transform 0.08s ease, box-shadow 0.12s ease;
+}
+.ptz-home:hover { filter: brightness(1.08); }
+.ptz-home:active {
+  transform: scale(0.94);
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.32);
+}
+.ptz-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--muted);
+}
 
 .playback-form {
   display: flex;
@@ -1382,11 +1482,13 @@ button.icon-btn {
   position: fixed;
   top: 80px;
   right: 16px;
-  width: 220px;
-  background: var(--panel);
+  width: 244px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(12px) saturate(1.1);
+  -webkit-backdrop-filter: blur(12px) saturate(1.1);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  border-radius: calc(var(--radius) + 4px);
+  box-shadow: var(--shadow), 0 0 0 1px rgba(0, 0, 0, 0.2);
   z-index: 50;
   display: flex;
   flex-direction: column;
@@ -1397,17 +1499,31 @@ button.icon-btn {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  background: var(--panel-2);
-  border-bottom: 1px solid var(--border-strong);
+  padding: 10px 10px 10px 14px;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--panel-2) 90%, transparent),
+    color-mix(in srgb, var(--panel) 90%, transparent));
+  border-bottom: 1px solid var(--border);
   cursor: grab;
   user-select: none;
+}
+/* Grab-affordance dots on the left of the header so it reads as draggable. */
+.ptz-modal-header::before {
+  content: "";
+  width: 4px;
+  height: 18px;
+  flex: none;
+  border-radius: 2px;
+  background:
+    radial-gradient(circle, var(--border-hover) 1px, transparent 1.4px) 0 0 / 4px 5px;
+  opacity: 0.9;
 }
 .ptz-modal.dragging .ptz-modal-header { cursor: grabbing; }
 .ptz-modal-header h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
+  letter-spacing: 0.2px;
   flex: 1;
   min-width: 0;
   white-space: nowrap;
@@ -1415,22 +1531,27 @@ button.icon-btn {
   text-overflow: ellipsis;
 }
 .ptz-modal-header button {
-  font-size: 20px;
-  padding: 0 8px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  font-size: 18px;
+  padding: 0;
   line-height: 1;
+  border-radius: 8px;
   background: transparent;
   border: none;
   color: var(--muted);
   cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
 }
-.ptz-modal-header button:hover { color: var(--fg); }
+.ptz-modal-header button:hover { color: var(--fg); background: var(--topbar-hover); }
 .ptz-modal-body {
-  padding: 12px;
+  padding: 18px 16px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
-.ptz-modal-body h3 { margin: 0 0 4px; font-size: 13px; color: var(--muted); }
 
 /* Floating action button that re-opens the PTZ panel after the user
    has dismissed it. Bottom-left, above the wall but below the modal. */
@@ -1440,19 +1561,23 @@ button.icon-btn {
   bottom: 16px;
   z-index: 40;
   min-width: 56px;
-  height: 40px;
-  padding: 0 14px;
+  height: 42px;
+  padding: 0 16px;
   border-radius: 999px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   background: var(--accent) var(--accent-grad);
   color: #fff;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 13px;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.6px;
   cursor: pointer;
-  box-shadow: var(--shadow);
+  box-shadow:
+    0 6px 18px rgba(59, 130, 246, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  transition: filter 0.12s ease, transform 0.1s ease, box-shadow 0.12s ease;
 }
-.ptz-fab:hover { filter: brightness(1.1); }
+.ptz-fab:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.ptz-fab:active { transform: translateY(0); box-shadow: 0 3px 10px rgba(59, 130, 246, 0.3); }
 .ptz-fab[hidden] { display: none; }
 
 /* ---------- Users view ----------
@@ -1750,6 +1875,13 @@ label.switch input:disabled + .switch-track { opacity: 0.5; cursor: not-allowed;
 .switch-text { flex: 1; order: 1; min-width: 0; }
 .switch-text small { font-weight: 400; }
 .cam-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* Collapsible "advanced" section inside the wizard step. Hides the PTZ
+   calibration defaults (steps/FOV) from the common case so the operator
+   doesn't see five extra inputs unless they open them. */
+.cam-advanced { margin-top: 10px; border: 1px solid var(--border, rgba(255,255,255,0.12)); border-radius: 8px; padding: 8px 12px; }
+.cam-advanced > summary { cursor: pointer; font-weight: 600; user-select: none; }
+.cam-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.cam-advanced .cam-row-2 { margin-top: 8px; }
 
 .cam-probe { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .cam-probe-result { font-size: 12px; }

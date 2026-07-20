@@ -171,11 +171,20 @@ function openWizard(config = null) {
 
 // fillForm prefills the wizard from a stored camera config (spec JSON). The
 // thingino coordinates use -1 as the "unset" sentinel; show those blank.
+// The PTZ calibration fields also show blank when the stored value matches
+// the server default (2130/360/1600/180/113) — the placeholder reveals the
+// default — so the wizard stays compact unless the operator customised them.
 function fillForm(c) {
   const f = document.getElementById("cam-wizard-form").elements;
   const text = (name, v) => { f[name].value = v == null ? "" : String(v); };
   const check = (name, v) => { f[name].checked = !!v; };
   const coord = (name, v) => { f[name].value = (v == null || v < 0) ? "" : String(v); };
+  // PTZ calibration: hide the value when it matches the server default so the
+  // placeholder shows the default, and the field is sent empty (the server
+  // applies the same default). Saves a row of noise on the common case.
+  const calib = (name, v, def) => {
+    if (f[name]) f[name].value = (v == null || v === def) ? "" : String(v);
+  };
   text("id", c.id);
   text("name", c.name);
   text("location", c.location);
@@ -198,6 +207,13 @@ function fillForm(c) {
   coord("home_y", c.home_y);
   coord("privacy_x", c.privacy_x);
   coord("privacy_y", c.privacy_y);
+  // Defaults mirror camera.DefaultPanSteps et al. in the Go code; if either
+  // side changes the other, this wizard hides a real customisation.
+  calib("pan_steps", c.pan_steps, 2130);
+  calib("pan_degrees", c.pan_degrees, 360);
+  calib("tilt_steps", c.tilt_steps, 1600);
+  calib("tilt_degrees", c.tilt_degrees, 180);
+  calib("fov_h", c.fov_h, 113);
 }
 
 function closeWizard() {
@@ -323,6 +339,13 @@ function collectForm() {
   if (w !== undefined) body.width = w;
   if (h !== undefined) body.height = h;
   for (const k of ["home_x", "home_y", "privacy_x", "privacy_y"]) {
+    const v = num(k);
+    if (v !== undefined) body[k] = v;
+  }
+  // PTZ calibration: same pattern — send only when the operator typed a
+  // value, so an empty field (the placeholder default) keeps the server
+  // default and the camera row stays as the wizard left it.
+  for (const k of ["pan_steps", "pan_degrees", "tilt_steps", "tilt_degrees", "fov_h"]) {
     const v = num(k);
     if (v !== undefined) body[k] = v;
   }

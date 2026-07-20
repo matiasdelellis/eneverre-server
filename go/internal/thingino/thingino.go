@@ -27,6 +27,59 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("status %d", e.Code)
 }
 
+// motorResponse captures the {code, result, message: {xpos, ypos, ...}} shape
+// every json-motor.cgi reply uses. xpos/ypos are returned as strings by the
+// firmware, so the parser below converts them to floats. The full response is
+// also returned to callers unchanged (Move/MoveAbs/Recalibrate relay it to
+// the HTTP client).
+type motorResponse struct {
+	Code    int    `json:"code"`
+	Result  string `json:"result"`
+	Message struct {
+		XPos string `json:"xpos"`
+		YPos string `json:"ypos"`
+	} `json:"message"`
+}
+
+// ParseMotorPos extracts the firmware's (xpos, ypos) from a json-motor.cgi
+// response body. Returns ok=false when the body is malformed, the message
+// block is missing, or the position fields are not parseable as floats — the
+// caller should treat that as "no position update" (some firmwares echo the
+// position only on certain d= modes).
+func ParseMotorPos(body []byte) (x, y float64, ok bool) {
+	var r motorResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return 0, 0, false
+	}
+	if r.Message.XPos == "" && r.Message.YPos == "" {
+		return 0, 0, false
+	}
+	x, errX := strconv.ParseFloat(r.Message.XPos, 64)
+	y, errY := strconv.ParseFloat(r.Message.YPos, 64)
+	if errX != nil || errY != nil {
+		return 0, 0, false
+	}
+	return x, y, true
+}
+
+// Position reads the current motor position (d=j). The returned (xpos, ypos)
+// are in firmware-native steps; the caller is responsible for converting them
+// to pan/tilt in degrees using the camera's calibration. Used at startup to
+// prime the server-side position cache and on demand by /api/.../ptz/position
+// when the cache is cold.
+func Position(host, apiKey string) (x, y float64, err error) {
+	url := fmt.Sprintf("%s/x/json-motor.cgi?d=j&token=%s", host, apiKey)
+	body, err := doGet(url, 3*time.Second)
+	if err != nil {
+		return 0, 0, err
+	}
+	x, y, ok := ParseMotorPos(body)
+	if !ok {
+		return 0, 0, fmt.Errorf("thingino: could not parse position from response")
+	}
+	return x, y, nil
+}
+
 // Move issues a relative PTZ move (d=g) — x/y are deltas from the current
 // position — and returns the camera's raw JSON response. Used by the
 // directional pad.

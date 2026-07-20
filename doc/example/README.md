@@ -209,10 +209,21 @@ snapshot_url = http://username:password@192.168.1.91/snapshot.jpg
 thingino_url = http://192.168.1.91
 thingino_api_key = <api-key>
 ptz = true
-home_x = 1065
-home_y = 800
+; Home / privacy positions in DEGREES (pan, tilt). The server converts to
+; firmware x/y at move time using the calibration below. -1 in either axis
+; disables the auto-move for that axis.
+home_x = 180
+home_y = 90
 privacy_x = 0
-privacy_y = 1600
+privacy_y = 180
+; PTZ calibration: total steps per axis and the angular range they cover, plus
+; the horizontal lens FOV. Defaults are the typical thingino values (2130/360
+; pan, 1600/180 tilt, 113° FOV) — only uncomment to override for your hardware.
+; pan_steps = 2130
+; pan_degrees = 360
+; tilt_steps = 1600
+; tilt_degrees = 180
+; fov_h = 113
 ```
 
 ### `[camera]` keys
@@ -273,13 +284,29 @@ privacy_y = 1600
 
  * **thingino_url:** Base URL of the [Thingino](https://thingino.com/) camera.
  * **thingino_api_key:** API token. Its presence enables the thumbnail
-   capability and the firmware lens blackout used by privacy (privacy itself is
-   available on every camera). Never exposed in API responses.
+    capability and the firmware lens blackout used by privacy (privacy itself is
+    available on every camera). Never exposed in API responses.
  * **ptz:** `true` if the camera has PTZ support (currently Thingino only).
- * **home_x / home_y:** PTZ position the camera returns to on "home" / when
-   privacy is disabled. Unset → `-1` (no auto-move).
- * **privacy_x / privacy_y:** PTZ position the camera moves to when privacy is
-   enabled. Unset → `-1` (no auto-move).
+ * **home_x / home_y:** PTZ position the camera returns to on "home" /
+    when privacy is disabled, in **degrees** (pan, tilt). The server
+    converts to firmware x/y at move time using the calibration above. Unset
+    → `-1` (no auto-move).
+ * **privacy_x / privacy_y:** PTZ position the camera moves to when privacy
+    is enabled, in **degrees** (pan, tilt). Same conversion as `home_x/y`.
+    Unset → `-1` (no auto-move).
+ * **pan_steps / pan_degrees:** PTZ calibration — total steps the gimbal
+    reports for a full pan revolution, and the angular range those steps
+    cover. Defaults to `2130` / `360` (typical thingino gimbal); only set
+    these if your hardware reports a different value. The server uses them
+    to convert a public `pan` (degrees) on `/ptz/move` to firmware `x`
+    (steps) and to clamp runaway requests. Never exposed in API responses.
+ * **tilt_steps / tilt_degrees:** Same for the tilt axis. Defaults to
+    `1600` / `180`.
+ * **fov_h:** Horizontal field of view of the lens, in degrees. The public
+    `Camera` model exposes it under `ptz.fov_h` so a client can translate
+    a pixel drag into a `pan` / `tilt` move without per-camera constants.
+    The vertical FOV is derived from this and the aspect ratio at read
+    time. Defaults to `113` (typical wide-angle lens on a 16:9 sensor).
 
 ## Running as a systemd service
 
