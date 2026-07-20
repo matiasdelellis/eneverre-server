@@ -3,7 +3,7 @@ import { getState, setWallFilter, setWallFilterBeforeCam, on, emit } from "../st
 import { fetchCameras, token, apiFetch } from "../api.js";
 import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js";
 import { attachMse, captureVideoFrame } from "./mse.js";
-import { hidePtzModal } from "./ptz.js";
+import { hidePtzModal, centerOnVideoPoint } from "./ptz.js";
 import { toast } from "../ui/toast.js";
 import { t } from "../i18n.js";
 import { setCamStatus } from "../ui/cam-status.js";
@@ -277,7 +277,29 @@ function renderWallTile(cam) {
       return;
     }
     if (document.fullscreenElement === tile) document.exitFullscreen();
-    toggleCamFilterFromTile(cam.id);
+    if (!cam.capabilities?.ptz) {
+      toggleCamFilterFromTile(cam.id);
+      return;
+    }
+    // PTZ-capable tiles also handle dblclick (center-on-point, below).
+    // Delay the zoom toggle briefly so a following second click — the
+    // first half of a double-click — can cancel it: without this, a
+    // dblclick's two "click" events would zoom in and immediately back out
+    // (or vice versa) before the center move ever fires.
+    clearTimeout(tile._clickTimer);
+    tile._clickTimer = setTimeout(() => toggleCamFilterFromTile(cam.id), 250);
+  });
+  tile.addEventListener("dblclick", async (e) => {
+    clearTimeout(tile._clickTimer);
+    if (e.target.closest("button[data-act]")) return;
+    if (!cam.capabilities?.ptz || tile.dataset.mode !== "live") return;
+    const video = tile.querySelector("video");
+    if (!video) return;
+    try {
+      await centerOnVideoPoint(cam, video, e.clientX, e.clientY);
+    } catch (err) {
+      toast(t("ptz.error", { msg: err.message }), { type: "error" });
+    }
   });
   return tile;
 }
@@ -361,7 +383,12 @@ export function destroyWall() {
     if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
     if (tile) { revokeTileBlob(tile); revokeTilePoster(tile); }
   }
-  for (const tile of $$("#wall .wall-tile")) { revokeTileBlob(tile); revokeTilePoster(tile); resetClipButton(tile); }
+  for (const tile of $$("#wall .wall-tile")) {
+    revokeTileBlob(tile);
+    revokeTilePoster(tile);
+    resetClipButton(tile);
+    clearTimeout(tile._clickTimer);
+  }
   wallInstances.clear();
 }
 

@@ -49,8 +49,8 @@ type createCameraReq struct {
 	PrivacyY       *float64 `json:"privacy_y"`
 	// PTZ calibration (pan/tilt motor steps and the angular range they cover,
 	// plus the horizontal lens FOV). Pointers so an omitted key falls back to
-	// the same defaults the INI loader applies (camera.DefaultPanSteps et al.
-	// in the camera package). Omitted fields mean "use the default", not
+	// the same defaults every Spec source applies (Spec.ApplyPTZDefaults in
+	// the camera package). Omitted fields mean "use the default", not
 	// "use zero", so a wizard that hides these fields still works.
 	PanSteps    *int     `json:"pan_steps"`
 	PanDegrees  *int     `json:"pan_degrees"`
@@ -98,7 +98,7 @@ func (req createCameraReq) spec() (camera.Spec, string) {
 	default:
 		return camera.Spec{}, "transport must be one of auto, tcp, udp"
 	}
-	return camera.Spec{
+	s := camera.Spec{
 		ID:             id,
 		Name:           strings.TrimSpace(req.Name),
 		Comment:        strings.TrimSpace(req.Comment),
@@ -121,12 +121,14 @@ func (req createCameraReq) spec() (camera.Spec, string) {
 		HomeY:          floatOr(req.HomeY, -1),
 		PrivacyX:       floatOr(req.PrivacyX, -1),
 		PrivacyY:       floatOr(req.PrivacyY, -1),
-		PanSteps:       intOr(req.PanSteps, camera.DefaultPanSteps),
-		PanDegrees:     intOr(req.PanDegrees, camera.DefaultPanDegrees),
-		TiltSteps:      intOr(req.TiltSteps, camera.DefaultTiltSteps),
-		TiltDegrees:    intOr(req.TiltDegrees, camera.DefaultTiltDegrees),
-		FOVH:           floatOr(req.FOVH, camera.DefaultFOVH),
-	}, ""
+		PanSteps:       intOr(req.PanSteps, 0),
+		PanDegrees:     intOr(req.PanDegrees, 0),
+		TiltSteps:      intOr(req.TiltSteps, 0),
+		TiltDegrees:    intOr(req.TiltDegrees, 0),
+		FOVH:           floatOr(req.FOVH, 0),
+	}
+	s.ApplyPTZDefaults()
+	return s, ""
 }
 
 // handleCreateCamera creates a camera (admin only): it validates the body,
@@ -199,6 +201,22 @@ func (a *App) handleGetCameraConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
+// dropCameraState clears every per-camera runtime cache (privacy, talk
+// codecs, PTZ position). Called when a camera is updated (the config the
+// caches were derived from may have changed) or deleted, so a new per-camera
+// cache only needs a line here to be handled by both.
+func (a *App) dropCameraState(id string) {
+	a.privacyMu.Lock()
+	delete(a.privacy, id)
+	a.privacyMu.Unlock()
+	a.talkCodecsMu.Lock()
+	delete(a.talkCodecs, id)
+	a.talkCodecsMu.Unlock()
+	a.ptzPosMu.Lock()
+	delete(a.ptzPos, id)
+	a.ptzPosMu.Unlock()
+}
+
 // handleUpdateCamera edits an existing camera (admin only): it validates the
 // body, overwrites the DB row, and reconfigures the media engine live by tearing
 // down the old pipeline and bringing the new config up (RemoveCamera +
@@ -244,16 +262,8 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 	}
 	a.updateCamera(cam)
 	// Reset runtime state and re-probe: the thingino/backchannel config may have
-	// changed, so the old privacy/talk-codec state no longer applies.
-	a.privacyMu.Lock()
-	delete(a.privacy, id)
-	a.privacyMu.Unlock()
-	a.talkCodecsMu.Lock()
-	delete(a.talkCodecs, id)
-	a.talkCodecsMu.Unlock()
-	a.ptzPosMu.Lock()
-	delete(a.ptzPos, id)
-	a.ptzPosMu.Unlock()
+	// changed, so the old privacy/talk-codec/position state no longer applies.
+	a.dropCameraState(id)
 	a.seedPrivacyFor(cam)
 	a.seedPTZPositionsFor(cam)
 	a.seedTalkCodecsFor(cam)
@@ -288,15 +298,7 @@ func (a *App) handleDeleteCamera(w http.ResponseWriter, r *http.Request) {
 		a.engine.RemoveCamera(id)
 	}
 	a.removeCamera(id)
-	a.privacyMu.Lock()
-	delete(a.privacy, id)
-	a.privacyMu.Unlock()
-	a.talkCodecsMu.Lock()
-	delete(a.talkCodecs, id)
-	a.talkCodecsMu.Unlock()
-	a.ptzPosMu.Lock()
-	delete(a.ptzPos, id)
-	a.ptzPosMu.Unlock()
+	a.dropCameraState(id)
 
 	slog.Info("camera deleted", "id", id)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Camera deleted"})

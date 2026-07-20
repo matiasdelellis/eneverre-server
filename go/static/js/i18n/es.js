@@ -96,7 +96,7 @@ export default {
   "ptz.right": "Derecha",
   "ptz.center": "Centro",
   "ptz.home": "Inicio",
-  "ptz.hint": "También podés usar las flechas del teclado",
+  "ptz.hint": "También podés usar las flechas del teclado, o hacer doble clic en el video para centrar un punto",
   "ptz.error": "Error PTZ: {msg}",
   "ptz.error_title": "Error PTZ",
 

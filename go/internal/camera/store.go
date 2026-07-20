@@ -34,9 +34,8 @@ const camColumns = `id, name, comment, location, source, backchannel, snapshot_u
 
 // scanSpec reads one row (selected with camColumns) into a Spec. Zero values
 // in the PTZ calibration columns are filled with the default calibration so
-// rows written before the columns existed (and rows that bypassed the
-// loadSpec / spec() defaulting) still get a valid camera.PTZ block — the
-// DB column DEFAULT only applies at INSERT time, not on a SELECT.
+// rows written before the columns existed still get a valid camera.PTZ
+// block — the DB column DEFAULT only applies at INSERT time, not on a SELECT.
 func scanSpec(scan func(dest ...any) error) (Spec, error) {
 	var s Spec
 	err := scan(
@@ -45,21 +44,7 @@ func scanSpec(scan func(dest ...any) error) (Spec, error) {
 		&s.ThinginoURL, &s.ThinginoAPIKey, &s.PTZ, &s.HomeX, &s.HomeY, &s.PrivacyX, &s.PrivacyY,
 		&s.PanSteps, &s.PanDegrees, &s.TiltSteps, &s.TiltDegrees, &s.FOVH,
 	)
-	if s.PanSteps <= 0 {
-		s.PanSteps = DefaultPanSteps
-	}
-	if s.PanDegrees <= 0 {
-		s.PanDegrees = DefaultPanDegrees
-	}
-	if s.TiltSteps <= 0 {
-		s.TiltSteps = DefaultTiltSteps
-	}
-	if s.TiltDegrees <= 0 {
-		s.TiltDegrees = DefaultTiltDegrees
-	}
-	if s.FOVH <= 0 {
-		s.FOVH = DefaultFOVH
-	}
+	s.ApplyPTZDefaults()
 	return s, err
 }
 

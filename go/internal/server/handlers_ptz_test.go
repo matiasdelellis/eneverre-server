@@ -5,12 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"strings"
 	"testing"
 
 	"eneverre/internal/camera"
-	"eneverre/internal/config"
-	"eneverre/internal/store"
 )
 
 // ptzTestApp builds a minimal App wired to a real (temp-file) SQLite DB and
@@ -20,52 +17,24 @@ import (
 // successful move reaches the handler and the response is what's served.
 func ptzTestApp(t *testing.T, thinginoSrv *httptest.Server, cam camera.Camera) *App {
 	t.Helper()
-	db, err := store.Open(t.TempDir() + "/test.db")
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-	if err := store.Init(db); err != nil {
-		t.Fatalf("store.Init: %v", err)
-	}
-	if _, err := db.Exec("DELETE FROM users"); err != nil {
-		t.Fatalf("clear users: %v", err)
-	}
-	insertUser(t, db, "admin", "adminpw", "admin")
-	insertUser(t, db, "alice", "alicepw", "user")
+	a := withUsersApp(t)
+	insertUser(t, a.db, "alice", "alicepw", "user")
 	if cam.ThinginoURL == "" {
 		cam.ThinginoURL = thinginoSrv.URL
 	}
-	a := &App{
-		db:      db,
-		cfg:     &config.Config{},
-		cameras: []camera.Camera{cam},
-		privacy: map[string]bool{},
-		ptzPos:  map[string]ptzPos{},
-	}
-	// ptzPosOps is left nil: the move handlers don't touch it (only the
-	// startup / on-create seed does), and the tests don't seed.
-	t.Cleanup(func() { db.Close() })
+	a.cameras = []camera.Camera{cam}
+	a.privacy = map[string]bool{}
+	a.ptzPos = map[string]ptzPos{}
 	return a
 }
 
-// doPTZ dispatches a request through the App's real handler so the mux sets
-// the {cam_id} path value (the handlers read r.PathValue("cam_id") and
-// bypass the mux in the test, so we have to set it explicitly here).
-// Returning the recorder lets each test assert on the response.
+// doPTZ dispatches a request through the App's real handler — the mux sets
+// the {cam_id} path value the handlers read. Returning the recorder lets
+// each test assert on the response.
 func doPTZ(t *testing.T, a *App, method, target, user, pass string) *httptest.ResponseRecorder {
 	t.Helper()
-	h := a.Handler()
-	r := httptest.NewRequest(method, target, nil)
-	r.SetBasicAuth(user, pass)
-	// SetPathValue is the Go 1.22+ way to give the handler a route param
-	// when the test is not going through the mux. We don't know the pattern,
-	// but the handler only ever calls r.PathValue("cam_id").
-	parts := strings.Split(strings.TrimPrefix(target, "/api/camera/"), "/")
-	if len(parts) > 0 {
-		r.SetPathValue("cam_id", parts[0])
-	}
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
+	a.Handler().ServeHTTP(w, adminRequest(t, method, target, user, pass, ""))
 	return w
 }
 
@@ -110,11 +79,12 @@ func ptzCamera() camera.Camera {
 
 // TestHandlePTZMoveDegrees pins the public pan/tilt contract: the request
 // reaches json-motor.cgi?d=g with x/y in firmware steps, derived from the
-// camera's calibration and the requested degrees.
+// camera's calibration and the requested degrees, and the HTTP response is
+// the camera's new position in degrees — not the vendor's raw JSON.
 func TestHandlePTZMoveDegrees(t *testing.T) {
 	// Echo back a body with xpos/ypos so the position cache gets refreshed
 	// for the next /ptz/position test.
-	srv, cap := ptzTestServer(t, `{"code":200,"result":"success","message":{"xpos":"200","ypos":"100"}}`)
+	srv, cap := ptzTestServer(t, `{"code":200,"result":"success","message":{"xpos":"200","ypos":"100","speed":"900","invert":"0"}}`)
 	a := ptzTestApp(t, srv, ptzCamera())
 
 	w := doPTZ(t, a, http.MethodPost, "/api/camera/cam1/ptz/move?pan=10&tilt=5", "alice", "alicepw")
@@ -133,6 +103,49 @@ func TestHandlePTZMoveDegrees(t *testing.T) {
 	}
 	if gotY < 44.3 || gotY > 44.6 {
 		t.Errorf("y = %q (parsed %v); want ≈44.44", cap.y, gotY)
+	}
+
+	// The response must be {"pan","tilt"} in degrees, matching /ptz/position —
+	// not the firmware's raw {code, result, message: {xpos, ypos, speed, invert}}.
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, leaked := range []string{"code", "result", "message", "xpos", "ypos", "speed", "invert"} {
+		if _, present := got[leaked]; present {
+			t.Errorf("response leaked vendor field %q: %s", leaked, w.Body.String())
+		}
+	}
+	// 200 steps / 2130 = 0.0939 -> 33.80° pan; 100 steps / 1600 = 0.0625 -> 11.25° tilt
+	pan, _ := got["pan"].(float64)
+	tilt, _ := got["tilt"].(float64)
+	if pan < 33.5 || pan > 34.0 {
+		t.Errorf("pan = %v; want ≈33.80", pan)
+	}
+	if tilt < 11.0 || tilt > 11.5 {
+		t.Errorf("tilt = %v; want ≈11.25", tilt)
+	}
+}
+
+// TestHandlePTZMoveNoEcho: when the firmware doesn't echo a position (some
+// modes/firmwares only do on certain d= values) and the cache was cold
+// before this call, the move still succeeds (the firmware call worked) but
+// the response has no position to report — {} rather than an error, since
+// unlike GET /ptz/position there is no cold-cache failure to signal here.
+func TestHandlePTZMoveNoEcho(t *testing.T) {
+	srv, _ := ptzTestServer(t, `{"code":200,"result":"success"}`)
+	a := ptzTestApp(t, srv, ptzCamera())
+
+	w := doPTZ(t, a, http.MethodPost, "/api/camera/cam1/ptz/move?pan=10&tilt=5", "alice", "alicepw")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("body = %v; want {} (no position known)", got)
 	}
 }
 
@@ -211,6 +224,45 @@ func TestHandlePTZPositionRequiresCapability(t *testing.T) {
 	}
 }
 
+// TestHandlePTZRecalibrateReportsPosition pins the recalibrate handler's
+// contract: d=r itself doesn't echo a position (this fake firmware replies
+// with none, like the real one), so the handler must read it back with a
+// separate d=j query and report that — not an empty body — once recalibration
+// succeeds.
+func TestHandlePTZRecalibrateReportsPosition(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		switch r.URL.Query().Get("d") {
+		case "r":
+			_, _ = w.Write([]byte(`{"code":200,"result":"success"}`))
+		case "j":
+			_, _ = w.Write([]byte(`{"code":200,"message":{"xpos":"1065","ypos":"800"}}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a := ptzTestApp(t, srv, ptzCamera())
+
+	w := doPTZ(t, a, http.MethodPost, "/api/camera/cam1/ptz/recalibrate", "alice", "alicepw")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var got map[string]float64
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// 1065 steps / 2130 * 360 = 180° pan; 800 steps / 1600 * 180 = 90° tilt.
+	if got["pan"] != 180 || got["tilt"] != 90 {
+		t.Errorf("pan/tilt = %v; want {pan:180, tilt:90}", got)
+	}
+
+	// The read-back position must also refresh the cache: /ptz/position
+	// should now answer without needing another move.
+	pw := doPTZ(t, a, http.MethodGet, "/api/camera/cam1/ptz/position", "alice", "alicepw")
+	if pw.Code != http.StatusOK {
+		t.Fatalf("position status = %d, want 200; body=%s", pw.Code, pw.Body.String())
+	}
+}
+
 // TestHandlePTZHomeConvertsDegrees pins the home handler's contract: the
 // stored HomeX/HomeY are in degrees (the public unit), the server converts
 // to firmware x/y at call time using the camera's calibration, and the
@@ -240,5 +292,15 @@ func TestHandlePTZHomeConvertsDegrees(t *testing.T) {
 	}
 	if gotY != 800 {
 		t.Errorf("y = %q (parsed %v); want 800 (90° on default calibration)", cap.y, gotY)
+	}
+
+	// Same public shape as /ptz/move: {"pan","tilt"} in degrees, not the
+	// firmware's raw response.
+	var got map[string]float64
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["pan"] != 180 || got["tilt"] != 90 {
+		t.Errorf("pan/tilt = %v; want {pan:180, tilt:90}", got)
 	}
 }

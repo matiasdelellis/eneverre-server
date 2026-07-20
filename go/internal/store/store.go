@@ -211,6 +211,9 @@ func migrateColumns(db *sql.DB) error {
 		// existing installs work without any admin change. Older DBs predate
 		// these columns; the ALTER TABLE fills every existing row with the
 		// same default, which is what a fresh install would have picked too.
+		// The literals mirror camera.DefaultPanSteps et al. (this package
+		// can't import camera) but are not load-bearing: every row read goes
+		// through Spec.ApplyPTZDefaults, which backfills unset values.
 		{"cameras", "pan_steps", "INTEGER NOT NULL DEFAULT 2130"},
 		{"cameras", "pan_degrees", "INTEGER NOT NULL DEFAULT 360"},
 		{"cameras", "tilt_steps", "INTEGER NOT NULL DEFAULT 1600"},

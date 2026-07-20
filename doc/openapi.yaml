@@ -503,11 +503,24 @@ paths:
           example: -5
       responses:
         '200':
-          description: Raw response from the Thingino camera
+          description: >-
+            The camera's new position in degrees, same shape as
+            `GET .../ptz/position`. `pan`/`tilt` are omitted (empty object)
+            on the rare case the firmware didn't echo a position for this
+            move — the move itself still succeeded.
           content:
             application/json:
               schema:
                 type: object
+                properties:
+                  pan:
+                    type: number
+                    description: New pan in degrees
+                    example: 12.3
+                  tilt:
+                    type: number
+                    description: New tilt in degrees
+                    example: -4.5
         '404':
           $ref: '#/components/responses/NotFound'
         '502':
@@ -560,11 +573,22 @@ paths:
         - $ref: '#/components/parameters/camera_id'
       responses:
         '200':
-          description: Raw response from the Thingino camera
+          description: >-
+            The camera's new position in degrees, same shape as
+            `POST .../ptz/move`.
           content:
             application/json:
               schema:
                 type: object
+                properties:
+                  pan:
+                    type: number
+                    description: New pan in degrees
+                    example: 12.3
+                  tilt:
+                    type: number
+                    description: New tilt in degrees
+                    example: -4.5
         '404':
           $ref: '#/components/responses/NotFound'
         '502':
@@ -573,15 +597,30 @@ paths:
   /api/camera/{camera_id}/ptz/recalibrate:
     post:
       summary: Recalibrate the PTZ motor
+      description: >-
+        Runs the motor recalibration routine and reports the position the
+        gimbal settles at afterward (generally its home position), same
+        shape as `POST .../ptz/move`. `pan`/`tilt` are omitted (empty
+        object) on the rare case the position couldn't be read back —
+        the recalibration itself still succeeded.
       parameters:
         - $ref: '#/components/parameters/camera_id'
       responses:
         '200':
-          description: Raw response from the Thingino camera
+          description: The camera's settled position in degrees.
           content:
             application/json:
               schema:
                 type: object
+                properties:
+                  pan:
+                    type: number
+                    description: New pan in degrees
+                    example: 12.3
+                  tilt:
+                    type: number
+                    description: New tilt in degrees
+                    example: -4.5
         '404':
           $ref: '#/components/responses/NotFound'
         '502':

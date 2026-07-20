@@ -1090,9 +1090,14 @@ button.icon-btn {
   gap: 10px;
   color: var(--muted);
 }
-.spinner-icon {
+/* Shared by .spinner-icon and .wall-buffering-icon (below); each still sets
+   its own size/opacity, and only the tile icon's animation is conditional
+   (stopped while wall-connection-lost). */
+.spin-icon {
   display: inline-flex;
   line-height: 1;
+}
+.spinner-icon {
   font-size: 20px;
   opacity: 0.7;
   animation: wall-buffering-spin 1s linear infinite;
@@ -1169,8 +1174,6 @@ button.icon-btn {
 .wall-buffering-icon {
   font-size: 28px;
   opacity: 0.6;
-  display: inline-block;
-  line-height: 1;
 }
 @keyframes wall-buffering-spin {
   to { transform: rotate(360deg); }
@@ -1483,9 +1486,10 @@ button.icon-btn {
   top: 80px;
   right: 16px;
   width: 244px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  backdrop-filter: blur(12px) saturate(1.1);
-  -webkit-backdrop-filter: blur(12px) saturate(1.1);
+  /* Opaque, not the usual frosted-glass mix: this panel floats over a
+     playing <video> for as long as it's open, and backdrop-filter would
+     force a continuous re-blur of that region every frame. */
+  background: var(--panel);
   border: 1px solid var(--border-strong);
   border-radius: calc(var(--radius) + 4px);
   box-shadow: var(--shadow), 0 0 0 1px rgba(0, 0, 0, 0.2);

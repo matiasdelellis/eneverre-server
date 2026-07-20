@@ -16,7 +16,7 @@ export function ensureTileBuffering(tile) {
     el.className = "wall-buffering";
     el.setAttribute("role", "status");
     el.setAttribute("aria-live", "polite");
-    el.innerHTML = `<span class="wall-buffering-icon" aria-hidden="true">${icon("loader")}</span><span class="wall-buffering-text">${t("loading")}</span>`;
+    el.innerHTML = `<span class="spin-icon wall-buffering-icon" aria-hidden="true">${icon("loader")}</span><span class="wall-buffering-text">${t("loading")}</span>`;
     const overlay = tile.querySelector(".wall-overlay");
     if (overlay) tile.insertBefore(el, overlay);
     else tile.appendChild(el);
@@ -39,6 +39,6 @@ export function loadingStatus(text) {
   p.className = "wall-status wall-loading-status";
   p.setAttribute("role", "status");
   p.setAttribute("aria-live", "polite");
-  p.innerHTML = `<span class="spinner-icon" aria-hidden="true">${icon("loader")}</span><span>${text}</span>`;
+  p.innerHTML = `<span class="spin-icon spinner-icon" aria-hidden="true">${icon("loader")}</span><span>${text}</span>`;
   return p;
 }

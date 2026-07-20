@@ -224,6 +224,10 @@ type Spec struct {
 // and engine stream URLs are left at their zero values; the server fills them
 // per request.
 func (s Spec) Camera() Camera {
+	// Guarantee a complete PTZ calibration regardless of how this Spec was
+	// built — callers that already went through ApplyPTZDefaults (loadSpec,
+	// scanSpec, req.spec()) leave this a no-op.
+	s.ApplyPTZDefaults()
 	// The thumbnail handler's thingino path needs BOTH the base URL and the API
 	// key; advertise the capability on the same condition so it never claims a
 	// thumbnail the endpoint would answer 404 for.
@@ -270,9 +274,6 @@ func (s Spec) Camera() Camera {
 	// steps↔degrees mapping is server-side (see PTZMetadata).
 	if s.PTZ {
 		fovH := s.FOVH
-		if fovH <= 0 {
-			fovH = DefaultFOVH
-		}
 		fovV := fovH
 		if s.Width > 0 {
 			fovV = fovH * float64(s.Height) / float64(s.Width)
@@ -325,6 +326,29 @@ const (
 	DefaultTiltDegrees = 180
 	DefaultFOVH        = 113.0
 )
+
+// ApplyPTZDefaults fills every unset (zero or negative) PTZ calibration field
+// with the default calibration. This is the one chokepoint for the defaulting
+// rule: the INI loader, the DB row scan and the HTTP create/update path all
+// call it, so a Spec from any source carries a complete calibration and no
+// other layer needs its own fallback.
+func (s *Spec) ApplyPTZDefaults() {
+	if s.PanSteps <= 0 {
+		s.PanSteps = DefaultPanSteps
+	}
+	if s.PanDegrees <= 0 {
+		s.PanDegrees = DefaultPanDegrees
+	}
+	if s.TiltSteps <= 0 {
+		s.TiltSteps = DefaultTiltSteps
+	}
+	if s.TiltDegrees <= 0 {
+		s.TiltDegrees = DefaultTiltDegrees
+	}
+	if s.FOVH <= 0 {
+		s.FOVH = DefaultFOVH
+	}
+}
 
 // LoadSpecs reads every *.ini under the cameras dir (sorted, in filename order)
 // and returns their raw configuration specs. It is the reader behind the
@@ -400,7 +424,7 @@ func loadSpec(path string) (Spec, bool) {
 	ptz := strings.ToLower(strings.TrimSpace(thingino["ptz"])) == "true"
 	playback := cam.Key("playback").MustBool(false)
 
-	return Spec{
+	s := Spec{
 		ID:             id,
 		Name:           cam.Key("name").String(),
 		Comment:        cam.Key("comment").String(),
@@ -423,12 +447,14 @@ func loadSpec(path string) (Spec, bool) {
 		HomeY:          toFloat(thingino["home_y"], -1),
 		PrivacyX:       toFloat(thingino["privacy_x"], -1),
 		PrivacyY:       toFloat(thingino["privacy_y"], -1),
-		PanSteps:       toInt(thingino["pan_steps"], DefaultPanSteps),
-		PanDegrees:     toInt(thingino["pan_degrees"], DefaultPanDegrees),
-		TiltSteps:      toInt(thingino["tilt_steps"], DefaultTiltSteps),
-		TiltDegrees:    toInt(thingino["tilt_degrees"], DefaultTiltDegrees),
-		FOVH:           toFloat(thingino["fov_h"], DefaultFOVH),
-	}, true
+		PanSteps:       toInt(thingino["pan_steps"], 0),
+		PanDegrees:     toInt(thingino["pan_degrees"], 0),
+		TiltSteps:      toInt(thingino["tilt_steps"], 0),
+		TiltDegrees:    toInt(thingino["tilt_degrees"], 0),
+		FOVH:           toFloat(thingino["fov_h"], 0),
+	}
+	s.ApplyPTZDefaults()
+	return s, true
 }
 
 // Get returns a pointer to the camera with the given id, or nil.
@@ -469,25 +495,25 @@ func (c Camera) ResolveFeatures(globalMSE, globalRelay, globalRecord bool) Featu
 // of more than half the range in either direction lands at the end of the
 // axis instead. Sign convention: pan > 0 = right, tilt > 0 = down.
 func (c Camera) PTZDeltaToSteps(pan, tilt float64) (x, y float64) {
-	if c.PanDegrees > 0 && c.PanSteps > 0 {
-		half := float64(c.PanSteps) / 2
-		x = pan * float64(c.PanSteps) / float64(c.PanDegrees)
-		if x > half {
-			x = half
-		} else if x < -half {
-			x = -half
-		}
-	}
-	if c.TiltDegrees > 0 && c.TiltSteps > 0 {
-		half := float64(c.TiltSteps) / 2
-		y = tilt * float64(c.TiltSteps) / float64(c.TiltDegrees)
-		if y > half {
-			y = half
-		} else if y < -half {
-			y = -half
-		}
-	}
+	x, y = c.PTZDegreesToSteps(pan, tilt)
+	x = clampAbs(x, float64(c.PanSteps)/2)
+	y = clampAbs(y, float64(c.TiltSteps)/2)
 	return x, y
+}
+
+// clampAbs limits v to [-limit, limit]. A non-positive limit disables the
+// clamp (an axis without a valid calibration already converts to 0 steps).
+func clampAbs(v, limit float64) float64 {
+	if limit <= 0 {
+		return v
+	}
+	if v > limit {
+		return limit
+	}
+	if v < -limit {
+		return -limit
+	}
+	return v
 }
 
 // PTZStepsToDegrees converts a firmware x/y in steps into a pan/tilt in

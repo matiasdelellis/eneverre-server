@@ -16,6 +16,43 @@ import { t } from "../i18n.js";
 const STEP_DEG = 10;
 const PTZ_MODAL_POS_KEY = "eneverre.ptzModalPos";
 
+// videoClickToPanTilt maps a point in viewport coordinates (a double-click on
+// a live video tile) to the relative pan/tilt in degrees that would bring
+// that point to the center of the frame. Uses the camera's lens FOV
+// (cam.ptz.fov_h/fov_v — the same public metadata the server exposes so a
+// client never needs the firmware's steps/calibration) and accounts for the
+// video element's `object-fit: contain` letterboxing so the mapping is exact
+// regardless of the tile's aspect ratio. Returns null when the camera has no
+// PTZ FOV metadata, the video has no known dimensions yet, or the point
+// landed in a letterbox bar rather than the actual frame.
+export function videoClickToPanTilt(video, cam, clientX, clientY) {
+  const fov = cam?.ptz;
+  if (!fov || !(fov.fov_h > 0) || !(fov.fov_v > 0)) return null;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const rect = video.getBoundingClientRect();
+  if (!vw || !vh || !rect.width || !rect.height) return null;
+  const scale = Math.min(rect.width / vw, rect.height / vh);
+  const dispW = vw * scale, dispH = vh * scale;
+  const offX = (rect.width - dispW) / 2, offY = (rect.height - dispH) / 2;
+  const px = clientX - rect.left - offX;
+  const py = clientY - rect.top - offY;
+  if (px < 0 || py < 0 || px > dispW || py > dispH) return null;
+  const round2 = (n) => Math.round(n * 100) / 100;
+  return {
+    pan: round2(((px - dispW / 2) / (dispW / 2)) * (fov.fov_h / 2)),
+    tilt: round2(((py - dispH / 2) / (dispH / 2)) * (fov.fov_v / 2)),
+  };
+}
+
+// centerOnVideoPoint issues the relative move computed by
+// videoClickToPanTilt (a no-op when that returns null). The server clamps
+// the result to the camera's mechanical range, same as every other PTZ move.
+export async function centerOnVideoPoint(cam, video, clientX, clientY) {
+  const delta = videoClickToPanTilt(video, cam, clientX, clientY);
+  if (!delta) return;
+  await api(`/api/camera/${encodeURIComponent(cam.id)}/ptz/move?pan=${delta.pan}&tilt=${delta.tilt}`, { method: "POST" });
+}
+
 let ptzModalDrag = null;
 
 function loadPtzModalPos() {

@@ -13,21 +13,21 @@ import (
 // the caller can't use to refresh the position cache.
 func TestParseMotorPos(t *testing.T) {
 	cases := []struct {
-		name    string
-		body    string
-		wantX   float64
-		wantY   float64
-		wantOK  bool
+		name   string
+		body   string
+		wantX  float64
+		wantY  float64
+		wantOK bool
 	}{
 		{
-			name:   "happy path",
-			body:   `{"code":200,"result":"success","message":{"status":"0","xpos":"1089","ypos":"859","speed":"900","invert":"0"}}`,
-			wantX:  1089, wantY: 859, wantOK: true,
+			name:  "happy path",
+			body:  `{"code":200,"result":"success","message":{"status":"0","xpos":"1089","ypos":"859","speed":"900","invert":"0"}}`,
+			wantX: 1089, wantY: 859, wantOK: true,
 		},
 		{
-			name:   "negative position",
-			body:   `{"code":200,"message":{"xpos":"-100","ypos":"-200"}}`,
-			wantX:  -100, wantY: -200, wantOK: true,
+			name:  "negative position",
+			body:  `{"code":200,"message":{"xpos":"-100","ypos":"-200"}}`,
+			wantX: -100, wantY: -200, wantOK: true,
 		},
 		{
 			name:   "empty fields means no position",

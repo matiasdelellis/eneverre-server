@@ -95,7 +95,7 @@ export default {
   "ptz.right": "Right",
   "ptz.center": "Center",
   "ptz.home": "Home",
-  "ptz.hint": "You can also use the arrow keys",
+  "ptz.hint": "You can also use the arrow keys, or double-click the video to center on a point",
   "ptz.error": "PTZ failed: {msg}",
   "ptz.error_title": "PTZ error",
 

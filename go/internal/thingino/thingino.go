@@ -27,14 +27,12 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("status %d", e.Code)
 }
 
-// motorResponse captures the {code, result, message: {xpos, ypos, ...}} shape
-// every json-motor.cgi reply uses. xpos/ypos are returned as strings by the
-// firmware, so the parser below converts them to floats. The full response is
-// also returned to callers unchanged (Move/MoveAbs/Recalibrate relay it to
-// the HTTP client).
+// motorResponse captures the message block of the {code, result, message:
+// {xpos, ypos, ...}} shape every json-motor.cgi reply uses — only xpos/ypos
+// are read (the firmware returns them as strings; the parser below converts
+// them to floats). The full response is relayed to HTTP clients unchanged by
+// Move/MoveAbs/Recalibrate, so nothing else needs decoding.
 type motorResponse struct {
-	Code    int    `json:"code"`
-	Result  string `json:"result"`
 	Message struct {
 		XPos string `json:"xpos"`
 		YPos string `json:"ypos"`
