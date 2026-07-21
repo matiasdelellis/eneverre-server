@@ -191,6 +191,19 @@ export async function probeCamera(source, transport) {
 }
 
 /**
+ * Test a Thingino camera's URL + API key before saving. Always resolves:
+ * { ok: true, ptz: false } | { ok: true, ptz: true, pan_steps, pan_degrees,
+ * tilt_steps, tilt_degrees, home_x, home_y, privacy_x, privacy_y } |
+ * { ok: false, error }.
+ */
+export async function probeThingino(thingino_url, thingino_api_key) {
+  return api("/api/cameras/probe-thingino", {
+    method: "POST",
+    body: JSON.stringify({ thingino_url, thingino_api_key }),
+  });
+}
+
+/**
  * Admin-only operational snapshot: service/version/uptime, per-camera
  * connectivity/recording/privacy, aggregate totals, and (when recording)
  * storage headroom with the low-disk alert. Powers the server-status screen

@@ -148,19 +148,23 @@ internal/thingino             PTZ move + JPEG snapshot HTTP calls
 internal/events               event model + record/list/get/delete
 internal/updates              Android auto-update sidecar store
 internal/backchannel          ONVIF Profile T backchannel + G.711/RTP (push-to-talk)
+internal/diskfree             shared statfs wrapper (Available/Total), unix + Windows
+internal/metrics              Prometheus + JSON instrumentation (/api/metrics{,/json})
 internal/media/               embedded media engine (active when [media] is configured)
   engine.go                   orchestrator: recorder + RTSP relay + live MSE + retention per camera
   recorder/                   per-camera gortsplib client, fMP4 segments, media watchdog
   recstore/                   record_path template -> on-disk path; common root for retention
   index/                      SQLite segment index (range, timeline, gaps, batched delete)
+  diskmonitor/                polls free space, fires OnLow/OnRecovered (low-disk emergency purge)
   liverelay/                  raw RTP passthrough served over RTSP on [media] rtsp_address
   live/                       chunked-HTTP fMP4 broadcaster (MSE feed for browsers)
   mtxi/                       MediaMTX-compatible mtxi box writer (gapless concat on playback)
   playback/                   VOD muxer: /get with gap fill + HLS VOD playlist
-  retention/                  periodic cleaner (batched delete + dir prune)
+  retention/                  periodic cleaner (batched delete + dir prune) + PurgeToFree (low-disk)
 internal/server               HTTP routes + handlers
-  server.go                   App + mux + handler registry
+  server.go                   App + mux + handler registry, GET /api/status
   handlers_auth.go            login/logout/refresh, device login
+  handlers_cameras.go         camera list/CRUD/probe, PTZ move/home/recalibrate/position
   handlers_events.go          webhook + list/delete events
   handlers_live.go            live/info + live/stream (embedded engine, MSE fMP4)
   handlers_playback.go        recordings list/get/timeline/gaps + HLS VOD
@@ -170,13 +174,16 @@ internal/server               HTTP routes + handlers
 
 ## Endpoints
 
-The REST surface is implemented and exercised: health, login/logout/refresh,
-cameras (list + admin CRUD + probe), ptz (move/home/recalibrate), privacy
-(lens blackout), thumbnail, the device-login flow, events (webhook + list +
-delete), and the full users CRUD (self + admin routes, with `me` taking
-precedence over `{username}`). An earlier external-MediaMTX proxy
-(`POST /api/auth` + `playback/{list,get}` → MediaMTX control API) was removed
-when the embedded engine replaced it.
+The REST surface is implemented and exercised: health, `GET /api/status`
+(admin-only operational snapshot: per-camera connected/recording/privacy,
+totals, and — when recording is enabled — the recording volume's disk
+headroom), login/logout/refresh, cameras (list + admin CRUD + probe), ptz
+(move/home/recalibrate/position — pan/tilt in degrees, never firmware
+steps), privacy (lens blackout), thumbnail, the device-login flow, events
+(webhook + list + delete), and the full users CRUD (self + admin routes,
+with `me` taking precedence over `{username}`). An earlier external-MediaMTX
+proxy (`POST /api/auth` + `playback/{list,get}` → MediaMTX control API) was
+removed when the embedded engine replaced it.
 
 The embedded media engine (`[media]`) is now the only streaming mode and
 adds a separate surface of its own, mounted under `/api/camera/{id}/`:

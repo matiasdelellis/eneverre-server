@@ -394,6 +394,70 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/cameras/probe-thingino:
+    post:
+      summary: Test a Thingino camera's URL + API key (admin)
+      description: >-
+        Tests a Thingino URL + API key for the wizard's Thingino step, without
+        creating anything. Always answers 200: `{ok:false, error}` when the
+        camera is unreachable or rejects the API key, otherwise `{ok:true,
+        ptz}`. When the camera also reports a working motor, the PTZ
+        calibration comes along too: `pan_steps`/`tilt_steps` read straight off
+        the firmware, `pan_degrees` fixed at 360 (every Thingino gimbal rotates
+        continuously) with `tilt_degrees` derived from pan's steps-per-degree
+        ratio (the firmware has no tilt-range query), the firmware's own
+        configured position as `home_x`/`home_y`, and `privacy_x`/`privacy_y`
+        leveled to the same pan with tilt at 0°. Requires an admin token (403
+        for a non-admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [thingino_url, thingino_api_key]
+              properties:
+                thingino_url:
+                  type: string
+                  description: The camera's Thingino firmware base URL.
+                thingino_api_key:
+                  type: string
+                  description: The camera's Thingino API key.
+      responses:
+        '200':
+          description: Test result (success or failure — both are 200).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  ptz:
+                    type: boolean
+                    description: Whether the camera reported a working motor.
+                  pan_steps:
+                    type: integer
+                  pan_degrees:
+                    type: integer
+                  tilt_steps:
+                    type: integer
+                  tilt_degrees:
+                    type: integer
+                  home_x:
+                    type: number
+                  home_y:
+                    type: number
+                  privacy_x:
+                    type: number
+                  privacy_y:
+                    type: number
+                  error:
+                    type: string
+                    description: Failure reason (present when ok is false).
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /api/camera/{camera_id}:
     put:
       summary: Update a camera (admin)

@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"regexp"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"eneverre/internal/camera"
 	"eneverre/internal/media"
+	"eneverre/internal/thingino"
 )
 
 // camIDPattern constrains a camera id to a short, filesystem- and URL-safe
@@ -331,6 +333,63 @@ func (a *App) handleProbeCamera(w http.ResponseWriter, r *http.Request) {
 		"width":  res.Width,
 		"height": res.Height,
 	})
+}
+
+// handleProbeThingino tests a Thingino camera's URL + API key (admin only)
+// for the wizard's Thingino step. It always answers 200: {"ok": false,
+// "error": "..."} when the camera is unreachable or rejects the API key, or
+// {"ok": true, "ptz": bool, ...} once reached. When the camera also reports a
+// working motor, the PTZ calibration fields come along too — steps_pan/
+// steps_tilt read straight off the firmware, pan assumed a full 360°
+// (every Thingino gimbal rotates continuously) with tilt's degree range
+// derived from pan's steps-per-degree ratio (the firmware doesn't report a
+// tilt range directly), the firmware's own configured position as home, and
+// privacy leveled to the same pan with tilt at 0°.
+func (a *App) handleProbeThingino(w http.ResponseWriter, r *http.Request) {
+	if a.requireAdmin(w, r) == nil {
+		return
+	}
+	var req struct {
+		ThinginoURL    string `json:"thingino_url"`
+		ThinginoAPIKey string `json:"thingino_api_key"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	host := strings.TrimSpace(req.ThinginoURL)
+	key := strings.TrimSpace(req.ThinginoAPIKey)
+	if host == "" || key == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "URL and API key are required"})
+		return
+	}
+	if _, err := thingino.State(host, key); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+
+	res := map[string]any{"ok": true, "ptz": false}
+	// A camera without a gimbal fails this call — that's "no PTZ to
+	// calibrate", not a failure of the connection test above.
+	if params, err := thingino.Params(host, key); err == nil && params.StepsPan > 0 && params.StepsTilt > 0 {
+		const panDegrees = 360
+		tiltDegrees := int(math.Round(float64(params.StepsTilt) * panDegrees / float64(params.StepsPan)))
+		homeX := roundTenth(float64(params.Pos0X) * panDegrees / float64(params.StepsPan))
+		homeY := roundTenth(float64(params.Pos0Y) * float64(tiltDegrees) / float64(params.StepsTilt))
+		res["ptz"] = true
+		res["pan_steps"] = params.StepsPan
+		res["pan_degrees"] = panDegrees
+		res["tilt_steps"] = params.StepsTilt
+		res["tilt_degrees"] = tiltDegrees
+		res["home_x"] = homeX
+		res["home_y"] = homeY
+		res["privacy_x"] = homeX
+		res["privacy_y"] = 0.0
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func roundTenth(v float64) float64 {
+	return math.Round(v*10) / 10
 }
 
 // publicCamera renders one camera as the API view GET /api/cameras returns:

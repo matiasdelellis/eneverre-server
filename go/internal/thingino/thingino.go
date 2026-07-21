@@ -133,6 +133,34 @@ func State(host, apiKey string) (*Heartbeat, error) {
 	return &hb, nil
 }
 
+// MotorParams is the subset of json-motor-params.cgi we consume: the total
+// firmware step count per axis for this gimbal (steps_pan/steps_tilt — the
+// mechanical range Position never reveals, since it only reports the current
+// position) and the firmware's own configured home position (pos_0_x/
+// pos_0_y), in the same step units.
+type MotorParams struct {
+	StepsPan  int `json:"steps_pan"`
+	StepsTilt int `json:"steps_tilt"`
+	Pos0X     int `json:"pos_0_x"`
+	Pos0Y     int `json:"pos_0_y"`
+}
+
+// Params fetches the motor's step calibration and home position. Used by the
+// wizard's Thingino test to prefill the PTZ step calibration and home
+// position instead of the operator hand-typing firmware step counts.
+func Params(host, apiKey string) (*MotorParams, error) {
+	url := fmt.Sprintf("%s/x/json-motor-params.cgi?token=%s", host, apiKey)
+	body, err := doGet(url, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var p MotorParams
+	if err := json.Unmarshal(body, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 // SetPrivacy toggles prudynt's privacy mode (lens blackout) on the camera.
 func SetPrivacy(host, apiKey string, enabled bool) (json.RawMessage, error) {
 	url := fmt.Sprintf("%s/x/json-prudynt.cgi?token=%s", host, apiKey)

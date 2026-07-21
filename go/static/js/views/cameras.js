@@ -1,6 +1,6 @@
 import { escapeHtml } from "../util/dom.js";
 import {
-  api, createCamera, updateCamera, getCameraConfig, deleteCamera, probeCamera, invalidateCameras,
+  api, createCamera, updateCamera, getCameraConfig, deleteCamera, probeCamera, probeThingino, invalidateCameras,
 } from "../api.js";
 import { getState } from "../state.js";
 import { confirmModal } from "../ui/dialog.js";
@@ -305,6 +305,54 @@ async function onProbe() {
   }
 }
 
+// onProbeThingino tests the Thingino URL + API key and, when the camera
+// reports a working motor, fills in the PTZ calibration: steps/degrees read
+// or derived from the firmware, the firmware's own position as home, and
+// privacy leveled to the same pan with tilt at 0°. Only empty fields are
+// filled — an operator's own values are never overwritten.
+async function onProbeThingino() {
+  const form = document.getElementById("cam-wizard-form");
+  const url = form.elements.thingino_url.value.trim();
+  const apiKey = form.elements.thingino_api_key.value.trim();
+  const result = document.getElementById("cam-thingino-probe-result");
+  const btn = document.getElementById("cam-thingino-probe-btn");
+  if (!url || !apiKey) {
+    result.textContent = t("cameras.probe_thingino_empty");
+    result.className = "cam-probe-result error";
+    return;
+  }
+  btn.disabled = true;
+  result.className = "cam-probe-result muted";
+  result.textContent = t("cameras.probe_testing");
+  try {
+    const r = await probeThingino(url, apiKey);
+    if (!r.ok) {
+      result.className = "cam-probe-result error";
+      result.textContent = t("cameras.probe_failed", { error: r.error || "unreachable" });
+      return;
+    }
+    result.className = "cam-probe-result ok";
+    result.textContent = t(r.ptz ? "cameras.probe_thingino_ptz" : "cameras.probe_thingino_connected");
+    if (r.ptz) {
+      form.elements.ptz.checked = true;
+      const fill = (name, v) => { if (v != null && !form.elements[name].value) form.elements[name].value = v; };
+      fill("pan_steps", r.pan_steps);
+      fill("pan_degrees", r.pan_degrees);
+      fill("tilt_steps", r.tilt_steps);
+      fill("tilt_degrees", r.tilt_degrees);
+      fill("home_x", r.home_x);
+      fill("home_y", r.home_y);
+      fill("privacy_x", r.privacy_x);
+      fill("privacy_y", r.privacy_y);
+    }
+  } catch (err) {
+    result.className = "cam-probe-result error";
+    result.textContent = t("cameras.probe_error", { msg: err.message || err });
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // collectForm turns the form into the create-request body. Booleans come from
 // checkboxes; numeric fields are sent only when filled so the server applies
 // its defaults otherwise.
@@ -418,6 +466,7 @@ export function initCameras() {
   document.getElementById("cam-wizard-next")?.addEventListener("click", onNext);
   document.getElementById("cam-wizard-back")?.addEventListener("click", onBack);
   document.getElementById("cam-probe-btn")?.addEventListener("click", onProbe);
+  document.getElementById("cam-thingino-probe-btn")?.addEventListener("click", onProbeThingino);
   document.getElementById("cam-wizard-form")?.addEventListener("submit", onSubmit);
   const modal = document.getElementById("cam-wizard-modal");
   if (modal) {

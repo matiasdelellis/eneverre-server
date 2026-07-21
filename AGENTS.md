@@ -246,13 +246,24 @@ All code lives under `go/` (module `eneverre`).
   (`statfs`) and Windows (`GetDiskFreeSpaceEx`). Returns the caller-available
   figure, which is the honest "free space" for an unprivileged process
   watching recording headroom.
+- `go/internal/metrics` — Prometheus + JSON instrumentation (`Store`, wired
+  into `App` via `SetMetrics`). Collectors are called once per scrape: Go
+  runtime (stdlib collector), DB pool stats (`db.Stats()`), aggregate camera
+  counts (total/connected/mse_active/recording/privacy — no per-camera `id`
+  label, so the endpoint can't be used as a per-camera surveillance map), and
+  `eneverre_build_info{version}`. Served on `GET /api/metrics` (Prometheus
+  text) and `GET /api/metrics/json`; both routes are only registered when
+  `SetMetrics` was called (`[server] metrics = false` skips it, so the routes
+  404). See [`doc/MEDIA.md`](doc/MEDIA.md#metrics).
 - `go/internal/server` — `App` (holds cfg, db, cred store, cameras, the
   optional `*media.Engine` set via `SetMediaEngine`, static FS, per-track
-  update stores) and all handlers, split across `server.go`, `helpers.go`,
-  `handlers_auth.go`, `handlers_events.go`, `handlers_live.go` (embedded
-  engine's `live/info` and `live/stream`),   `handlers_playback.go`
-  (recordings list/get/timeline/gaps/HLS-VOD), `handlers_users.go`,
-  `handlers_updates.go`. Routes under `/api/camera/{id}/recordings/*` are
+  update stores) and all handlers, split across `server.go` (also `GET
+  /api/status`), `helpers.go`, `handlers_auth.go`, `handlers_cameras.go`
+  (camera CRUD/probe, PTZ move/home/recalibrate/position), `handlers_events.go`,
+  `handlers_live.go` (embedded engine's `live/info` and `live/stream`),
+  `handlers_playback.go` (recordings list/get/timeline/gaps/HLS-VOD),
+  `handlers_users.go`, `handlers_updates.go`. Routes under
+  `/api/camera/{id}/recordings/*` are
   the canonical names; the legacy `/api/camera/{id}/playback/{list,get}`
   and `/api/cameras/{id}/events` are kept as `Deprecation: true` shims
   (see `deprecatedAlias` in `server.go`) and will be removed once no
@@ -484,6 +495,24 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
   `/api/camera/{id}/live/stream`, ~1-2s latency) when the camera exposes
   it. With neither `[media]` nor another streamer in front, the wall
   falls back to `camera.hls` (played with hls.js).
+- **PTZ** (`js/views/ptz.js`): all pan/tilt is in degrees (`STEP_DEG = 10` per
+  arrow tap), matching the server's degrees-only API — no firmware step
+  values ever reach the client. Double-clicking a live wall tile for a
+  PTZ-capable camera (`js/views/wall.js`) centers the view on the clicked
+  point: `videoClickToPanTilt` maps the click's viewport coordinates to a
+  relative pan/tilt using the camera's lens FOV (`cam.ptz.fov_h`/`fov_v`,
+  server-supplied) and the `<video>`'s actual displayed rect (accounting for
+  `object-fit: contain` letterboxing), then `centerOnVideoPoint` posts it to
+  `/ptz/move`. A single click still toggles the wall-filter zoom; it's
+  delayed 250ms on PTZ tiles so a following second click (the first half of a
+  dblclick) can cancel it before the zoom fires.
+- **Admin status view** (`js/views/status.js`): a `GET /api/status` overlay
+  (version, uptime, per-camera connected/recording/privacy, totals, and —
+  when recording is enabled — storage headroom) plus a persistent low-disk
+  banner that polls the same endpoint every 30s and shows/hides based on
+  `storage.low_space` (the engine's disk monitor crossing `[media]
+  min_free_bytes`). Admin-only; the overlay itself auto-refreshes every 10s
+  while open.
 - **HLS VOD playback** (`js/views/playback.js`): the timeline plays
   `/api/camera/{id}/recordings/hls/playlist.m3u8` via hls.js
   (CMAF; `EXT-X-DISCONTINUITY` at coverage gaps), one instance per camera

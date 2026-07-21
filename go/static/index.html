@@ -409,6 +409,10 @@
           <label><span data-i18n="wizard.thingino_api_key">Thingino API key</span>
             <input name="thingino_api_key" data-i18n-placeholder="wizard.api_key_placeholder" placeholder="API key" />
           </label>
+          <div class="cam-probe">
+            <button type="button" id="cam-thingino-probe-btn" class="ghost" data-i18n="wizard.test">Test connection</button>
+            <span id="cam-thingino-probe-result" class="cam-probe-result muted"></span>
+          </div>
           <label class="switch"><input type="checkbox" name="ptz" /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.ptz">PTZ camera</span></label>
           <div class="cam-row-2">
             <label><span data-i18n="wizard.home_x">Home X</span><input name="home_x" type="number" step="any" placeholder="unset" /></label>

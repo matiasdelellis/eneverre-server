@@ -577,6 +577,7 @@ func (a *App) Handler() http.Handler {
 	// per-camera operations below.
 	mux.HandleFunc("POST /api/cameras", a.handleCreateCamera)
 	mux.HandleFunc("POST /api/cameras/probe", a.handleProbeCamera)
+	mux.HandleFunc("POST /api/cameras/probe-thingino", a.handleProbeThingino)
 	mux.HandleFunc("GET /api/camera/{cam_id}/config", a.handleGetCameraConfig)
 	mux.HandleFunc("PUT /api/camera/{cam_id}", a.handleUpdateCamera)
 	mux.HandleFunc("DELETE /api/camera/{cam_id}", a.handleDeleteCamera)
