@@ -55,8 +55,9 @@ func TestCreateCameraReqSpec(t *testing.T) {
 		if !s.Record || !s.MSE || !s.Relay || !s.Privacy {
 			t.Errorf("record/mse/relay/privacy defaults = %v/%v/%v/%v; want all true", s.Record, s.MSE, s.Relay, s.Privacy)
 		}
-		if s.Playback {
-			t.Error("playback default = true; want false")
+		// Playback defaults to the record value, which defaults true.
+		if !s.Playback {
+			t.Error("playback default = false; want true (follows record)")
 		}
 		if s.Width != 16 || s.Height != 9 {
 			t.Errorf("width/height defaults = %d/%d; want 16/9", s.Width, s.Height)
@@ -75,6 +76,22 @@ func TestCreateCameraReqSpec(t *testing.T) {
 		}
 		if !s.Relay {
 			t.Error("relay should still default true when only record/mse set false")
+		}
+		// Playback was omitted, so it follows record — which is explicitly false here.
+		if s.Playback {
+			t.Error("playback should follow record=false when omitted")
+		}
+	})
+
+	t.Run("explicit playback overrides the record-derived default", func(t *testing.T) {
+		no, yes := false, true
+		req := createCameraReq{ID: "cam", Source: "rtsp://x/y", Record: &no, Playback: &yes}
+		s, _ := req.spec()
+		if s.Record {
+			t.Error("record should be false")
+		}
+		if !s.Playback {
+			t.Error("explicit playback=true not honored over record=false")
 		}
 	})
 

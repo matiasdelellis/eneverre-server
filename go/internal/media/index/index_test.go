@@ -62,6 +62,40 @@ func TestOldestReturnsByStartTime(t *testing.T) {
 	}
 }
 
+// TestHasRecordings covers the per-camera existence check that drives the
+// frontend's playback capability: false for a camera with no segments, true
+// once one is indexed.
+func TestHasRecordings(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Open(filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer idx.Close()
+
+	if ok, err := idx.HasRecordings("cam"); err != nil || ok {
+		t.Fatalf("HasRecordings(empty) = %v, %v; want false, nil", ok, err)
+	}
+
+	if err := idx.Insert(Segment{
+		Fpath:         filepath.Join(dir, "seg", "00"),
+		Path:          "cam",
+		Start:         time.Unix(1700000000, 0).UTC(),
+		Duration:      60,
+		SegmentNumber: 0,
+		StreamID:      "s",
+	}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if ok, err := idx.HasRecordings("cam"); err != nil || !ok {
+		t.Errorf("HasRecordings(cam) = %v, %v; want true, nil", ok, err)
+	}
+	if ok, err := idx.HasRecordings("other"); err != nil || ok {
+		t.Errorf("HasRecordings(other) = %v, %v; want false, nil", ok, err)
+	}
+}
+
 func timeSegmentName(i int) string {
 	if i < 10 {
 		return "0" + string(rune('0'+i))

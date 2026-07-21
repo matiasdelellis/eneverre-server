@@ -52,16 +52,17 @@ import (
 //   - RelayEnabled: RTSP relay passthrough. Default true.
 //     Each camera's `relay = false` INI key opts that camera out individually.
 //     Disable globally with [media] relay = false.
-//   - RecordEnabled: writes segments to disk. Default false — must be
-//     turned on explicitly with [media] record = true. Per-camera
-//     `record = false` opts that camera out individually.
+//   - RecordEnabled: writes segments to disk. Default true — turn it off
+//     with [media] record = false. Per-camera `record = false` opts that
+//     camera out individually.
 //
-// When [media] is absent MSE and relay keep their defaults (both on),
-// recording stays off.
+// When [media] is absent MSE, relay and recording all keep their defaults
+// (all on); recordings land under the resolved record_dir (see
+// resolveRecordDir).
 type Options struct {
 	MSEEnabled      bool          // default true; from [media] mse
 	RelayEnabled    bool          // default true; from [media] relay
-	RecordEnabled   bool          // default false; from [media] record (explicit on)
+	RecordEnabled   bool          // default true; from [media] record (set false to opt out)
 	RecordDir       string        // base directory recordings live under
 	IndexPath       string        // SQLite index file (default <RecordDir>/index.db)
 	CacheDir        string        // generated-asset cache (gap-fill frames); default <RecordDir>/../cache
@@ -80,31 +81,37 @@ type Options struct {
 	RelayCredsFn func() [][2]string
 }
 
-// DefaultOptions returns the defaults used when no [media] section is
-// configured: MSE and relay on, recording off, relay on the default port.
-// Cameras with a `source` URL get the live MSE feed and/or RTSP relay
-// according to their per-camera mse/relay flags.
+// DefaultOptions returns the in-memory defaults: MSE, relay and recording
+// all on, relay on the default port. It does not resolve filesystem-derived
+// fields (RecordDir and the paths under it) — those depend on the data dir
+// and are filled in by OptionsFromSection, which every real engine build
+// goes through. Cameras with a `source` URL get the live MSE feed and/or
+// RTSP relay according to their per-camera mse/relay flags.
 func DefaultOptions() Options {
 	return Options{
-		MSEEnabled:   true,
-		RelayEnabled: true,
-		// RecordEnabled: false (zero value) — recording is off by default.
-		MaxPartSize:  50 * 1024 * 1024,
-		Retain:       7 * 24 * time.Hour,
-		MinFreeBytes: 1 << 30, // 1 GiB; force-purge oldest recordings below this
-		RTSPAddress:  ":8554",
-		Transport:    "auto",
+		MSEEnabled:    true,
+		RelayEnabled:  true,
+		RecordEnabled: true,
+		MaxPartSize:   50 * 1024 * 1024,
+		Retain:        7 * 24 * time.Hour,
+		MinFreeBytes:  1 << 30, // 1 GiB; force-purge oldest recordings below this
+		RTSPAddress:   ":8554",
+		Transport:     "auto",
 	}
 }
 
 // OptionsFromSection builds Options from a [media] config.Section, applying
-// defaults. server/relay credentials are supplied separately by the caller.
-func OptionsFromSection(sec config.Section) Options {
-	recordDir := sec.Get("record_dir", defaultRecordDir)
+// defaults. A nil sec yields the full defaults (recording on, paths resolved
+// from dataDir), so callers can pass a missing [media] section straight
+// through. dataDir is the resolved config-bundle dir (config.Config.DataDir),
+// used only as the recordings fallback root. server/relay credentials are
+// supplied separately by the caller.
+func OptionsFromSection(sec config.Section, dataDir string) Options {
+	recordDir := resolveRecordDir(sec, dataDir)
 	o := DefaultOptions()
 	o.MSEEnabled = sec.GetBool("mse", true)
 	o.RelayEnabled = sec.GetBool("relay", true)
-	o.RecordEnabled = sec.GetBool("record", false)
+	o.RecordEnabled = sec.GetBool("record", true)
 	o.RecordDir = recordDir
 	o.IndexPath = sec.Get("index_path", filepath.Join(recordDir, "index.db"))
 	o.CacheDir = sec.Get("cache_dir", filepath.Join(filepath.Dir(recordDir), "cache"))
@@ -123,6 +130,32 @@ func OptionsFromSection(sec config.Section) Options {
 	o.RTSPAddress = sec.Get("rtsp_address", ":8554")
 	o.Transport = sec.Get("transport", "auto")
 	return o
+}
+
+// resolveRecordDir picks the base directory recordings live under, following
+// the same "explicit key wins" precedence as every other [media] option:
+//
+//  1. an explicit [media] record_dir — the operator's choice always wins.
+//  2. the platform default (defaultRecordDir, e.g. /var/lib/eneverre/recordings)
+//     when that directory already exists, so an FHS/systemd install keeps
+//     writing where it always has.
+//  3. <dataDir>/recordings — so a self-contained data dir (--data-dir /
+//     ENEVERRE_DATA_DIR, or the ./data bundle) keeps its recordings next to
+//     its config and DB when the FHS location isn't present.
+//
+// dataDir is the resolved config-bundle dir (never empty in practice). If it
+// is empty the platform default is returned as a last resort.
+func resolveRecordDir(sec config.Section, dataDir string) string {
+	if v := sec.Get("record_dir", ""); v != "" {
+		return v
+	}
+	if _, err := os.Stat(defaultRecordDir); err == nil {
+		return defaultRecordDir
+	}
+	if dataDir != "" {
+		return filepath.Join(dataDir, "recordings")
+	}
+	return defaultRecordDir
 }
 
 func durationOr(key, s string, def time.Duration) time.Duration {
@@ -788,6 +821,23 @@ func (e *Engine) Playback() *playback.Handler { return e.playback }
 
 // Index returns the shared segment index (for metadata queries).
 func (e *Engine) Index() *index.Index { return e.idx }
+
+// HasRecordings reports whether the camera currently has any recorded segment
+// in the index. It returns false when recording is disabled (no index) or on a
+// query error — callers use it only to decide whether to advertise the playback
+// capability, so a transient failure degrades to "no playback" rather than
+// failing the request.
+func (e *Engine) HasRecordings(camID string) bool {
+	if e.idx == nil {
+		return false
+	}
+	ok, err := e.idx.HasRecordings(camID)
+	if err != nil {
+		slog.Warn("media: has-recordings check failed", "camera", camID, "err", err)
+		return false
+	}
+	return ok
+}
 
 // RecordingEnabled reports whether the engine is writing segments to disk
 // (i.e. [media] record = true). Playback endpoints use this to short-circuit

@@ -4,10 +4,10 @@ Eneverre runs an in-process media engine for recording, RTSP relay and
 browser live. It is the **only** streaming mode — the historical
 external-[MediaMTX] integration was removed (see
 [Why the embedded engine](#why-the-embedded-engine) below). The engine is
-always started for every camera with a `source` URL: the live MSE feed and
-the RTSP relay are **on by default**, with no `[media]` section required.
-Adding a `[media]` section turns on disk recording (off by default) and
-tunes paths, timing and retention. Each feature is an independent switch,
+always started for every camera with a `source` URL: the live MSE feed, the
+RTSP relay and disk recording are all **on by default**, with no `[media]`
+section required. A `[media]` section tunes paths, timing and retention, or
+turns recording off (`record = false`). Each feature is an independent switch,
 global (`[media]`) with a per-camera opt-out (see
 [Independent switches](#independent-switches)).
 
@@ -50,12 +50,13 @@ connects and writes to disk).
 |----------|--------------------|-----------------------------------|----------------|
 | `mse`    | `true`             | `true`                            | live fMP4 feed at `/api/camera/{id}/live/stream` |
 | `relay`  | `true`             | `true`                            | RTSP relay at `[media].rtsp_address` (default `:8554`) |
-| `record` | `false`            | `true`                            | segments on disk, indexed for `/recordings/*` |
+| `record` | `true`             | `true`                            | segments on disk, indexed for `/recordings/*` |
 
 The per-camera flag can only **turn a feature off** for that camera: the global
 switch is the master, and the effective state is `global AND per-camera`. So a
-per-camera `record = true` does nothing unless `[media] record = true` is also
-set; use it to keep a camera in the default-on state while opting others out.
+per-camera `record = true` does nothing unless `[media] record` is on (the
+default); use the per-camera flag to opt individual cameras out while the rest
+keep recording.
 
 ### Privacy (runtime pause)
 
@@ -72,12 +73,15 @@ Privacy is offered for every camera by default; set `privacy = false` in the
 camera INI to mark an **always-on** camera that must never be paused (no privacy
 toggle, `capabilities.privacy = false`, the endpoint returns 404).
 
-Because MSE and relay default to on, the engine is fully useful with **no
-`[media]` section at all** (live-only): the live feed and relay come up, but no
-`[media]` means recording is off, no SQLite index is opened, and the
-`/recordings/*` endpoints answer 404. Add `[media] record = true` (with a
-`record_dir`) to turn recording on and enable the retention cleaner
-(`[media].retain`).
+Because MSE, relay and recording all default to on, the engine is fully useful
+with **no `[media]` section at all**: the live feed and relay come up, recording
+starts, the SQLite index is opened and the `/recordings/*` endpoints serve
+footage. With no `record_dir` configured the engine prefers
+`/var/lib/eneverre/recordings` when that directory exists (the systemd/FHS
+install), and otherwise records under `<data_dir>/recordings` (the `--data-dir`
+bundle, or `./data/recordings` by default). Set `[media] record = false` to go
+live-only (no index, `/recordings/*` answer 404); the retention cleaner
+(`[media].retain`) runs whenever recording is on.
 
 ## What it does
 
@@ -110,8 +114,8 @@ install, configure or supervise.
 A naive recorder happily writes until the disk is full, at which point every
 `os.Write` returns `ENOSPC`. The retry loop reconnects and the next segment
 fails the same way — silently, in a 1-Hz `WARN` storm — until the operator
-notices. With the engine's default of `record = false` plus a `retain = 0`
-install (e.g. an old config), nothing else cleans up.
+notices. With a `retain = 0` install (e.g. an old config) that also turns the
+low-disk watcher off (`min_free_bytes = 0`), nothing else cleans up.
 
 `[media] min_free_bytes` (default `1G`) is the safety net:
 
@@ -248,8 +252,11 @@ transport        = auto        ; source transport: auto (default) | tcp | udp
 ```
 
 See [`doc/example/eneverre.ini`](example/eneverre.ini) for the annotated
-reference. Keep `record_dir` under `/var/lib/eneverre` (the systemd
-`StateDirectory`) or add it to the unit's `ReadWritePaths`.
+reference. `record_dir` is optional: unset, the engine uses
+`/var/lib/eneverre/recordings` when that directory exists (the systemd
+`StateDirectory`) and otherwise falls back to `<data_dir>/recordings`. If you
+set it explicitly, keep it under `/var/lib/eneverre` or add it to the unit's
+`ReadWritePaths`.
 
 ### Camera source
 
@@ -262,7 +269,9 @@ clients.
 [camera]
 id     = calle
 source = rtsp://user:pass@192.168.1.91:554/ch0
-playback = true
+; recording is on by default; the playback switch appears automatically once
+; segments exist. Add `record = false` (or `playback = false` to keep
+; recording but hide playback) to opt out.
 ```
 
 ## What `GET /api/cameras` returns
@@ -302,7 +311,9 @@ Plus the RTSP surface: `rtsp://[user:pass@]host:8554/<id>`.
 ## Recordings (playback) HTTP endpoints
 
 Backed by the in-process segment index; require user auth + the camera's
-`playback` capability.
+`playback` capability. That capability is advertised (in `GET /api/cameras`)
+only when the camera actually has recordings on disk; a per-camera
+`playback = false` hides it even then.
 
 | Method + path | Purpose |
 |---|---|
@@ -441,11 +452,11 @@ port directly rather than via Caddy.
 ## Recording is optional; live view isn't
 
 For any camera with a `source` URL, the engine is always on — live MSE and
-the RTSP relay run whether or not `[media]` is configured. The only thing
-`[media]` turns on is **recording** to disk (off by default): skip it, or
-leave `record` at its default, and that camera stays in live-only mode —
-still fully watchable, just not written to disk, so `/recordings/*` answers
-404 for it. Either way, clients never see the raw camera `source` URL; they
+the RTSP relay run whether or not `[media]` is configured. Recording to disk
+is also on by default; set `[media] record = false` (globally) or a per-camera
+`record = false` to drop a camera into live-only mode — still fully watchable,
+just not written to disk, so `/recordings/*` answers 404 for it. Either way,
+clients never see the raw camera `source` URL; they
 always get the relay `rtsp://…:8554/{id}` with rotating credentials instead.
 
 If you want browser live for an H265 camera whose viewers lack an HEVC

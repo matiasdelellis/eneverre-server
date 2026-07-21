@@ -189,18 +189,15 @@ func main() {
 	}
 
 	// Embedded media engine — always built and started. Live MSE + RTSP relay
-	// are on by default for any camera with a `source` URL, because that's
-	// the point of the app. The optional [media] section adds recording
-	// (off by default; enable explicitly with `[media] record = true`) and
-	// tunes the rest of the engine (paths, segment timing, retention, …).
+	// and disk recording are all on by default for any camera with a `source`
+	// URL, because that's the point of the app. The optional [media] section
+	// tunes the engine (paths, segment timing, retention, …) and can opt out
+	// of any of the three (`record = false`, `mse = false`, `relay = false`).
 	// Per-camera `record = false` / `live = false` INI keys opt a single
-	// camera out of recording or out of the live pipeline respectively.
-	var mopts media.Options
-	if cfg.Media != nil {
-		mopts = media.OptionsFromSection(cfg.Media)
-	} else {
-		mopts = media.DefaultOptions()
-	}
+	// camera out of recording or out of the live pipeline respectively. A
+	// missing [media] section (cfg.Media == nil) still yields the defaults;
+	// recordings land under the record_dir resolved from cfg.DataDir.
+	mopts := media.OptionsFromSection(cfg.Media, cfg.DataDir)
 	mopts.RelayCredsFn = creds.Pairs // rotation-aware relay auth (current + grace)
 	var engine *media.Engine
 	engine, err = media.New(mopts)

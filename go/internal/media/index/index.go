@@ -209,6 +209,16 @@ func (i *Index) Paths() ([]string, error) {
 	return out, rows.Err()
 }
 
+// HasRecordings reports whether any segment is indexed for the given path
+// (camera id). It uses EXISTS so SQLite stops at the first matching row,
+// seeking straight into idx_path_start — cheap no matter how many segments a
+// camera has accumulated.
+func (i *Index) HasRecordings(path string) (bool, error) {
+	var n int
+	err := i.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM segments WHERE path=?)`, path).Scan(&n)
+	return n != 0, err
+}
+
 // Timeline returns the recorded extent (first start .. last end) of a path.
 // This is the cheap answer to "hasta cuándo hay grabación".
 func (i *Index) Timeline(path string) (Timeline, error) {

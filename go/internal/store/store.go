@@ -86,7 +86,7 @@ var schema = []string{
 		mse INTEGER NOT NULL DEFAULT 1,
 		relay INTEGER NOT NULL DEFAULT 1,
 		privacy INTEGER NOT NULL DEFAULT 1,
-		playback INTEGER NOT NULL DEFAULT 0,
+		playback INTEGER NOT NULL DEFAULT 1,
 		width INTEGER NOT NULL DEFAULT 16,
 		height INTEGER NOT NULL DEFAULT 9,
 		thingino_url TEXT NOT NULL DEFAULT '',
@@ -139,7 +139,39 @@ func Init(db *sql.DB) error {
 	if err := migrateStreamAuthTable(db); err != nil {
 		return err
 	}
+	if err := migrateData(db); err != nil {
+		return err
+	}
 	return seedAdmin(db)
+}
+
+// migrateData applies one-time data backfills that can't be expressed as a
+// plain column add. Each step is guarded by PRAGMA user_version so it runs
+// exactly once — a later admin edit of the same rows is never clobbered.
+func migrateData(db *sql.DB) error {
+	var ver int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&ver); err != nil {
+		return err
+	}
+	if ver < 1 {
+		// `playback` used to default to 0 (off) and was decoupled from
+		// recording, so a camera could record while the recordings switch
+		// stayed hidden. The default now follows `record`; align rows still at
+		// the old default. Targeted so an explicit playback=1, or a camera that
+		// isn't recording, is left untouched — and because this runs once, a
+		// future explicit playback=0 on a recording camera survives restarts.
+		res, err := db.Exec("UPDATE cameras SET playback = 1 WHERE record = 1 AND playback = 0")
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			slog.Info("migrating cameras: playback defaulted to record", "rows", n)
+		}
+		if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // migrateStreamAuthTable copies any pre-existing `mediamtx_credentials` row

@@ -61,7 +61,7 @@ C:\ProgramData\Eneverre\
 ├─ cameras.d\            ← one .ini per camera (seeded into the DB on first run)
 ├─ eneverre.db           ← created automatically
 ├─ eneverre.log          ← service log (see §3)
-└─ recordings\           ← created automatically when [media] record = true
+└─ recordings\           ← created automatically (recording is on by default)
 ```
 
 The config file itself is optional — with none present Eneverre runs on
@@ -81,15 +81,15 @@ copy doc\example\eneverre.ini      C:\ProgramData\Eneverre\eneverre.ini
 copy doc\example\cameras.d\*.ini   C:\ProgramData\Eneverre\cameras.d\
 ```
 
-> **Recording path.** Recordings default to
-> `%ProgramData%\Eneverre\recordings` on Windows, so with the standard layout
-> you only need to turn recording on. Set `record_dir` explicitly if you want
-> them elsewhere — e.g. on another drive, or when you installed with a custom
-> `-DataDir` (the default doesn't follow `-DataDir`):
+> **Recording path.** Recording is on by default. When `record_dir` is unset,
+> Eneverre uses `%ProgramData%\Eneverre\recordings` if that folder already
+> exists, and otherwise falls back to `<DataDir>\recordings` — so a custom
+> `-DataDir` install keeps its recordings alongside its config and DB. Set
+> `record_dir` explicitly to put them elsewhere (e.g. on another drive), or
+> `record = false` to run live-only:
 >
 > ```ini
 > [media]
-> record     = true
 > record_dir = D:\CamData\recordings
 > ```
 

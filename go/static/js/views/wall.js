@@ -494,10 +494,11 @@ export async function loadWall(mode = "live") {
     return;
   }
   if (myGen !== wallLoadGen) return;
-  // Playback only makes sense when some camera advertises it (recording is
-  // off by default, so a fresh install has none). Hide the whole Live/Playback
-  // switch otherwise — a lone "Live" button toggles nothing — and fall back to
-  // live if we were asked for playback with nothing to play back.
+  // Playback only makes sense when some camera advertises it. The server sets
+  // capabilities.playback only when a camera actually has recordings on disk
+  // (a per-camera `playback = false` can still hide it). Hide the whole
+  // Live/Playback switch otherwise — a lone "Live" button toggles nothing —
+  // and fall back to live if we were asked for playback with nothing to play.
   const anyPlayback = cams.some((c) => c.capabilities?.playback);
   $(".view-toggle").hidden = !anyPlayback;
   if (mode === "playback" && !anyPlayback) {

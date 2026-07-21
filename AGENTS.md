@@ -70,11 +70,10 @@ All code lives under `go/` (module `eneverre`).
 - `go/main.go` — bootstrap: `config.Load()`, `store.Open()`+`store.Init()`,
   `streamauth.NewStore(db)` (reads/writes the credential row, so it runs
   after the schema exists), `camera.Load()`. The embedded engine is
-  always built and started when any camera has a `source` URL — live MSE
-  and the RTSP relay are on unconditionally. Recording is the only part
-  that's gated: off (**live-only mode**) unless `[media] record = true`
-  turns it on (per-camera `record = false` still opts individual cameras
-  out even then). `server.SetMediaEngine()` wires the engine into the
+  always built and started when any camera has a `source` URL — live MSE,
+  the RTSP relay and disk recording are all on by default. Set `[media]
+  record = false` for **live-only mode** (per-camera `record = false` opts
+  individual cameras out either way). `server.SetMediaEngine()` wires the engine into the
   handler set regardless of mode. `server.New()` is built next, then the server runs
   on an `http.Server` with explicit timeouts (ReadHeader 5s / Read 15s
   / Write 30s / Idle 60s) so a slow or idle client can't hold a goroutine
@@ -119,9 +118,9 @@ All code lives under `go/` (module `eneverre`).
   `cfg.Auth`, `cfg.Updates`) — `nil` when the section is absent — so
   callers branch with a single nil check. `cfg.Media` being absent just
   means every `[media]` key falls back to its default, including
-  `record = false` — so a missing section and a present-but-unconfigured
-  one behave the same (live-only mode); recording only turns on once
-  `record = true` is set, section or no section. The per-platform search paths
+  `record = true` — so a missing section and a present-but-unconfigured
+  one behave the same (recording on); go live-only only by setting
+  `record = false` explicitly, section or no section. The per-platform search paths
   come from `config.go` (Unix) and `paths_windows.go` (Windows, which
   rewrites the slices in `init()` to `%ProgramData%\Eneverre\...`).
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
@@ -185,10 +184,13 @@ All code lives under `go/` (module `eneverre`).
   - `engine` — top-level orchestrator: owns the recorder, RTSP relay, live
     broadcaster and retention cleaner per camera; `OptionsFromSection` maps
     `[media]` INI keys to a struct; `Close` finalizes every in-progress
-    fMP4 segment and shuts everything down on `SIGTERM`/`SIGINT`. The
-    default `record_dir` (used when the INI key is unset) is per-platform:
-    `paths_other.go` returns the FHS `/var/lib/eneverre/recordings`,
-    `paths_windows.go` returns `%ProgramData%\Eneverre\recordings`.
+    fMP4 segment and shuts everything down on `SIGTERM`/`SIGINT`. When the
+    `record_dir` INI key is unset, `resolveRecordDir` prefers the per-platform
+    default when it already exists (`paths_other.go` → FHS
+    `/var/lib/eneverre/recordings`; `paths_windows.go` →
+    `%ProgramData%\Eneverre\recordings`) and otherwise falls back to
+    `<data_dir>/recordings` (`config.Config.DataDir`, i.e. the `--data-dir`
+    bundle or `./data`).
   - `recorder` — per-camera RTSP client (`gortsplib`) that demuxes video
     (H264 or H265) + AAC/G711, writes fragmented-MP4 segments on disk and
     indexes them in SQLite (with the `mtxi` box for gapless concatenation on

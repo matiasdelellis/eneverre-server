@@ -70,15 +70,15 @@ port = 8080
 
 Optional sections (all commented out by default). `[media]` is the embedded
 media engine. The engine is **always** built for cameras with a `source`
-URL, and the **live MSE feed + RTSP relay are on by default** (no `[media]`
-section needed — that is the point of the app). What `[media]` adds is
-**recording**, which is **off by default**: you turn it on globally with
-`[media] record = true` (and a writable `record_dir`), then opt individual
-cameras out with a per-camera `record = false`. With recording on the engine
-also enforces `[media] retain`. Until you set `record = true` — with or
-without a `[media]` section — the engine runs in **live-only mode** (live MSE
-+ RTSP relay, no disk write, `/recordings/*` answer 404), useful when you only
-want the wall to work and retention is handled elsewhere:
+URL, and the **live MSE feed, RTSP relay and disk recording are all on by
+default** (no `[media]` section needed — that is the point of the app). With
+recording on the engine also enforces `[media] retain` (default 7d). When no
+`record_dir` is set the engine uses `/var/lib/eneverre/recordings` if that
+directory exists and otherwise `<data_dir>/recordings`. Opt individual cameras
+out with a per-camera `record = false`, or set `[media] record = false` for
+**live-only mode** (live MSE + RTSP relay, no disk write, `/recordings/*`
+answer 404), useful when you only want the wall to work and retention is
+handled elsewhere:
 
 ```ini
 [auth]
@@ -105,13 +105,13 @@ refresh_token_ttl_days = 90
 ;security_log = /var/log/eneverre/security.log
 
 [media]
-; Embedded media engine — live MSE + RTSP relay (on by default) plus optional
-; recording (off by default; set record = true). One binary, no external
-; streamer. Every key is optional with sensible defaults; see
-; [eneverre.ini](eneverre.ini) for the fully commented list.
+; Embedded media engine — live MSE + RTSP relay + disk recording (all on by
+; default). One binary, no external streamer. Every key is optional with
+; sensible defaults; see [eneverre.ini](eneverre.ini) for the fully commented
+; list.
 ;mse           = true         ; global toggle for the live MSE browser feed
 ;relay         = true         ; global toggle for the RTSP relay
-;record        = false        ; global toggle for disk recording (turn on here)
+;record        = true         ; global toggle for disk recording (off with false)
 ;record_dir    = /var/lib/eneverre/recordings
 ;index_path    = /var/lib/eneverre/recordings/index.db   ; segment index DB
 ;cache_dir     = /var/lib/eneverre/cache                 ; gap-fill frame cache
@@ -261,10 +261,13 @@ privacy_y = 180
    `[media] transport` for the source RTSP: `auto` (default), `tcp` (reliable,
    recommended for lossy/distant links), or `udp`. Useful to force TCP on a
    single camera without changing the global default.
- * **playback:** Tells clients this camera is expected to have recordings,
-   so the UI shows a timeline for it. It's just a hint — it doesn't turn
-   recording on by itself (that's `record`, see above). If this camera
-   isn't actually being recorded, its recordings endpoints answer 404.
+ * **playback:** Per-camera opt-out of the recordings UI. The server exposes
+   the Live/Playback switch for a camera **only when it actually has
+   recordings on disk** — it is not a hint you set by hand. Recording a camera
+   makes its playback appear automatically once the first segment is written;
+   set `playback = false` to keep recording while hiding playback in the UI.
+   It doesn't turn recording on (that's `record`, see above); a camera with no
+   recordings never advertises playback.
  * **width / height:** Pixel dimensions, used to give the playback boxes the
    right aspect ratio (default 16×9).
  * **backchannel:** Optional direct RTSP URL (with credentials) to the camera's

@@ -422,7 +422,10 @@ func loadSpec(path string) (Spec, bool) {
 	privacyAllowed := cam.Key("privacy").MustBool(true)
 
 	ptz := strings.ToLower(strings.TrimSpace(thingino["ptz"])) == "true"
-	playback := cam.Key("playback").MustBool(false)
+	// Playback (the recordings switch in the UI + the /recordings/* endpoints)
+	// defaults to the camera's `record` value: a recording camera exposes its
+	// footage unless the operator explicitly sets `playback = false`.
+	playback := cam.Key("playback").MustBool(record)
 
 	s := Spec{
 		ID:             id,

@@ -101,19 +101,21 @@ func (req createCameraReq) spec() (camera.Spec, string) {
 		return camera.Spec{}, "transport must be one of auto, tcp, udp"
 	}
 	s := camera.Spec{
-		ID:             id,
-		Name:           strings.TrimSpace(req.Name),
-		Comment:        strings.TrimSpace(req.Comment),
-		Location:       strings.TrimSpace(req.Location),
-		Source:         source,
-		Backchannel:    strings.TrimSpace(req.Backchannel),
-		SnapshotURL:    strings.TrimSpace(req.SnapshotURL),
-		Transport:      transport,
-		Record:         boolOr(req.Record, true),
-		MSE:            boolOr(req.MSE, true),
-		Relay:          boolOr(req.Relay, true),
-		Privacy:        boolOr(req.Privacy, true),
-		Playback:       boolOr(req.Playback, false),
+		ID:          id,
+		Name:        strings.TrimSpace(req.Name),
+		Comment:     strings.TrimSpace(req.Comment),
+		Location:    strings.TrimSpace(req.Location),
+		Source:      source,
+		Backchannel: strings.TrimSpace(req.Backchannel),
+		SnapshotURL: strings.TrimSpace(req.SnapshotURL),
+		Transport:   transport,
+		Record:      boolOr(req.Record, true),
+		MSE:         boolOr(req.MSE, true),
+		Relay:       boolOr(req.Relay, true),
+		Privacy:     boolOr(req.Privacy, true),
+		// Playback defaults to the request's record value: a recording camera
+		// exposes its footage unless the client explicitly disables playback.
+		Playback:       boolOr(req.Playback, boolOr(req.Record, true)),
 		Width:          intOr(req.Width, 16),
 		Height:         intOr(req.Height, 9),
 		ThinginoURL:    strings.TrimSpace(req.ThinginoURL),
@@ -415,5 +417,11 @@ func (a *App) publicCamera(c camera.Camera, reqHost string) camera.Camera {
 	a.talkCodecsMu.RLock()
 	out.Capabilities.TalkCodecs = a.talkCodecs[c.ID]
 	a.talkCodecsMu.RUnlock()
+	// Playback is advertised only when the camera actually has recordings on
+	// disk. The per-camera `playback` flag is an opt-out layered on top (an
+	// admin can hide playback for a camera that does record) — it is not a
+	// hint, so a camera with no segments never advertises playback. No engine
+	// (or recording globally off) means no index, hence no playback.
+	out.Capabilities.Playback = out.Capabilities.Playback && a.engine != nil && a.engine.HasRecordings(c.ID)
 	return out
 }

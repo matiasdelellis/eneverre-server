@@ -73,6 +73,11 @@ type Config struct {
 	FileLoaded bool
 	CamerasDir string
 	DBFile     string
+	// DataDir is the resolved config-bundle directory: the explicit --data-dir /
+	// ENEVERRE_DATA_DIR when set, otherwise the built-in bundle anchor (./data).
+	// It is never empty. Consumers that want to co-locate their own state with
+	// the bundle (e.g. the media engine's recordings fallback) root it here.
+	DataDir string
 
 	Server  Section
 	Media   Section // nil if there is no [media] section (embedded NVR engine)
@@ -201,7 +206,15 @@ func Load(opts LoadOptions) (*Config, error) {
 		return nil, fmt.Errorf("config file not found: %s: %w", cfgFile, err)
 	}
 
-	c := &Config{ConfigFile: cfgFile, FileLoaded: fileLoaded, CamerasDir: camDir, DBFile: dbFile}
+	// The effective data dir: the explicit dataDir if set, otherwise the
+	// directory of the built-in bundle anchor (./data). Never empty, so
+	// downstream fallbacks (e.g. <DataDir>/recordings) always have a root.
+	effectiveDataDir := dataDir
+	if effectiveDataDir == "" {
+		effectiveDataDir = filepath.Dir(configPaths[len(configPaths)-1])
+	}
+
+	c := &Config{ConfigFile: cfgFile, FileLoaded: fileLoaded, CamerasDir: camDir, DBFile: dbFile, DataDir: effectiveDataDir}
 	c.Server = sectionMap(f, "server")
 	if f.HasSection("media") {
 		c.Media = sectionMap(f, "media")

@@ -41,9 +41,9 @@ func TestOptionsDurationKeys(t *testing.T) {
 			var got time.Duration
 			switch c.key {
 			case "retain":
-				got = OptionsFromSection(sec).Retain
+				got = OptionsFromSection(sec, "").Retain
 			case "segment_duration":
-				got = OptionsFromSection(sec).SegmentDuration
+				got = OptionsFromSection(sec, "").SegmentDuration
 			}
 			if got != c.want {
 				t.Fatalf("%s = %s, want %s", c.key, got, c.want)
@@ -73,7 +73,7 @@ func TestOptionsMaxPartSize(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := OptionsFromSection(c.sec).MaxPartSize; got != c.want {
+			if got := OptionsFromSection(c.sec, "").MaxPartSize; got != c.want {
 				t.Fatalf("MaxPartSize = %d, want %d", got, c.want)
 			}
 		})
