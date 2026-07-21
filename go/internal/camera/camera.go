@@ -317,7 +317,7 @@ func toInt(value string, def int) int {
 // typical thingino gimbal (2130/360 pan, 1600/180 tilt) so existing installs
 // keep behaving as before; the 113° horizontal FOV is a sensible default for
 // the wide-angle lenses these cameras ship with. They are also the DB
-// column defaults (see store.go's migration), so a brand-new camera row
+// column defaults (see store.go's schema), so a brand-new camera row
 // that bypasses the INI loader still gets the same starting point.
 const (
 	DefaultPanSteps    = 2130

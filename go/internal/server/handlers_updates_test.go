@@ -467,7 +467,7 @@ func TestPublish_LargeBuild_StreamsAndHashes(t *testing.T) {
 func TestPublish_OverMaxSize_Returns413(t *testing.T) {
 	a, _ := withUpdatesApp(t, "tok")
 	// Cap at a tiny value so we don't have to allocate 500 MiB.
-	a.cfg.Updates["max_apk_size"] = "1024" // 1 KiB
+	a.cfg.Updates["max_build_size"] = "1024" // 1 KiB
 	// Send 64 KiB — well over the cap.
 	rec, _ := doPublishLarge(t, a, "tv", "Bearer tok", 64*1024)
 	if rec.Code != http.StatusRequestEntityTooLarge {
@@ -477,7 +477,7 @@ func TestPublish_OverMaxSize_Returns413(t *testing.T) {
 
 func TestPublish_MaxSizeAcceptsUnits(t *testing.T) {
 	a, _ := withUpdatesApp(t, "tok")
-	a.cfg.Updates["max_apk_size"] = "1K" // 1024 bytes
+	a.cfg.Updates["max_build_size"] = "1K" // 1024 bytes
 	// Send 2 KiB — should be rejected.
 	rec, _ := doPublishLarge(t, a, "tv", "Bearer tok", 2*1024)
 	if rec.Code != http.StatusRequestEntityTooLarge {

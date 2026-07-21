@@ -140,7 +140,7 @@ go vet ./...
 ```
 main.go                       server bootstrap
 internal/config               INI loading + path resolution
-internal/store                SQLite open + schema/migrations + admin seed
+internal/store                SQLite open + schema + admin seed
 internal/auth                 Werkzeug-format hashing + Basic/Bearer auth
 internal/camera               Camera model + INI loader
 internal/streamauth           rotating credential store + RTSP URL builder

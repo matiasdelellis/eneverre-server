@@ -133,10 +133,10 @@ webhook_secret = changeme    ; required to accept POST /api/camera/{id}/events
 [updates]
 ; Auto-update server for the Android clients. OFF unless storage_dir (or
 ; ENEVERRE_UPDATES_DIR) is set — otherwise /api/app/* return 503.
-;storage_dir    = /var/lib/eneverre/app-updates
+;storage_dir     = /var/lib/eneverre/app-updates
 ;public_base_url = https://updates.example.com   ; base URL in the APK manifest
-;publish_token  = <32-byte-secret>               ; gate the publish endpoints
-;max_apk_size   = 100M                            ; hard cap on the upload body
+;publish_token   = <32-byte-secret>              ; gate the publish endpoints
+;max_build_size  = 100M                          ; hard cap on the upload body
 ```
 
 Motion events are pruned on the **same** retention window as recordings

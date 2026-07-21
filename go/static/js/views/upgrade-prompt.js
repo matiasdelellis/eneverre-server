@@ -57,11 +57,23 @@ async function fetchManifest(kind) {
     });
     if (r.status !== 200) return null;
     const m = await r.json();
-    if (!m || !m.url || !m.versionName || typeof m.versionCode !== "number") return null;
+    if (!m || !m.versionName || typeof m.versionCode !== "number" || !Array.isArray(m.builds) || !m.builds.length) {
+      return null;
+    }
     return m;
   } catch {
     return null;
   }
+}
+
+/**
+ * pickBuild chooses which build variant to offer. The browser can't inspect
+ * the device's CPU ABI the way the native Android client does, so this
+ * prefers the `universal` build (installable on any device) and otherwise
+ * falls back to whatever was published first.
+ */
+function pickBuild(builds) {
+  return builds.find((b) => b.variant === "universal") || builds[0];
 }
 
 function shouldDismiss(manifest) {
@@ -97,15 +109,17 @@ function buildBanner(manifest, kind) {
   main.append(title, ver);
   text.append(iconEl, main);
 
+  const build = pickBuild(manifest.builds);
+
   const actions = document.createElement("div");
   actions.className = "upgrade-prompt-actions";
   const dl = document.createElement("a");
   dl.className = "upgrade-prompt-dl primary";
-  dl.href = manifest.url;
+  dl.href = build.url;
   // `download` hints the browser to save rather than navigate; on Android
   // it triggers the system download manager which then offers the package
   // installer for .apk files.
-  dl.setAttribute("download", manifest.apkFilename || "");
+  dl.setAttribute("download", build.filename || "");
   dl.textContent = t("upgrade.download");
   const dismiss = document.createElement("button");
   dismiss.type = "button";

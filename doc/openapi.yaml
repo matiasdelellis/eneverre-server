@@ -1727,7 +1727,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '413':
           description: >-
-            Total body (or a single build part) exceeds `[updates] max_apk_size`
+            Total body (or a single build part) exceeds `[updates] max_build_size`
             (default 100 MiB).
           content:
             application/json:

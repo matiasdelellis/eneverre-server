@@ -6,12 +6,6 @@ implemented in `go/internal/updates/` and
 `go/internal/server/handlers_updates.go`. The `OpenAPI 3` description in
 `doc/openapi.yaml` is the machine-readable version of the same contract.
 
-> **Breaking change:** this protocol replaced an earlier, Android/APK-only
-> version (`apk_<abi>` form fields, forced `.apk` extension, a fixed `tv`/
-> `phone` track list). If you're updating an existing CI publisher, see
-> [Migrating from the APK-only protocol](#migrating-from-the-apk-only-protocol)
-> below.
-
 Every client lives on its own **track** — an arbitrary identifier the
 operator/CI chooses (e.g. `tv`, `phone`, `tablet`, `ios`, `web`) — so
 different device classes or platforms can be released on independent
@@ -291,13 +285,12 @@ the token revokes CI access immediately; it does not affect user logins.
 
 ### Size and timeout limits
 
-* **Build size cap** (`[updates] max_apk_size`, default `100M` — suffix
+* **Build size cap** (`[updates] max_build_size`, default `100M` — suffix
   syntax `K`/`M`/`G` accepted, base 1024; or a plain decimal byte count
   like `104857600`). Enforced by `http.MaxBytesReader`, so the server returns
   **`413 Request Entity Too Large`** as soon as the body crosses
   the limit and the client can abort the upload. Raise this for
-  legitimately large builds. (The config key name is unchanged from the
-  APK-only protocol for backward compatibility with existing deployments.)
+  legitimately large builds.
 * **Request read timeout** (`[server] read_timeout`, default `5m`).
   Bounded to defend against slow-trickle DoS, but generous enough for
   a 200 MiB upload over a 5 Mbps link. Raise for slower links.
@@ -477,7 +470,7 @@ The response body always carries a `state` field:
 | 200    | Publish succeeded (state=committed or state=pending). | Done. |
 | 400    | Track name failed validation. | Fix the track name (lowercase alphanumeric, `-`/`_`, ≤40 chars). |
 | 401    | Missing or invalid token. | Check `UPDATE_TOKEN` / header name. |
-| 413    | Total body exceeds `[updates] max_apk_size` (default 100 MiB). | Raise the cap on the server, or slim the builds (or split into per-variant POSTs). |
+| 413    | Total body exceeds `[updates] max_build_size` (default 100 MiB). | Raise the cap on the server, or slim the builds (or split into per-variant POSTs). |
 | 422    | Body present but malformed (missing `versionName` / `versionCode` / any `build_<variant>`). | Inspect the body. |
 | 503    | Server has no `publish_token` configured. | Server-side misconfiguration; publish is disabled. |
 
@@ -530,25 +523,6 @@ a manifest hit).
   alphanumeric, `-`/`_`, ≤40 chars) purely to keep them safe as a
   subdirectory name — this is not an authorization boundary. Anyone with a
   valid `publish_token` can publish to any track name.
-
-## Migrating from the APK-only protocol
-
-Earlier versions of this server fixed the track list to `tv`/`phone` and
-assumed every build was an Android APK. If your CI publisher still targets
-that contract, update it to:
-
-* Send `build_<variant>` form fields instead of `apk_<abi>` (e.g.
-  `build_arm64-v8a` instead of `apk_arm64-v8a`).
-* Expect `variant`/`filename` in the JSON response instead of
-  `abi`/`apkFilename`.
-* Expect `variants`/`variants_appended` in the publish response instead of
-  `abis`/`abis_appended`.
-* Drop any assumption that the file must end in `.apk` — any extension (or
-  none) is accepted, though existing Android CI pipelines can keep sending
-  `.apk` files unchanged.
-
-The `tv` and `phone` tracks themselves are unaffected — they still work
-exactly as before, just under the generalized field names.
 
 ## Client checklist (what to implement)
 
@@ -607,6 +581,6 @@ nvr.example.com {
 ```
 
 For Nginx, set `client_max_body_size` to match (or exceed)
-`[updates] max_apk_size`, and bump `proxy_read_timeout` /
+`[updates] max_build_size`, and bump `proxy_read_timeout` /
 `proxy_send_timeout` to cover the upload window (the API's
 `[server] read_timeout` is a sensible target).

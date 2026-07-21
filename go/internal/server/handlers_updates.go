@@ -147,7 +147,7 @@ func manifestResponse(m *updates.Manifest, track, configuredBase, requestBase st
 // publish.
 //
 // r.Body is wrapped in http.MaxBytesReader to cap the total request size
-// (default 500 MiB, configurable via [updates] max_apk_size). On overflow
+// (default 500 MiB, configurable via [updates] max_build_size). On overflow
 // the read returns *http.MaxBytesError, which the handler translates to
 // 413.
 func (a *App) handleAppUpdatesPublish(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +169,7 @@ func (a *App) handleAppUpdatesPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.UpdatesMaxAPKSize())
+	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.UpdatesMaxBuildSize())
 
 	mr, err := r.MultipartReader()
 	if err != nil {
@@ -207,7 +207,7 @@ func (a *App) handleAppUpdatesPublish(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			if isMaxBytesErr(err) {
 				httpError(w, http.StatusRequestEntityTooLarge,
-					fmt.Sprintf("Body exceeds the %d-byte server limit", a.cfg.UpdatesMaxAPKSize()))
+					fmt.Sprintf("Body exceeds the %d-byte server limit", a.cfg.UpdatesMaxBuildSize()))
 				return
 			}
 			httpError(w, http.StatusBadRequest, "Multipart parse error: "+err.Error())
@@ -334,7 +334,7 @@ func (a *App) handleAppUpdatesPublish(w http.ResponseWriter, r *http.Request) {
 	if lastErr != nil {
 		if isMaxBytesErr(lastErr) {
 			httpError(w, http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("Body exceeds the %d-byte server limit", a.cfg.UpdatesMaxAPKSize()))
+				fmt.Sprintf("Body exceeds the %d-byte server limit", a.cfg.UpdatesMaxBuildSize()))
 			return
 		}
 		httpError(w, http.StatusUnprocessableEntity, lastErr.Error())
@@ -429,7 +429,7 @@ func (a *App) streamBuildPart(w http.ResponseWriter, part *multipart.Part, varia
 		part.Close()
 		if isMaxBytesErr(err) {
 			httpError(w, http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("Build artifact exceeds the %d-byte server limit", a.cfg.UpdatesMaxAPKSize()))
+				fmt.Sprintf("Build artifact exceeds the %d-byte server limit", a.cfg.UpdatesMaxBuildSize()))
 			return "", false
 		}
 		httpError(w, http.StatusBadRequest, "Failed to read build artifact: "+err.Error())

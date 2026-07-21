@@ -275,22 +275,22 @@ func (c *Config) UpdatesPublishToken() string {
 	return strings.TrimSpace(os.Getenv("ENEVERRE_UPDATES_PUBLISH_TOKEN"))
 }
 
-// UpdatesMaxAPKSize returns the maximum APK size the publish endpoint
-// will accept, in bytes. The cap is enforced via http.MaxBytesReader, so
-// a 413 is returned as soon as the body crosses the limit (no buffering
-// of the over-limit bytes). Precedence: [updates] max_apk_size INI key
+// UpdatesMaxBuildSize returns the maximum build artifact size the publish
+// endpoint will accept, in bytes. The cap is enforced via http.MaxBytesReader,
+// so a 413 is returned as soon as the body crosses the limit (no buffering
+// of the over-limit bytes). Precedence: [updates] max_build_size INI key
 // (accepts a decimal byte count or a K/M/G suffix, base 1024) >
-// ENEVERRE_UPDATES_MAX_APK_SIZE env var > 100 MiB default. The default
+// ENEVERRE_UPDATES_MAX_BUILD_SIZE env var > 100 MiB default. The default
 // is sized for current TV builds (~50-70 MiB universal); if a future
 // build exceeds 100 MiB, raise the cap or split the publish into
-// per-ABI POSTs.
-func (c *Config) UpdatesMaxAPKSize() int64 {
-	if v := strings.TrimSpace(c.UpdatesSection().Get("max_apk_size", "")); v != "" {
+// per-variant POSTs.
+func (c *Config) UpdatesMaxBuildSize() int64 {
+	if v := strings.TrimSpace(c.UpdatesSection().Get("max_build_size", "")); v != "" {
 		if n, err := parseSize(v); err == nil && n > 0 {
 			return n
 		}
 	}
-	if env := strings.TrimSpace(os.Getenv("ENEVERRE_UPDATES_MAX_APK_SIZE")); env != "" {
+	if env := strings.TrimSpace(os.Getenv("ENEVERRE_UPDATES_MAX_BUILD_SIZE")); env != "" {
 		if n, err := parseSize(env); err == nil && n > 0 {
 			return n
 		}

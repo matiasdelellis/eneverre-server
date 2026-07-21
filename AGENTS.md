@@ -125,16 +125,12 @@ All code lives under `go/` (module `eneverre`).
   rewrites the slices in `init()` to `%ProgramData%\Eneverre\...`).
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
   (`users`, `device_login`, `tokens`, `events`, `streamauth_credentials`),
-  idempotent column migrations,
   and seeds an admin when the users table is empty: username from
   `ENEVERRE_ADMIN_USER` (default `admin`), password from
   `ENEVERRE_ADMIN_PASS` or, when unset, a random one logged once at `WARN`.
   No credential is read from a config file. The seeded admin is inserted with
   `must_change_password = 1` so the web UI forces a new password on first login
-  (the `users.must_change_password` column, default 0, added to the schema and
-  backfilled by an idempotent column migration for older DBs). `Init` also runs
-  the `mediamtx_credentials` → `streamauth_credentials` rename migration
-  for upgrades from pre-rename installs.
+  (the `users.must_change_password` column defaults to 0 for every other row).
 - `go/internal/auth` — `CheckPasswordHash`/`GeneratePasswordHash` (Werkzeug
   format) plus Basic/Bearer verification and `CurrentUser`. Bearer reads the
   `tokens` table and rejects expired tokens.
@@ -265,11 +261,7 @@ All code lives under `go/` (module `eneverre`).
   `handlers_live.go` (embedded engine's `live/info` and `live/stream`),
   `handlers_playback.go` (recordings list/get/timeline/gaps/HLS-VOD),
   `handlers_users.go`, `handlers_updates.go`. Routes under
-  `/api/camera/{id}/recordings/*` are
-  the canonical names; the legacy `/api/camera/{id}/playback/{list,get}`
-  and `/api/cameras/{id}/events` are kept as `Deprecation: true` shims
-  (see `deprecatedAlias` in `server.go`) and will be removed once no
-  client uses them.
+  `/api/camera/{id}/recordings/*` are the canonical names.
 
 ## Run / verify
 - Build: `go -C go build -o ../eneverre .` → one static binary.
@@ -324,9 +316,7 @@ see request query strings and the more verbose media-engine traces
   streams don't get dropped at rollover.
 - Stream-auth credentials live in the `streamauth_credentials` table (one
   row). On first run a random pair is generated and rotated every
-  `[media] rotate_hours` (default 24; `0` disables). Existing pre-rename
-  installs (`mediamtx_credentials` table) are migrated on first run — see
-  `store.migrateStreamAuthTable`.
+  `[media] rotate_hours` (default 24; `0` disables).
 - The webhook (`POST /api/camera/{id}/events`) accepts any body shape; on a
   parse failure it still records a motion event and stashes the raw body in
   `source` as `webhook:raw (...)`. Requires `[events] webhook_secret` (via
@@ -438,9 +428,6 @@ see request query strings and the more verbose media-engine traces
   excluded) and apply `WithEngineURLs` (the live `engine` is set on `App`
   via `SetMediaEngine` when `[media]` is configured) so URLs reflect the
   embedded engine's stream fields and the rotating relay credentials.
-- When wrapping an old route as a temporary alias, use `deprecatedAlias(successor, fn)`
-  in `server.go` — it sets `Deprecation: true` + RFC 8594 `Warning` on every
-  response so clients can detect the migration.
 
 ## Adding a new camera
 The easiest way is the web wizard: **user menu → Manage cameras → Add camera**
@@ -525,17 +512,10 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
   everything. Auth: every playlist/init/segment request needs the Bearer
   token (use hls.js `xhrSetup`).
 - The playback timeline (`timeline.js`) draws recordings as the background
-  bar and motion events from `GET /api/camera/{id}/events` (singular
-  prefix; the plural `/api/cameras/{id}/events` is a deprecated alias) as
-  red Major1 markers (`fetchEvents` in `js/views/playback.js`). Clicking a
-  marker seeks playback to the event's start. Both are fetched per camera
-  for the last 24h when the timeline is built.
-- **Deprecated endpoint aliases** (`server.go`'s `deprecatedAlias`): legacy
-  routes `…/playback/{list,get}` and `/api/cameras/{id}/events` are kept
-  as RFC 8594-deprecated shims with `Deprecation: true` and a `Warning`
-  header pointing at the canonical path. New clients should hit the
-  canonical routes (`/recordings/*` and the singular `/api/camera/`
-  prefix); the aliases are removed once no client uses them.
+  bar and motion events from `GET /api/camera/{id}/events` as red Major1
+  markers (`fetchEvents` in `js/views/playback.js`). Clicking a marker seeks
+  playback to the event's start. Both are fetched per camera for the last
+  24h when the timeline is built.
 - **Auto-update prompt** (`js/views/upgrade-prompt.js`): on boot, the page
   sniffs `navigator.userAgent` for an Android device (TV vs phone/tablet).
   On Android it GETs `/api/app/{tv,phone}/update` (anonymous) and, on 200,

@@ -47,7 +47,7 @@ is uploaded next to it.
 | `README.md`           | Top-level README.                                                                 |
 | `GO.md`               | `go/README.md` — Go-specific layout, config keys, operational notes.              |
 | `openapi.yaml`        | Machine-readable API spec for clients.                                            |
-| `doc/example/`        | Sample `eneverre.ini`, camera INI files, `mediamtx.yml`, `Caddyfile`, and `eneverre.service` unit. |
+| `doc/example/`        | Sample `eneverre.ini`, camera INI files, `Caddyfile`, and `eneverre.service` unit. |
 
 ## Verifying a download
 

@@ -15,7 +15,7 @@ The client captures mono PCM and streams it over a WebSocket. Eneverre resamples
 to 8 kHz, encodes G.711 (A-law/µ-law, chosen from the camera's SDP) and relays it
 to the camera over the RTSP backchannel. The client only sends audio; it does not
 receive camera audio on this socket (to *hear* the camera, use the normal live
-stream — HLS/WebRTC via MediaMTX).
+stream — HLS/WebRTC via the embedded media engine).
 
 **Optional wideband (AAC).** When the camera advertises an AAC (`MPEG4-GENERIC`)
 backchannel and the client can encode AAC itself (Android's `MediaCodec` does

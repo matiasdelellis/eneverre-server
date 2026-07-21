@@ -265,7 +265,7 @@ func main() {
 		"access_ttl_h", accessHours,
 		"refresh_ttl_d", refreshDays,
 		"read_timeout", cfg.ServerReadTimeout(),
-		"max_apk_size", config.HumanSize(cfg.UpdatesMaxAPKSize()))
+		"max_build_size", config.HumanSize(cfg.UpdatesMaxBuildSize()))
 	// Explicit timeouts instead of http.ListenAndServe's zero-value (unlimited)
 	// defaults: a slow or idle client must not hold a connection/goroutine
 	// open indefinitely (slowloris). WriteTimeout is generous because the
