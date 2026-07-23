@@ -604,7 +604,12 @@ export class Timeline {
           laneH - offsetBackground * 2,
           record.color,
         );
-        if (rect.right - rect.left < 1) rect.right += 1;
+        // Contiguous segments' timestamps go through independent ms-rounding
+        // (start via Date parse, duration via Math.round), so two adjacent
+        // segments can leave a hairline gap even when the recording itself
+        // has none. Extend past the computed edge so segments always overlap
+        // instead of leaving a sliver of the "no data" background showing.
+        rect.right += 1;
         this.rectsBackground[timelineIndex].push(rect);
       }
     }
