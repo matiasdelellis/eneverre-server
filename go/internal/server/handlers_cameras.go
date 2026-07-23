@@ -42,6 +42,10 @@ type createCameraReq struct {
 	Width    *int  `json:"width"`
 	Height   *int  `json:"height"`
 
+	// ScheduleID references a recording schedule by id; "" (or omitted) means
+	// record 24/7. Validated against the schedule store by the handler.
+	ScheduleID string `json:"schedule_id"`
+
 	ThinginoURL    string   `json:"thingino_url"`
 	ThinginoAPIKey string   `json:"thingino_api_key"`
 	PTZ            *bool    `json:"ptz"`
@@ -130,6 +134,7 @@ func (req createCameraReq) spec() (camera.Spec, string) {
 		TiltSteps:      intOr(req.TiltSteps, 0),
 		TiltDegrees:    intOr(req.TiltDegrees, 0),
 		FOVH:           floatOr(req.FOVH, 0),
+		ScheduleID:     strings.TrimSpace(req.ScheduleID),
 	}
 	s.ApplyPTZDefaults()
 	return s, ""
@@ -151,6 +156,14 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 	s, msg := req.spec()
 	if msg != "" {
 		httpError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
+	if ok, err := a.scheduleExists(s.ScheduleID); err != nil {
+		slog.Error("schedule lookup failed", "id", s.ScheduleID, "err", err)
+		httpError(w, http.StatusInternalServerError, "could not validate schedule")
+		return
+	} else if !ok {
+		httpError(w, http.StatusUnprocessableEntity, "schedule_id references an unknown schedule")
 		return
 	}
 
@@ -178,6 +191,9 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 	a.seedPrivacyFor(cam)
 	a.seedPTZPositionsFor(cam)
 	a.seedTalkCodecsFor(cam)
+	// Apply the recording schedule immediately: a camera created off-hours must
+	// start paused, not wait for the next minute tick.
+	a.reevaluateSchedules()
 
 	slog.Info("camera created", "id", cam.ID, "name", cam.Name)
 	writeJSON(w, http.StatusCreated, a.publicCamera(cam, r.Host))
@@ -212,6 +228,7 @@ func (a *App) handleGetCameraConfig(w http.ResponseWriter, r *http.Request) {
 func (a *App) dropCameraState(id string) {
 	a.privacyMu.Lock()
 	delete(a.privacy, id)
+	delete(a.schedOff, id)
 	a.privacyMu.Unlock()
 	a.talkCodecsMu.Lock()
 	delete(a.talkCodecs, id)
@@ -239,6 +256,14 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 	s, msg := req.spec()
 	if msg != "" {
 		httpError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
+	if ok, err := a.scheduleExists(s.ScheduleID); err != nil {
+		slog.Error("schedule lookup failed", "id", s.ScheduleID, "err", err)
+		httpError(w, http.StatusInternalServerError, "could not validate schedule")
+		return
+	} else if !ok {
+		httpError(w, http.StatusUnprocessableEntity, "schedule_id references an unknown schedule")
 		return
 	}
 
@@ -271,6 +296,9 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 	a.seedPrivacyFor(cam)
 	a.seedPTZPositionsFor(cam)
 	a.seedTalkCodecsFor(cam)
+	// The schedule assignment may have changed (and RemoveCamera+AddCamera reset
+	// the engine's pause) — re-evaluate so the new schedule takes effect at once.
+	a.reevaluateSchedules()
 
 	slog.Info("camera updated", "id", id, "name", cam.Name)
 	writeJSON(w, http.StatusOK, a.publicCamera(cam, r.Host))
@@ -409,8 +437,12 @@ func (a *App) publicCamera(c camera.Camera, reqHost string) camera.Camera {
 	out := c.WithEngineURLs(a.cfg, a.creds.Current(), reqHost, f)
 	a.privacyMu.RLock()
 	out.Privacy = a.privacy[c.ID]
+	out.ScheduleOff = a.schedOff[c.ID]
 	a.privacyMu.RUnlock()
-	if out.Privacy {
+	// A camera that is manually in privacy OR currently outside its recording
+	// schedule has no live feed — the pipeline is paused — so clear the stale
+	// stream URLs just as the privacy path does.
+	if out.Privacy || out.ScheduleOff {
 		out.LiveMSE = ""
 		out.RTSP = ""
 	}

@@ -8,6 +8,7 @@ import { closeUserMenu } from "../ui/user-menu.js";
 import { moveGlobalControlsTo, closeOverlayViews, backLabel } from "./app-shell.js";
 import { t } from "../i18n.js";
 import { trapFocus } from "../util/focus-trap.js";
+import { openSchedules, populateScheduleSelect } from "./schedules.js";
 
 // Focus-trap release for the open wizard modal (null when closed).
 let wizardRelease = null;
@@ -33,6 +34,8 @@ export function enterCamerasView() {
   if (backEl) backEl.textContent = backLabel();
   moveGlobalControlsTo(document.querySelector("#cameras-view header.topbar"));
   document.getElementById("cameras-new").hidden = false;
+  const schedBtn = document.getElementById("cameras-schedules");
+  if (schedBtn) schedBtn.hidden = false;
   document.getElementById("cameras-list-section").hidden = false;
   loadCameras();
 }
@@ -158,6 +161,9 @@ function openWizard(config = null) {
   idInput.readOnly = !!editingId;
   idInput.classList.toggle("readonly", !!editingId);
   if (config) fillForm(config);
+  // Fill the schedule dropdown from the server and preselect the camera's
+  // program (fire-and-forget; the wizard opens on "Always" until it resolves).
+  populateScheduleSelect(form.elements.schedule_id, config ? config.schedule_id : "");
   const modal = document.getElementById("cam-wizard-modal");
   modal.hidden = false;
   // Release a stale trap first: closeOverlayViews (overlay switch / logout)
@@ -372,6 +378,7 @@ function collectForm() {
     transport: f.transport.value,
     backchannel: trim("backchannel"),
     snapshot_url: trim("snapshot_url"),
+    schedule_id: f.schedule_id.value,
     record: f.record.checked,
     mse: f.mse.checked,
     relay: f.relay.checked,
@@ -404,6 +411,7 @@ function buildReview() {
     [t("cameras.review_source"), maskSource(b.source)],
     [t("cameras.review_transport"), b.transport || "auto"],
     [t("cameras.review_sinks"), [b.record && "record", b.mse && "MSE", b.relay && "relay"].filter(Boolean).join(", ") || "none"],
+    [t("wizard.schedule"), scheduleLabel()],
     [t("cameras.review_resolution"), b.width && b.height ? `${b.width}×${b.height}` : "default"],
     [t("cameras.review_privacy"), b.privacy ? t("cameras.yes") : t("cameras.no")],
     [t("cameras.review_talk"), b.backchannel ? t("cameras.yes") : t("cameras.no")],
@@ -413,6 +421,14 @@ function buildReview() {
   dl.innerHTML = rows
     .map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v))}</dd></div>`)
     .join("");
+}
+
+// scheduleLabel returns the human name of the selected recording program for
+// the review step ("Always (24/7)" when none is chosen).
+function scheduleLabel() {
+  const sel = document.getElementById("cam-wizard-form").elements.schedule_id;
+  const opt = sel.options[sel.selectedIndex];
+  return opt ? opt.textContent : t("wizard.schedule_always");
 }
 
 // maskSource hides the password in an rtsp URL for display in the review.
@@ -462,9 +478,17 @@ export function initCameras() {
   document.getElementById("cameras-btn")?.addEventListener("click", () => { closeUserMenu(); enterCamerasView(); });
   document.getElementById("cameras-back")?.addEventListener("click", exitCamerasView);
   document.getElementById("cameras-new")?.addEventListener("click", () => openWizard());
+  document.getElementById("cameras-schedules")?.addEventListener("click", () => openSchedules());
   document.getElementById("cam-wizard-cancel")?.addEventListener("click", closeWizard);
   document.getElementById("cam-wizard-next")?.addEventListener("click", onNext);
   document.getElementById("cam-wizard-back")?.addEventListener("click", onBack);
+  document.getElementById("cam-manage-schedules")?.addEventListener("click", () => {
+    const form = document.getElementById("cam-wizard-form");
+    const current = form.elements.schedule_id.value;
+    // Reopen the dropdown on the same selection after the manager closes, so a
+    // freshly created program is available and the choice is preserved.
+    openSchedules({ onClosed: () => populateScheduleSelect(form.elements.schedule_id, current) });
+  });
   document.getElementById("cam-probe-btn")?.addEventListener("click", onProbe);
   document.getElementById("cam-thingino-probe-btn")?.addEventListener("click", onProbeThingino);
   document.getElementById("cam-wizard-form")?.addEventListener("submit", onSubmit);

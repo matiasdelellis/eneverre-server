@@ -339,7 +339,125 @@ paths:
               schema:
                 $ref: '#/components/schemas/Message'
         '422':
-          description: Validation failure (bad id, missing source, invalid transport).
+          description: Validation failure (bad id, missing source, invalid transport, or unknown schedule_id).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+  /api/schedules:
+    get:
+      summary: List recording schedules
+      description: >-
+        Returns every recording schedule (named program). Any authenticated user
+        may read them so the UI can resolve a camera's program name.
+      responses:
+        '200':
+          description: List of schedules.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Schedule'
+    post:
+      summary: Create a recording schedule (admin)
+      description: >-
+        Creates a named recording program. The per-weekday windows are validated
+        and normalized (trimmed, canonical HH:MM-HH:MM, sorted by start).
+        Requires an admin token (403 for a non-admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Schedule'
+      responses:
+        '201':
+          description: The created schedule (with normalized windows).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Schedule'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: A schedule with that id already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '422':
+          description: Validation failure (bad id, unknown weekday, or malformed window).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+  /api/schedule/{schedule_id}:
+    parameters:
+      - name: schedule_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get one recording schedule
+      responses:
+        '200':
+          description: The schedule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Schedule'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      summary: Update a recording schedule (admin)
+      description: >-
+        Overwrites a schedule's name and windows (the id is fixed by the path).
+        The scheduler re-evaluates immediately, so a changed window takes effect
+        at once. Requires an admin token (403 for a non-admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Schedule'
+      responses:
+        '200':
+          description: The updated schedule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Schedule'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Validation failure (unknown weekday or malformed window).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+    delete:
+      summary: Delete a recording schedule (admin)
+      description: >-
+        Removes a schedule. Refused with 409 while any camera still references
+        it — reassign those cameras first. Requires an admin token.
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The schedule is still in use by one or more cameras.
           content:
             application/json:
               schema:
@@ -1908,6 +2026,18 @@ components:
             Current privacy state. When true the camera is paused: recording and
             transmission are stopped (and `live_mse`/`rtsp` are withheld), plus
             the firmware lens blackout on thingino cameras.
+        schedule_id:
+          type: string
+          description: >-
+            The recording schedule (named program) this camera follows, by id;
+            omitted/empty means it records 24/7. See GET /api/schedules.
+        schedule_off:
+          type: boolean
+          description: >-
+            Current off-hours state. True when the recording scheduler has paused
+            the camera because the local time is outside its schedule's armed
+            windows — recording and transmission are stopped and `live_mse`/`rtsp`
+            are withheld, just like `privacy`. Omitted when false.
 
     Capabilities:
       type: object
@@ -2011,6 +2141,12 @@ components:
           enum: [auto, tcp, udp]
           default: auto
           description: Per-camera source RTSP transport override.
+        schedule_id:
+          type: string
+          default: ""
+          description: >-
+            Recording schedule (named program) to follow, by id. Empty/omitted
+            means record 24/7. Must reference an existing schedule (422 otherwise).
         record:
           type: boolean
           default: true
@@ -2106,6 +2242,48 @@ components:
           format: date-time
         duration:
           type: number
+
+    Schedule:
+      type: object
+      description: >-
+        A named recording program: per weekday, the time windows during which a
+        referencing camera records and transmits. Outside those windows the
+        server pauses the camera's pipeline (same effect as privacy, but without
+        the thingino firmware blackout). Windows are evaluated in the server's
+        local time zone.
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: >-
+            1–64 chars of letters, digits, '-' or '_', starting with a letter or
+            digit. Immutable (the URL fixes it on update). Referenced by a
+            camera's `schedule_id`.
+        name:
+          type: string
+          description: Human-readable label shown in the UI.
+        days:
+          type: object
+          description: >-
+            Maps a weekday key to that day's armed windows. Keys are the
+            lowercase three-letter days `sun,mon,tue,wed,thu,fri,sat`; a day
+            omitted (or with an empty list) records at no time. Each window is
+            `"HH:MM-HH:MM"` (half-open: the end minute is already outside). Hours
+            0–24 are accepted (`24:00` marks end-of-day); a window whose end is
+            not after its start wraps past midnight into the next day (e.g.
+            `"22:00-02:00"`). The server normalizes windows (trim, canonical
+            format, sorted by start) on write.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+              example: "08:00-18:00"
+          example:
+            mon: ["08:00-12:00", "14:00-18:00"]
+            sat: ["22:00-02:00"]
+        created_at:
+          type: integer
+          description: Unix seconds when the schedule was created (server-set; read-only).
 
     Message:
       type: object

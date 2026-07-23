@@ -30,7 +30,7 @@ func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 const camColumns = `id, name, comment, location, source, backchannel, snapshot_url, transport,
 	record, mse, relay, privacy, playback, width, height,
 	thingino_url, thingino_api_key, ptz, home_x, home_y, privacy_x, privacy_y,
-	pan_steps, pan_degrees, tilt_steps, tilt_degrees, fov_h`
+	pan_steps, pan_degrees, tilt_steps, tilt_degrees, fov_h, schedule_id`
 
 // scanSpec reads one row (selected with camColumns) into a Spec. Zero values
 // in the PTZ calibration columns are filled with the default calibration so
@@ -42,7 +42,7 @@ func scanSpec(scan func(dest ...any) error) (Spec, error) {
 		&s.ID, &s.Name, &s.Comment, &s.Location, &s.Source, &s.Backchannel, &s.SnapshotURL, &s.Transport,
 		&s.Record, &s.MSE, &s.Relay, &s.Privacy, &s.Playback, &s.Width, &s.Height,
 		&s.ThinginoURL, &s.ThinginoAPIKey, &s.PTZ, &s.HomeX, &s.HomeY, &s.PrivacyX, &s.PrivacyY,
-		&s.PanSteps, &s.PanDegrees, &s.TiltSteps, &s.TiltDegrees, &s.FOVH,
+		&s.PanSteps, &s.PanDegrees, &s.TiltSteps, &s.TiltDegrees, &s.FOVH, &s.ScheduleID,
 	)
 	s.ApplyPTZDefaults()
 	return s, err
@@ -140,13 +140,13 @@ func (st *Store) Create(s Spec, createdAt int64) (Camera, error) {
 			id, name, comment, location, source, backchannel, snapshot_url, transport,
 			record, mse, relay, privacy, playback, width, height,
 			thingino_url, thingino_api_key, ptz, home_x, home_y, privacy_x, privacy_y,
-			pan_steps, pan_degrees, tilt_steps, tilt_degrees, fov_h,
+			pan_steps, pan_degrees, tilt_steps, tilt_degrees, fov_h, schedule_id,
 			sort_order, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.ID, s.Name, s.Comment, s.Location, s.Source, s.Backchannel, s.SnapshotURL, s.Transport,
 		s.Record, s.MSE, s.Relay, s.Privacy, s.Playback, s.Width, s.Height,
 		s.ThinginoURL, s.ThinginoAPIKey, s.PTZ, s.HomeX, s.HomeY, s.PrivacyX, s.PrivacyY,
-		s.PanSteps, s.PanDegrees, s.TiltSteps, s.TiltDegrees, s.FOVH,
+		s.PanSteps, s.PanDegrees, s.TiltSteps, s.TiltDegrees, s.FOVH, s.ScheduleID,
 		sortOrder, createdAt,
 	); err != nil {
 		return Camera{}, err
@@ -182,12 +182,12 @@ func (st *Store) Update(s Spec) error {
 			name = ?, comment = ?, location = ?, source = ?, backchannel = ?, snapshot_url = ?, transport = ?,
 			record = ?, mse = ?, relay = ?, privacy = ?, playback = ?, width = ?, height = ?,
 			thingino_url = ?, thingino_api_key = ?, ptz = ?, home_x = ?, home_y = ?, privacy_x = ?, privacy_y = ?,
-			pan_steps = ?, pan_degrees = ?, tilt_steps = ?, tilt_degrees = ?, fov_h = ?
+			pan_steps = ?, pan_degrees = ?, tilt_steps = ?, tilt_degrees = ?, fov_h = ?, schedule_id = ?
 		 WHERE id = ?`,
 		s.Name, s.Comment, s.Location, s.Source, s.Backchannel, s.SnapshotURL, s.Transport,
 		s.Record, s.MSE, s.Relay, s.Privacy, s.Playback, s.Width, s.Height,
 		s.ThinginoURL, s.ThinginoAPIKey, s.PTZ, s.HomeX, s.HomeY, s.PrivacyX, s.PrivacyY,
-		s.PanSteps, s.PanDegrees, s.TiltSteps, s.TiltDegrees, s.FOVH,
+		s.PanSteps, s.PanDegrees, s.TiltSteps, s.TiltDegrees, s.FOVH, s.ScheduleID,
 		s.ID,
 	)
 	if err != nil {

@@ -179,6 +179,31 @@ export async function deleteCamera(id) {
   return api(`/api/camera/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+// --- recording schedules --------------------------------------------------
+
+/** List every recording schedule (named program). */
+export async function fetchSchedules() {
+  return api("/api/schedules");
+}
+
+/**
+ * Create a recording schedule. body = { id, name, days }, where days maps a
+ * weekday key ("mon".."sun") to ["HH:MM-HH:MM", ...] armed windows.
+ */
+export async function createSchedule(body) {
+  return api("/api/schedules", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Update a schedule. body = { name, days } (id is fixed by the URL). */
+export async function updateSchedule(id, body) {
+  return api(`/api/schedule/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+/** Delete a schedule by id. Fails (409) when a camera still references it. */
+export async function deleteSchedule(id) {
+  return api(`/api/schedule/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 /**
  * Probe an RTSP source before saving. Always resolves (never throws on an
  * unreachable camera): { ok: true, codecs, width, height } or { ok: false, error }.

@@ -124,7 +124,10 @@ All code lives under `go/` (module `eneverre`).
   come from `config.go` (Unix) and `paths_windows.go` (Windows, which
   rewrites the slices in `init()` to `%ProgramData%\Eneverre\...`).
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
-  (`users`, `device_login`, `tokens`, `events`, `streamauth_credentials`),
+  (`users`, `device_login`, `tokens`, `events`, `streamauth_credentials`,
+  `cameras`, `schedules`) plus a short list of idempotent `ALTER TABLE`
+  migrations (`Init` swallows a "duplicate column" so re-running is safe — this
+  is how `cameras.schedule_id` was backfilled onto upgraded installs),
   and seeds an admin when the users table is empty: username from
   `ENEVERRE_ADMIN_USER` (default `admin`), password from
   `ENEVERRE_ADMIN_PASS` or, when unset, a random one logged once at `WARN`.
@@ -143,7 +146,17 @@ All code lives under `go/` (module `eneverre`).
   is the direct camera RTSP URL the embedded engine
   records/relays from; `transport` overrides the global `[media] transport`
   per camera; `record = false` opts the camera out of disk recording while
-  keeping the live MSE feed and RTSP relay.
+  keeping the live MSE feed and RTSP relay. `schedule_id` references a
+  recording schedule (see `internal/schedule`); empty = record 24/7. It is
+  **not** read from the INI (the loader never sets it) — a seeded camera always
+  starts 24/7 and a program is assigned later through the API/UI.
+- `go/internal/schedule` — recording schedules (named programs): the `Schedule`
+  model (`Days` maps a weekday key `sun..sat` to `"HH:MM-HH:MM"` armed windows),
+  `Active(t)` (evaluated in local time; a window whose end ≤ start wraps past
+  midnight), `Validate`/`Normalize`, and a DB-backed `Store` (CRUD over the
+  `schedules` table, rules persisted as JSON). The server's scheduler
+  (`server.startScheduler`) pauses a camera's pipeline outside its schedule's
+  windows — see the privacy/scheduling quirk below.
 - `go/internal/streamauth` — credential `Store`: keeps the live pair in
   memory and persists it to the single-row `streamauth_credentials` table
   (`NewStore` reads it at startup or generates a fresh pair when the
@@ -385,6 +398,22 @@ see request query strings and the more verbose media-engine traces
   on disable (`home_x/y` and `privacy_x/y` default to `-1` → no auto-move).
   `GET /api/cameras` reflects the privacy state and withholds `live_mse`/`rtsp`
   while a camera is paused.
+- **Recording schedules share the privacy pause.** A camera's `schedule_id`
+  points at a named program (`internal/schedule`); `server.startScheduler` runs
+  from `SetMediaEngine`, reconciles once, then re-evaluates on every minute
+  boundary (and after any camera/schedule mutation). The **effective** engine
+  pause for a camera is `App.privacy[id] || App.schedOff[id]` — manual privacy
+  OR outside the schedule's armed windows — applied via the same
+  `Engine.SetPrivacy`, under the per-camera privacy op lock so a manual toggle
+  and the scheduler can't fight (`applyPause`/`reconcilePause`... see
+  `handlers_schedules.go`). By design the scheduler drives **only the software
+  pipeline pause**, never the thingino firmware blackout/PTZ moves (those stay
+  on the manual toggle, to avoid daily mechanical churn). A camera with no
+  schedule is always armed. `App.schedOff` is a per-camera in-memory map (like
+  `App.privacy`); `/api/cameras` exposes `schedule_off` and withholds
+  `live_mse`/`rtsp` while off-hours, and `/api/status` reports it per camera.
+  Schedule CRUD is admin-gated (`/api/schedules`, `/api/schedule/{id}`); deleting
+  a schedule still referenced by a camera is refused (409).
 - The embedded engine (live MSE, RTSP relay, recording) is always active for
   any camera with a `source` URL — there is no mode where it's off.
   `[media]` only toggles **recording** (default off) and tunes its

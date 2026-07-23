@@ -313,6 +313,7 @@
       <button id="cameras-back" class="ghost" data-icon="arrow-left"><span class="back-label">Back to Live</span></button>
       <strong data-i18n="cameras.title">Cameras</strong>
       <span class="grow"></span>
+      <button id="cameras-schedules" class="ghost" hidden data-i18n="cameras.schedules">Recording schedules</button>
       <button id="cameras-new" class="primary" hidden data-i18n="cameras.add">+ Add camera</button>
     </header>
     <div class="users-body">
@@ -387,6 +388,13 @@
           <label class="switch"><input type="checkbox" name="relay" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.relay">RTSP relay</span></label>
           <label class="switch"><input type="checkbox" name="privacy" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.privacy_toggle">Offer privacy toggle</span></label>
           <label class="switch"><input type="checkbox" name="playback" /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.playback">Advertise playback capability</span></label>
+          <label><span data-i18n="wizard.schedule">Recording schedule</span>
+            <select name="schedule_id">
+              <option value="" data-i18n="wizard.schedule_always">Always (24/7)</option>
+            </select>
+            <small class="muted" data-i18n="wizard.schedule_hint">Outside the program's hours the camera stops recording and live view.</small>
+            <button type="button" id="cam-manage-schedules" class="linkish" data-i18n="wizard.manage_schedules">Manage schedules…</button>
+          </label>
           <div class="cam-row-2">
             <label><span data-i18n="wizard.width">Width</span><input name="width" type="number" min="0" data-i18n-placeholder="wizard.width_placeholder" placeholder="1920" /></label>
             <label><span data-i18n="wizard.height">Height</span><input name="height" type="number" min="0" data-i18n-placeholder="wizard.height_placeholder" placeholder="1080" /></label>
@@ -452,6 +460,43 @@
           <button type="button" id="cam-wizard-back" class="ghost" hidden data-i18n="wizard.back">Back</button>
           <button type="button" id="cam-wizard-next" class="primary" data-i18n="wizard.next">Next</button>
           <button type="submit" id="cam-wizard-create" class="primary" hidden data-i18n="wizard.create">Create camera</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Recording schedules manager -->
+  <div id="schedules-modal" class="user-edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="schedules-title">
+    <div class="user-edit-card sched-card">
+      <h2 id="schedules-title" data-i18n="schedules.title">Recording schedules</h2>
+
+      <div id="schedules-list-view">
+        <p class="muted small" data-i18n="schedules.intro">Per-weekday recording hours. Outside them a camera is paused. Server local time.</p>
+        <div id="schedules-list" class="sched-list"></div>
+        <p id="schedules-status" class="error" hidden></p>
+        <div class="user-edit-actions">
+          <button type="button" id="schedules-close" class="ghost" data-i18n="schedules.close">Close</button>
+          <span class="grow"></span>
+          <button type="button" id="schedule-new" class="primary" data-i18n="schedules.add">+ New schedule</button>
+        </div>
+      </div>
+
+      <form id="schedule-form" class="users-form" autocomplete="off" hidden>
+        <label><span data-i18n="schedules.id">ID</span><span class="req">*</span>
+          <input name="id" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" data-i18n-placeholder="schedules.id_placeholder" placeholder="e.g. comercial" />
+          <small class="muted" data-i18n="schedules.id_hint">Letters, digits, "-" or "_". Cannot be changed later.</small>
+        </label>
+        <label><span data-i18n="schedules.name">Name</span>
+          <input name="name" data-i18n-placeholder="schedules.name_placeholder" placeholder="e.g. Business hours" />
+        </label>
+        <small class="muted" data-i18n="schedules.days_hint">Windows HH:MM-HH:MM, comma-separated. Empty = off. End before start wraps past midnight.</small>
+        <div class="sched-days" id="sched-days"></div>
+        <p id="schedule-status" class="error" hidden></p>
+        <div class="user-edit-actions">
+          <button type="button" id="schedule-delete" class="danger" hidden data-i18n="schedules.delete">Delete</button>
+          <span class="grow"></span>
+          <button type="button" id="schedule-cancel" class="ghost" data-i18n="schedules.cancel">Cancel</button>
+          <button type="submit" id="schedule-save" class="primary" data-i18n="schedules.save">Save</button>
         </div>
       </form>
     </div>

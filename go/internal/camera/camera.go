@@ -160,7 +160,18 @@ type Camera struct {
 	PrivacyX float64 `json:"-"`
 	PrivacyY float64 `json:"-"`
 
+	// ScheduleID references a recording schedule (see internal/schedule) by id.
+	// Empty means "record 24/7" (the historical default). The server's scheduler
+	// pauses the camera's pipeline outside the referenced schedule's armed
+	// windows. Exposed publicly so the UI can show which program a camera is on.
+	ScheduleID string `json:"schedule_id,omitempty"`
+
 	Privacy bool `json:"privacy"`
+	// ScheduleOff is the live "outside the recording schedule" state: true when
+	// the scheduler has paused this camera because the current time falls outside
+	// its schedule's armed windows. Runtime-only (filled per request by the
+	// server, like Privacy); zero in the store/spec.
+	ScheduleOff bool `json:"schedule_off,omitempty"`
 }
 
 // Spec is the persistable configuration of a camera: the raw fields stored in
@@ -203,6 +214,9 @@ type Spec struct {
 	HomeY          float64 `json:"home_y"`
 	PrivacyX       float64 `json:"privacy_x"`
 	PrivacyY       float64 `json:"privacy_y"`
+
+	// ScheduleID references a recording schedule by id; empty = record 24/7.
+	ScheduleID string `json:"schedule_id"`
 
 	// PTZ calibration: total steps per axis and the angular range those steps
 	// cover. Defaults match the typical thingino gimbal (2130/360 pan,
@@ -266,6 +280,7 @@ func (s Spec) Camera() Camera {
 		HomeY:          s.HomeY,
 		PrivacyX:       s.PrivacyX,
 		PrivacyY:       s.PrivacyY,
+		ScheduleID:     s.ScheduleID,
 		Privacy:        false,
 	}
 	// Build the public PTZ block only when the camera actually has PTZ — the
@@ -441,6 +456,11 @@ func loadSpec(path string) (Spec, bool) {
 		Relay:          relay,
 		Privacy:        privacyAllowed,
 		Playback:       playback,
+		// ScheduleID is deliberately NOT read from the INI: a seeded camera
+		// always starts recording 24/7. Recording schedules are a DB/API concept
+		// (named programs live only in the DB), so a schedule is assigned through
+		// the UI, never imported — there is no INI representation of a program to
+		// reference anyway.
 		Width:          cam.Key("width").MustInt(16),
 		Height:         cam.Key("height").MustInt(9),
 		ThinginoURL:    thingino["thingino_url"],

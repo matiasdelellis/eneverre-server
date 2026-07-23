@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 
@@ -102,8 +103,31 @@ var schema = []string{
 		tilt_degrees INTEGER NOT NULL DEFAULT 180,
 		fov_h REAL NOT NULL DEFAULT 113.0,
 		sort_order INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL DEFAULT 0,
+		schedule_id TEXT NOT NULL DEFAULT ''
+	)`,
+	// Recording schedules (named programs). A camera references one by its
+	// schedule_id; the server pauses the camera's pipeline outside the schedule's
+	// armed windows (see internal/schedule). An empty schedule_id means "record
+	// 24/7", the historical default. `rules` is the per-weekday windows as a JSON
+	// object (see schedule.Schedule.Days).
+	`CREATE TABLE IF NOT EXISTS schedules (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL DEFAULT '',
+		rules TEXT NOT NULL DEFAULT '{}',
 		created_at INTEGER NOT NULL DEFAULT 0
 	)`,
+}
+
+// migrations are idempotent ALTER statements applied after the base schema, for
+// columns added to tables that pre-date them. Each runs on every boot; a
+// "duplicate column name" error means the column is already present on this
+// install and is treated as success. New installs get the column from the
+// CREATE TABLE above and these become no-ops.
+var migrations = []string{
+	// schedule_id was added after the cameras table shipped; existing DBs need
+	// it backfilled to the same default the CREATE TABLE uses.
+	`ALTER TABLE cameras ADD COLUMN schedule_id TEXT NOT NULL DEFAULT ''`,
 }
 
 // Open opens the SQLite database at path (creating its directory), enabling WAL
@@ -133,7 +157,19 @@ func Init(db *sql.DB) error {
 			return err
 		}
 	}
+	for _, stmt := range migrations {
+		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {
+			return err
+		}
+	}
 	return seedAdmin(db)
+}
+
+// isDuplicateColumn reports whether err is SQLite's "duplicate column name"
+// error, raised when an idempotent ADD COLUMN migration runs against a DB that
+// already has the column. The pure-Go driver surfaces it in the message.
+func isDuplicateColumn(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
 
 func seedAdmin(db *sql.DB) error {

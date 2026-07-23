@@ -20,6 +20,7 @@ import (
 	"eneverre/internal/config"
 	"eneverre/internal/media"
 	"eneverre/internal/metrics"
+	"eneverre/internal/schedule"
 	"eneverre/internal/server"
 	"eneverre/internal/store"
 	"eneverre/internal/streamauth"
@@ -160,6 +161,7 @@ func main() {
 	if err != nil {
 		fatal("load cameras failed", "err", err)
 	}
+	schedStore := schedule.NewStore(db)
 
 	// Strip the "static/" prefix so the embedded files are served from root.
 	uiFS, err := fs.Sub(staticFiles, "static")
@@ -210,7 +212,7 @@ func main() {
 	}
 	engine.Start(cams)
 
-	app := server.New(cfg, db, creds, camStore, cams, uiFS, opts.staticCacheControl,
+	app := server.New(cfg, db, creds, camStore, schedStore, cams, uiFS, opts.staticCacheControl,
 		int64(accessHours)*3600, int64(refreshDays)*86400, updatesRegistry)
 	app.SetMediaEngine(engine)
 	app.SetVersion(version)

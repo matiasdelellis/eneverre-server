@@ -1815,7 +1815,50 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .cam-step { display: flex; flex-direction: column; gap: 10px; }
 .cam-step small.muted { font-weight: 400; }
 .cam-step .req { color: var(--danger); }
-.cam-step input.readonly { opacity: 0.6; cursor: not-allowed; }
+.cam-step input.readonly, .users-form input.readonly { opacity: 0.6; cursor: not-allowed; }
+
+/* Inline text-button used inside a hint (e.g. "Manage schedules…"). */
+.linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+.linkish:hover { opacity: 0.85; }
+
+/* Recording-schedules manager */
+.sched-card { width: 560px; }
+/* .users-form caps its width at 360px; let the schedule editor fill the wider
+   card so the two-column day grid isn't squished. */
+.sched-card .users-form { max-width: none; }
+.sched-card .req { color: var(--danger); }
+.sched-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
+.sched-empty { padding: 8px 0; }
+.sched-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2, var(--panel));
+  cursor: pointer;
+}
+.sched-row:hover { border-color: var(--accent); }
+.sched-row-main { flex: 1; min-width: 0; }
+.sched-row-name { font-weight: 600; }
+.sched-row-sum { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sched-row-edit { color: var(--accent); font-size: 13px; }
+/* Two columns so the seven weekdays take ~4 rows instead of 7, keeping the
+   editor compact. Collapses to one column on narrow screens (see media query). */
+.sched-days { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
+.sched-day { display: grid; grid-template-columns: 82px 1fr; align-items: center; gap: 8px; }
+.sched-day-name { font-size: 13px; color: var(--muted); }
+.cam-step small.muted .linkish { font-size: inherit; }
 /* Toggle switch.
    The native checkbox stays in the DOM (and inside the <label>, so clicks
    anywhere — track, text, or label — toggle it) but is visually hidden;
@@ -2033,6 +2076,8 @@ html.booting body > *:not(#boot) { display: none !important; }
   .session-row button { margin-left: 0; }
   .user-edit-modal { padding: 12px; }
   .user-edit-card { padding: 16px; }
+  .sched-card { width: auto; }
+  .sched-days { grid-template-columns: 1fr; }
   .dlg-modal { padding: 12px; }
   .dlg-card { padding: 16px; }
   /* On narrow phones the user table still has a lot to fit in each

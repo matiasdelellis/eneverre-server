@@ -26,6 +26,7 @@ import (
 	"eneverre/internal/events"
 	"eneverre/internal/media"
 	"eneverre/internal/metrics"
+	"eneverre/internal/schedule"
 	"eneverre/internal/streamauth"
 	"eneverre/internal/thingino"
 	"eneverre/internal/updates"
@@ -98,6 +99,20 @@ type App struct {
 	// since handlers run concurrently and /api/cameras reads it.
 	privacyMu sync.RWMutex
 	privacy   map[string]bool
+
+	// schedOff tracks, per camera id, whether the recording scheduler has paused
+	// it because the current time falls outside its schedule's armed windows.
+	// The effective engine pause for a camera is privacy[id] || schedOff[id] (a
+	// camera is stopped if the operator toggled privacy OR it is off-hours).
+	// Guarded by privacyMu (the same lock as privacy): /api/cameras and
+	// /api/status read both together, and reconcilePause reads both to compute
+	// the combined pause. Only cameras currently off-hours have an entry.
+	schedOff map[string]bool
+
+	// schedStore is the DB-backed source of truth for recording schedules
+	// (named programs). Read by the scheduler each evaluation and by the
+	// schedule CRUD endpoints. May be nil in tests that build App directly.
+	schedStore *schedule.Store
 
 	// privacyOps serializes privacy toggles per camera: the toggle spans slow
 	// firmware calls (PTZ move + lens blackout) plus the engine pause plus the
@@ -177,7 +192,7 @@ const (
 // the caller with flag/env/config precedence); pass <= 0 to fall back to the
 // built-in defaults. updatesRegistry is the auto-update track registry; pass
 // nil when the feature is not configured (its Root() is then read as "").
-func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *camera.Store, cameras []camera.Camera, staticFS fs.FS, staticCacheControl string, accessTTL, refreshTTL int64, updatesRegistry *updates.Registry) *App {
+func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *camera.Store, schedStore *schedule.Store, cameras []camera.Camera, staticFS fs.FS, staticCacheControl string, accessTTL, refreshTTL int64, updatesRegistry *updates.Registry) *App {
 	if staticCacheControl == "" {
 		staticCacheControl = "no-cache"
 	}
@@ -198,6 +213,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		db:                 db,
 		creds:              creds,
 		camStore:           camStore,
+		schedStore:         schedStore,
 		cameras:            cameras,
 		staticDir:          resolveStaticDir(),
 		staticCacheControl: staticCacheControl,
@@ -208,6 +224,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		authThrottle:       newAuthThrottle(),
 		proxyTrust:         newProxyTrust(cfg.TrustedProxies()),
 		privacy:            make(map[string]bool),
+		schedOff:           make(map[string]bool),
 		privacyOps:         make(map[string]*sync.Mutex),
 		updatesRoot:        updatesRoot,
 		updatesRegistry:    updatesRegistry,
@@ -356,6 +373,12 @@ func (a *App) SetMediaEngine(e *media.Engine) {
 	// the engine, which only becomes available now.
 	if e != nil && e.Retain() > 0 {
 		go a.startEventCleaner(eventRetentionInterval)
+	}
+	// Drive per-camera recording schedules now that the engine (the thing that
+	// pauses/resumes a camera's pipeline) is attached: reconcile once so any
+	// camera currently off-hours starts paused, then re-evaluate every minute.
+	if e != nil {
+		go a.startScheduler()
 	}
 }
 
@@ -576,6 +599,11 @@ func (a *App) Handler() http.Handler {
 	// delete uses the singular per-camera prefix, consistent with the other
 	// per-camera operations below.
 	mux.HandleFunc("POST /api/cameras", a.handleCreateCamera)
+	mux.HandleFunc("GET /api/schedules", a.handleListSchedules)
+	mux.HandleFunc("POST /api/schedules", a.handleCreateSchedule)
+	mux.HandleFunc("GET /api/schedule/{id}", a.handleGetSchedule)
+	mux.HandleFunc("PUT /api/schedule/{id}", a.handleUpdateSchedule)
+	mux.HandleFunc("DELETE /api/schedule/{id}", a.handleDeleteSchedule)
 	mux.HandleFunc("POST /api/cameras/probe", a.handleProbeCamera)
 	mux.HandleFunc("POST /api/cameras/probe-thingino", a.handleProbeThingino)
 	mux.HandleFunc("GET /api/camera/{cam_id}/config", a.handleGetCameraConfig)
@@ -805,12 +833,13 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 type statusCamera struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Connected bool   `json:"connected"`
-	Recording bool   `json:"recording"`
-	MSEActive bool   `json:"mse_active"`
-	Privacy   bool   `json:"privacy"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Connected   bool   `json:"connected"`
+	Recording   bool   `json:"recording"`
+	MSEActive   bool   `json:"mse_active"`
+	Privacy     bool   `json:"privacy"`
+	ScheduleOff bool   `json:"schedule_off"`
 }
 
 type statusStorage struct {
@@ -859,7 +888,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	out := make([]statusCamera, 0, len(cams))
 	var connected, recording, privacyOn int
 	for _, c := range cams {
-		sc := statusCamera{ID: c.ID, Name: c.Name, Privacy: a.privacy[c.ID]}
+		sc := statusCamera{ID: c.ID, Name: c.Name, Privacy: a.privacy[c.ID], ScheduleOff: a.schedOff[c.ID]}
 		if st, ok := byID[c.ID]; ok {
 			sc.Connected = st.Connected
 			sc.Recording = st.Recording
@@ -1163,15 +1192,18 @@ func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Software privacy: pause (or resume) the engine's pipeline so the camera
-	// stops (or resumes) recording and transmission. Applies to every camera.
-	if a.engine != nil {
-		a.engine.SetPrivacy(cam.ID, enable)
-	}
-
+	// Record the manual privacy intent, then apply the effective engine pause:
+	// privacy OR off-hours. The camera stays paused while it is outside its
+	// recording schedule even if the operator turns manual privacy off, and
+	// vice-versa. We already hold this camera's privacy op lock (above), which
+	// also serializes against the scheduler's reconcilePause.
 	a.privacyMu.Lock()
 	a.privacy[cam.ID] = enable
+	off := a.schedOff[cam.ID]
 	a.privacyMu.Unlock()
+	if a.engine != nil {
+		a.engine.SetPrivacy(cam.ID, enable || off)
+	}
 
 	if body != nil {
 		w.Header().Set("Content-Type", "application/json")
