@@ -12,7 +12,7 @@ export function applyTheme(theme) {
     delete document.documentElement.dataset.theme;
   }
   const btn = document.getElementById("theme-toggle");
-  if (btn) btn.innerHTML = theme === "light" ? icon("moon") : icon("sun");
+  if (btn) btn.innerHTML = effectiveTheme() === "light" ? icon("moon") : icon("sun");
   // Components that render theme-dependent colors directly to a canvas
   // (or any non-CSS surface) can't pick up the change via a stylesheet
   // re-render — they have to re-read the custom properties and redraw.
@@ -26,8 +26,17 @@ export function setTheme(theme) {
   applyTheme(theme);
 }
 
+// The effective theme is what's actually rendered right now: an explicit
+// stored choice, or — on first session, when nothing is stored — whatever
+// the system preference is currently resolving to.
+export function effectiveTheme() {
+  const stored = currentTheme();
+  if (stored === "light" || stored === "dark") return stored;
+  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
 export function toggleTheme() {
-  const next = currentTheme() === "light" ? "dark" : "light";
+  const next = effectiveTheme() === "light" ? "dark" : "light";
   setTheme(next);
 }
 

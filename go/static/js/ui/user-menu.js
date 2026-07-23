@@ -1,5 +1,5 @@
 import { $ } from "../util/dom.js";
-import { currentTheme, toggleTheme } from "./theme.js";
+import { effectiveTheme, toggleTheme } from "./theme.js";
 import { getSupportedLangs, getLang, setLang, langName, t } from "../i18n.js";
 
 // Build one radio-style menu item per supported language, inserted right
@@ -42,7 +42,7 @@ function syncThemeMenuLabel() {
   if (!menu) return;
   // The topbar shows the moon in light mode (so clicking goes to dark)
   // and the sun in dark/auto (so clicking goes to light).
-  const isLight = currentTheme() === "light";
+  const isLight = effectiveTheme() === "light";
   menu.textContent = isLight ? t("menu.theme_dark") : t("menu.theme_light");
 }
 
