@@ -1,5 +1,5 @@
 import { $, $$, escapeHtml, makeMsg } from "../util/dom.js";
-import { getState, setWallFilter, setWallFilterBeforeCam, on, emit } from "../state.js";
+import { getState, setWallFilter, setWallFilterBeforeCam, setOverlay, on, emit } from "../state.js";
 import { fetchCameras, token, apiFetch } from "../api.js";
 import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js";
 import { attachMse, captureVideoFrame } from "./mse.js";
@@ -470,10 +470,7 @@ function renderWallEmpty(wall) {
     ${isAdmin ? '<button class="primary wall-empty-cta" id="wall-add-camera">' + t("wall.add_camera") + '</button>' : ""}`;
   wall.replaceChildren(empty);
   if (isAdmin) {
-    $("#wall-add-camera").addEventListener("click", async () => {
-      const { enterCamerasView } = await import("./cameras.js");
-      enterCamerasView();
-    });
+    $("#wall-add-camera").addEventListener("click", () => setOverlay("cameras"));
   }
 }
 

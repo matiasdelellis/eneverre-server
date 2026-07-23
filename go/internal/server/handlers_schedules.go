@@ -13,7 +13,7 @@ import (
 
 // schedIDPattern constrains a schedule id to the same short, URL-safe token as a
 // camera id (it appears in the API path and is referenced by cameras.schedule_id).
-var schedIDPattern = camIDPattern
+var schedIDPattern = idPattern
 
 // scheduleReq is the JSON body of POST /api/schedules and PUT /api/schedule/{id}.
 // Days maps a weekday key ("mon".."sun") to its armed windows, each "HH:MM-HH:MM".

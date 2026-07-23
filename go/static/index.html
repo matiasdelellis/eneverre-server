@@ -324,7 +324,6 @@
         <div class="users-table cameras-table">
           <div class="users-row cameras-row users-header">
             <div data-i18n="cameras.col_name">Name</div>
-            <div data-i18n="cameras.col_id">ID</div>
             <div data-i18n="cameras.col_location">Location</div>
             <div class="users-actions-col" data-i18n="cameras.col_actions">Actions</div>
           </div>
@@ -338,20 +337,16 @@
     <div class="user-edit-card cam-wizard-card">
       <h2 id="cam-wizard-title" data-i18n="cameras.add_title">Add camera</h2>
       <ol class="cam-wizard-steps" id="cam-wizard-steps">
-        <li data-step="1" data-i18n="wizard.step_basics">Basics</li>
-        <li data-step="2" data-i18n="wizard.step_source">Source</li>
-        <li data-step="3" data-i18n="wizard.step_options">Options</li>
-        <li data-step="4" data-i18n="wizard.step_thingino">Thingino</li>
-        <li data-step="5" data-i18n="wizard.step_review">Review</li>
+        <li data-step="1" role="button" tabindex="0" data-i18n="wizard.step_basics">Basics</li>
+        <li data-step="2" role="button" tabindex="0" data-i18n="wizard.step_connections">Connections</li>
+        <li data-step="3" role="button" tabindex="0" data-i18n="wizard.step_options">Options</li>
+        <li data-step="4" role="button" tabindex="0" data-i18n="wizard.step_thingino">Thingino</li>
+        <li data-step="5" role="button" tabindex="0" data-i18n="wizard.step_review">Review</li>
       </ol>
       <form id="cam-wizard-form" class="users-form" autocomplete="off">
         <!-- Step 1: basics -->
         <div class="cam-step" data-step="1">
-          <label><span data-i18n="wizard.id">ID</span><span class="req">*</span>
-            <input name="id" required data-i18n-placeholder="wizard.id_placeholder" placeholder="e.g. frente" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" />
-            <small class="muted" data-i18n="wizard.id_hint">Letters, digits, "-" or "_". Used in URLs and the recording path — cannot be changed later.</small>
-          </label>
-          <label><span data-i18n="wizard.name">Name</span>
+          <label><span class="label-line"><span data-i18n="wizard.name">Name</span><span class="req">*</span></span>
             <input name="name" data-i18n-placeholder="wizard.name_placeholder" placeholder="e.g. Front door" />
           </label>
           <label><span data-i18n="wizard.location">Location</span>
@@ -362,11 +357,11 @@
           </label>
         </div>
 
-        <!-- Step 2: source -->
+        <!-- Step 2: camera connections -->
         <div class="cam-step" data-step="2" hidden>
-          <label><span data-i18n="wizard.source_url">RTSP source URL</span><span class="req">*</span>
+          <label><span class="label-line"><span data-i18n="wizard.source_url">RTSP source URL</span><span class="req">*</span></span>
             <input name="source" data-i18n-placeholder="wizard.source_placeholder" placeholder="rtsp://user:pass@192.168.1.50/ch0" />
-            <small class="muted" data-i18n="wizard.source_hint">The camera's own RTSP URL, with credentials. Never exposed to clients.</small>
+            <small class="muted" data-i18n="wizard.source_hint">The camera's own RTSP URL, with credentials.</small>
           </label>
           <label><span data-i18n="wizard.transport">Transport</span>
             <select name="transport">
@@ -379,14 +374,22 @@
             <button type="button" id="cam-probe-btn" class="ghost" data-i18n="wizard.test">Test connection</button>
             <span id="cam-probe-result" class="cam-probe-result muted"></span>
           </div>
+          <label><span data-i18n="wizard.backchannel">Backchannel URL (two-way audio)</span>
+            <input name="backchannel" data-i18n-placeholder="wizard.backchannel_placeholder" placeholder="rtsp://user:pass@192.168.1.50:554/ch0" />
+          </label>
+          <label><span data-i18n="wizard.snapshot_url">Snapshot URL (still JPEG)</span>
+            <input name="snapshot_url" data-i18n-placeholder="wizard.snapshot_url_placeholder" placeholder="http://user:pass@192.168.1.50/snapshot.jpg" />
+            <small class="muted" data-i18n="wizard.snapshot_url_hint">Optional. The camera's own JPEG endpoint (ONVIF/CGI). Enables thumbnails for non-Thingino cameras.</small>
+          </label>
         </div>
 
         <!-- Step 3: media options -->
         <div class="cam-step" data-step="3" hidden>
-          <label class="switch"><input type="checkbox" name="record" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text"><span data-i18n="wizard.record">Record to disk</span> <small class="muted" data-i18n="wizard.record_hint">(needs [media] record = true globally)</small></span></label>
           <label class="switch"><input type="checkbox" name="mse" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.mse">Live MSE feed (browser)</span></label>
           <label class="switch"><input type="checkbox" name="relay" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.relay">RTSP relay</span></label>
           <label class="switch"><input type="checkbox" name="privacy" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.privacy_toggle">Offer privacy toggle</span></label>
+          <p class="muted small" id="cam-record-disabled" data-i18n="wizard.record_disabled_msg" hidden></p>
+          <label class="switch"><input type="checkbox" name="record" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.record">Record to disk</span></label>
           <label class="switch"><input type="checkbox" name="playback" /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.playback">Advertise playback capability</span></label>
           <label><span data-i18n="wizard.schedule">Recording schedule</span>
             <select name="schedule_id">
@@ -399,13 +402,6 @@
             <label><span data-i18n="wizard.width">Width</span><input name="width" type="number" min="0" data-i18n-placeholder="wizard.width_placeholder" placeholder="1920" /></label>
             <label><span data-i18n="wizard.height">Height</span><input name="height" type="number" min="0" data-i18n-placeholder="wizard.height_placeholder" placeholder="1080" /></label>
           </div>
-          <label><span data-i18n="wizard.backchannel">Backchannel URL (two-way audio)</span>
-            <input name="backchannel" data-i18n-placeholder="wizard.backchannel_placeholder" placeholder="rtsp://user:pass@192.168.1.50:554/ch0" />
-          </label>
-          <label><span data-i18n="wizard.snapshot_url">Snapshot URL (still JPEG)</span>
-            <input name="snapshot_url" data-i18n-placeholder="wizard.snapshot_url_placeholder" placeholder="http://user:pass@192.168.1.50/snapshot.jpg" />
-            <small class="muted" data-i18n="wizard.snapshot_url_hint">Optional. The camera's own JPEG endpoint (ONVIF/CGI). Enables thumbnails for non-Thingino cameras; proxied by the server, never exposed to clients.</small>
-          </label>
         </div>
 
         <!-- Step 4: thingino (optional) -->
@@ -449,7 +445,7 @@
 
         <!-- Step 5: review -->
         <div class="cam-step" data-step="5" hidden>
-          <p class="muted" data-i18n="wizard.review_intro">Review and create. The camera comes online immediately — no restart.</p>
+          <p class="muted" data-i18n="wizard.review_intro">Review and create. The camera comes online immediately.</p>
           <dl class="cam-review" id="cam-review"></dl>
         </div>
 
@@ -482,7 +478,7 @@
       </div>
 
       <form id="schedule-form" class="users-form" autocomplete="off" hidden>
-        <label><span data-i18n="schedules.id">ID</span><span class="req">*</span>
+        <label><span class="label-line"><span data-i18n="schedules.id">ID</span><span class="req">*</span></span>
           <input name="id" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" data-i18n-placeholder="schedules.id_placeholder" placeholder="e.g. comercial" />
           <small class="muted" data-i18n="schedules.id_hint">Letters, digits, "-" or "_". Cannot be changed later.</small>
         </label>

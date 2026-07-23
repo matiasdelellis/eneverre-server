@@ -173,17 +173,19 @@ Everything above can also be pointed at from the command line; run
    `[auth]` token lifetimes.
  * **`--version, -v`** / **`--help, -h`** — print version / usage and exit.
 
-## cameras.d/<id>.ini
+## cameras.d/*.ini
 
-Each camera is one file under `data/cameras.d/` (or `/etc/eneverre/cameras.d/`).
-Cameras are loaded **once at startup**, so adding or editing one requires a
-restart. A file with no `[camera]` section or no `id` is skipped. See
-[`cameras.d/camera01.ini`](cameras.d/camera01.ini) (PTZ Thingino camera) and
-[`cameras.d/camera02.ini`](cameras.d/camera02.ini) (fixed camera, no Thingino).
+Each camera is one file under `data/cameras.d/` (or `/etc/eneverre/cameras.d/`);
+the filename is arbitrary. These files are only an initial seed — they are
+imported into the database **once**, when the camera table is empty (a fresh
+install). After that, cameras are managed entirely through the web UI / API and
+the INI files are ignored. A file with no `[camera]` section or no `name` is
+skipped. See [`cameras.d/camera01.ini`](cameras.d/camera01.ini) (PTZ Thingino
+camera) and [`cameras.d/camera02.ini`](cameras.d/camera02.ini) (fixed camera, no
+Thingino).
 
 ```ini
 [camera]
-id = camera01
 name = Outside
 comment = Thingino 360 Camera
 location = Exterior
@@ -228,9 +230,13 @@ privacy_y = 180
 
 ### `[camera]` keys
 
- * **id:** Camera id; the path the embedded engine records/relays under.
-   One id, one camera.
- * **name / comment / location:** Friendly labels shown by the clients.
+ * **name:** The camera's display name, and its identity. The internal id —
+   the path the embedded engine records/relays under, and the `{id}` in every
+   API URL — is derived from it as a lowercased, accent-folded slug
+   ("Outside" → "outside"); same-slug names are disambiguated with a numeric
+   suffix. It is never set by hand and cannot change once assigned. `name` is
+   required.
+ * **comment / location:** Friendly labels shown by the clients.
  * **source:** The camera's direct RTSP URL. The engine always connects to
    it and relays/records from it — `[media]` only decides whether
    *recording* happens, not whether the engine talks to the camera. This

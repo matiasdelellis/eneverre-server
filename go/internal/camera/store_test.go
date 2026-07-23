@@ -341,8 +341,9 @@ func TestSeedFromINI(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("frente.ini", "[camera]\nid = frente\nname = Frente\nsource = rtsp://x/frente\n")
-	write("calle.ini", "[camera]\nid = calle\nname = Calle\nsource = rtsp://x/calle\ntransport = tcp\n")
+	// The id is derived from the name ("Frente" → "frente", "Calle" → "calle").
+	write("frente.ini", "[camera]\nname = Frente\nsource = rtsp://x/frente\n")
+	write("calle.ini", "[camera]\nname = Calle\nsource = rtsp://x/calle\ntransport = tcp\n")
 
 	db := testDB(t)
 	cfg := &config.Config{CamerasDir: dir}
@@ -375,5 +376,76 @@ func TestSeedFromINI(t *testing.T) {
 	}
 	if n2 != 0 {
 		t.Errorf("second seed imported %d; want 0 (skip when populated)", n2)
+	}
+}
+
+func TestUniqueID(t *testing.T) {
+	db := testDB(t)
+	st := NewStore(db)
+	mk := func(id string) {
+		if _, err := st.Create(Spec{ID: id, Source: "rtsp://x/" + id}, 1); err != nil {
+			t.Fatalf("Create %q: %v", id, err)
+		}
+	}
+	// Free base returns unchanged.
+	if got, err := st.UniqueID("patio"); err != nil || got != "patio" {
+		t.Fatalf("UniqueID free = %q, %v; want patio", got, err)
+	}
+	mk("patio")
+	// Taken base bumps to -2, then -3 as more are taken.
+	if got, _ := st.UniqueID("patio"); got != "patio-2" {
+		t.Errorf("UniqueID with patio taken = %q; want patio-2", got)
+	}
+	mk("patio-2")
+	if got, _ := st.UniqueID("patio"); got != "patio-3" {
+		t.Errorf("UniqueID with patio,patio-2 taken = %q; want patio-3", got)
+	}
+}
+
+// TestSeedFromINIDerivesID pins that the id is slugged from the name, that two
+// same-named cameras are disambiguated, that any `id` key in the INI is ignored
+// (the name is the sole source of the id), and that an INI without a name is
+// skipped.
+func TestSeedFromINIDerivesID(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Id derived from the name.
+	write("a.ini", "[camera]\nname = Cámara Frente\nsource = rtsp://x/a\n")
+	// Same name as a.ini → slug collides → disambiguated to -2.
+	write("b.ini", "[camera]\nname = Cámara Frente\nsource = rtsp://x/b\n")
+	// Any `id` key is ignored; the id comes from the name ("Cámara Fondo").
+	write("c.ini", "[camera]\nid = ignored\nname = Cámara Fondo\nsource = rtsp://x/c\n")
+	// No name → skipped, not fatal.
+	write("d.ini", "[camera]\nsource = rtsp://x/d\n")
+
+	db := testDB(t)
+	cfg := &config.Config{CamerasDir: dir}
+	n, err := SeedFromINI(db, cfg, 1234)
+	if err != nil {
+		t.Fatalf("SeedFromINI: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("imported %d; want 3 (d.ini skipped)", n)
+	}
+	st := NewStore(db)
+	got := map[string]bool{}
+	cams, err := st.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cams {
+		got[c.ID] = true
+	}
+	for _, want := range []string{"camara-frente", "camara-frente-2", "camara-fondo"} {
+		if !got[want] {
+			t.Errorf("missing derived id %q; got %v", want, got)
+		}
+	}
+	if got["ignored"] {
+		t.Error("INI `id` key was honored; it must be ignored")
 	}
 }

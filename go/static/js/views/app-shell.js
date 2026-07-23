@@ -8,7 +8,7 @@ import { api, token, setOnUnauthorized } from "../api.js";
 import { t } from "../i18n.js";
 import {
   getState, setViewMode as setViewModeState, setWallFilter, setWallFilterBeforeCam,
-  setSidebarCollapsed, resetOnLogout, on,
+  setSidebarCollapsed, setOverlay, resetOnLogout, on,
 } from "../state.js";
 import { closeUserMenu, refreshUserMenu } from "../ui/user-menu.js";
 import { showLogin } from "./login.js";
@@ -124,17 +124,27 @@ function parseDeviceNameFromUrl() {
 let applyingUrl = false;
 
 // parseUrlState reads the navigable state from the query string:
-//   ?view=live|playback   view mode (default live)
-//   ?cam=<id>             single-camera filter
-//   ?loc=<name>           location filter (cam wins if both present)
-//   ?t=<unix>             playback cursor, seconds or ms (only from a shared
-//                         "this moment" link — normal navigation never writes it)
+//   ?view=live|playback            main view mode (default live)
+//   ?view=account|users|cameras|status
+//                                 a full-screen overlay panel (the
+//                                 four admin/personal views that used
+//                                 to be DOM-only — now they have a
+//                                 URL so a refresh keeps the user
+//                                 on the same panel)
+//   ?cam=<id>                      single-camera filter (main view only)
+//   ?loc=<name>                    location filter, cam wins (main view only)
+//   ?t=<unix>                      playback cursor, seconds or ms (only from
+//                                  a shared "this moment" link — normal
+//                                  navigation never writes it)
 // Returns null when the URL carries no navigable state (bare "/"), so the
 // caller can fall back to the stored session state on first load.
 function parseUrlState() {
   const params = new URLSearchParams(window.location.search);
   const viewRaw = (params.get("view") || "").trim().toLowerCase();
-  const view = viewRaw === "playback" ? "playback" : "live";
+  let view;
+  if (viewRaw === "playback") view = "playback";
+  else if (viewRaw === "account" || viewRaw === "users" || viewRaw === "cameras" || viewRaw === "status") view = viewRaw;
+  else view = "live";
   const cam = (params.get("cam") || "").trim();
   const loc = (params.get("loc") || "").trim();
   let filter = { type: "all" };
@@ -154,9 +164,9 @@ function parseUrlState() {
 }
 
 async function applyUrlState(state) {
-  // Applying is guarded so the resulting wallFilter/viewMode events don't
-  // push a new history entry — the URL already reflects this state (it's
-  // either the address the user opened or the entry popstate restored).
+  // Applying is guarded so the resulting wallFilter/viewMode/overlay events
+  // don't push a new history entry — the URL already reflects this state
+  // (it's either the address the user opened or the entry popstate restored).
   applyingUrl = true;
   try {
     if (state.t != null) {
@@ -168,26 +178,42 @@ async function applyUrlState(state) {
       });
     }
     setWallFilter(state.filter);
-    setViewMode(state.view);
+    if (state.view === "live" || state.view === "playback") {
+      setViewMode(state.view);
+      // Returning to the main view: drop any overlay (its `exit*` does the
+      // real cleanup — see the overlay listener below).
+      setOverlay(null);
+    } else {
+      // Open the named overlay panel. The listener in initDeepLinks calls
+      // the matching enter* and, if another overlay was open, its exit* first.
+      setOverlay(state.view);
+    }
   } finally {
     applyingUrl = false;
   }
 }
 
 // currentUrlParams builds the URL that reflects the current navigation state
-// (wall filter + view mode). It never emits `t`: the playback cursor only
-// enters the URL through the explicit "share this moment" button, never
-// through ordinary navigation.
+// (overlay panel, wall filter, view mode). When an overlay is open the only
+// param emitted is `view=<overlay>` — the main-view filter/cursor are not
+// carried through, so going back from an overlay lands on the main view with
+// the same `view=live|playback` state the overlay was stacked on top of.
+// `t` is never emitted: the playback cursor only enters the URL through the
+// explicit "share this moment" button.
 function currentUrlParams() {
-  const { wallFilter, viewMode } = getState();
+  const { wallFilter, viewMode, overlay } = getState();
   const u = new URL(window.location.href);
   u.searchParams.delete("view");
   u.searchParams.delete("cam");
   u.searchParams.delete("loc");
   u.searchParams.delete("t");
-  if (viewMode === "playback") u.searchParams.set("view", "playback");
-  if (wallFilter.type === "cam") u.searchParams.set("cam", wallFilter.value);
-  else if (wallFilter.type === "loc") u.searchParams.set("loc", wallFilter.value);
+  if (overlay) {
+    u.searchParams.set("view", overlay);
+  } else {
+    if (viewMode === "playback") u.searchParams.set("view", "playback");
+    if (wallFilter.type === "cam") u.searchParams.set("cam", wallFilter.value);
+    else if (wallFilter.type === "loc") u.searchParams.set("loc", wallFilter.value);
+  }
   return u;
 }
 
@@ -201,12 +227,62 @@ function writeUrl(push) {
   else history.replaceState(null, "", u.toString());
 }
 
-// syncUrl is subscribed to wallFilter/viewMode changes: every camera/location
-// selection or Live<->Playback switch becomes a bookmarkable, back/forward-able
-// URL. Suppressed while applyingUrl is set (change came from the URL itself).
+// syncUrl is subscribed to wallFilter/viewMode/overlay changes: every
+// camera/location selection, Live<->Playback switch, or overlay open/close
+// becomes a bookmarkable, back/forward-able URL. Suppressed while applyingUrl
+// is set (change came from the URL itself) so the round-trip doesn't push a
+// duplicate history entry.
 function syncUrl() {
-  if (applyingUrl || $("#app").hidden) return;
+  if (applyingUrl) return;
   writeUrl(true);
+}
+
+// Track the overlay that was open just before the most recent change so the
+// overlay listener can call its `exit*` for full cleanup (focus-trap release,
+// status-view timer, etc.) when the panel is replaced or closed. A bare local
+// is enough: the listener always knows the previous value before the new one
+// lands, and the URL is the only state that survives a reload — the listener
+// starts with prev=null and the URL-driven applyUrlState opens the right
+// panel on its own.
+let prevOverlay = null;
+
+function openOverlayPanel(name) {
+  if (name === "account" || name === "users") {
+    const mode = name === "account" ? "account" : "manage";
+    return import("./users.js").then(({ enterUsersView }) => enterUsersView(mode));
+  }
+  if (name === "cameras") {
+    return import("./cameras.js").then(({ enterCamerasView }) => enterCamerasView());
+  }
+  if (name === "status") {
+    return import("./status.js").then(({ enterStatusView }) => enterStatusView());
+  }
+  return Promise.resolve();
+}
+
+function closeOverlayPanel(name) {
+  if (name === "account" || name === "users") {
+    return import("./users.js").then(({ exitUsersView }) => exitUsersView());
+  }
+  if (name === "cameras") {
+    return import("./cameras.js").then(({ exitCamerasView }) => exitCamerasView());
+  }
+  if (name === "status") {
+    return import("./status.js").then(({ exitStatusView }) => exitStatusView());
+  }
+  return Promise.resolve();
+}
+
+function onOverlayChange(name) {
+  // Close whatever was open (if any) with full cleanup, then open the new
+  // panel — or just the close if the user is going back to the main view.
+  // Both happen in the same tick: the `exit*` briefly unhides `#app`, but
+  // the `enter*` (or nothing) immediately hides it again, so no repaint.
+  const prev = prevOverlay;
+  prevOverlay = name;
+  const closePrev = prev != null ? closeOverlayPanel(prev) : Promise.resolve();
+  const openNext = name != null ? openOverlayPanel(name) : Promise.resolve();
+  return Promise.all([closePrev, openNext]);
 }
 
 export async function showApp() {
@@ -344,12 +420,18 @@ function initTopbar() {
 }
 
 function initDeepLinks() {
-  // Reflect every camera/location selection and Live<->Playback switch into the
-  // URL so any view can be bookmarked (and reached with back/forward).
+  // Reflect every camera/location selection, Live<->Playback switch, and
+  // overlay open/close into the URL so any view can be bookmarked (and
+  // reached with back/forward or by reloading the tab).
   on("wallFilter", syncUrl);
   on("viewMode", syncUrl);
+  on("overlay", syncUrl);
+  on("overlay", onOverlayChange);
   window.addEventListener("popstate", () => {
-    if ($("#app").hidden) return;
+    // Skip on the login / forced-password screens — the URL is still theirs
+    // to drive (usercode flow, etc.). On a successful popstate the user is in
+    // the main app (logged in) and the URL state is the source of truth.
+    if (!$("#login").hidden || !$("#force-pw").hidden || !$("#device-auth-view").hidden) return;
     // A bare "/" (no navigable params) means "all cameras, live".
     const state = parseUrlState() || { view: "live", filter: { type: "all" }, t: null };
     applyUrlState(state);

@@ -3,43 +3,47 @@ package server
 import "testing"
 
 // TestCreateCameraReqSpec pins the create-request validation and defaulting:
-// the id must be a safe token, the source is required, transport is constrained,
-// and omitted flags fall back to the same defaults the INI loader applies.
+// the source is required, transport is constrained, and omitted flags fall back
+// to the same defaults the INI loader applies. The id is never part of the
+// request — the Spec it returns carries an empty ID, which the handler fills by
+// slugging the name.
 func TestCreateCameraReqSpec(t *testing.T) {
-	t.Run("rejects bad ids", func(t *testing.T) {
-		bad := []string{"", "-lead", "has space", "path/traversal", "..", "a.b", "über"}
-		for _, id := range bad {
-			req := createCameraReq{ID: id, Source: "rtsp://x/y"}
-			if _, msg := req.spec(); msg == "" {
-				t.Errorf("id %q accepted; want rejected", id)
-			}
+	t.Run("spec carries no id (derived from the name by the handler)", func(t *testing.T) {
+		req := createCameraReq{Name: "Front door", Source: "rtsp://x/y"}
+		s, msg := req.spec()
+		if msg != "" {
+			t.Fatalf("valid request rejected: %s", msg)
+		}
+		if s.ID != "" {
+			t.Errorf("spec() invented an id %q; derivation is the handler's job", s.ID)
 		}
 	})
 
-	t.Run("accepts good ids", func(t *testing.T) {
-		good := []string{"frente", "cam-01", "cam_02", "A1", "0"}
-		for _, id := range good {
-			req := createCameraReq{ID: id, Source: "rtsp://x/y"}
-			if _, msg := req.spec(); msg != "" {
-				t.Errorf("id %q rejected: %s", id, msg)
+	t.Run("name required", func(t *testing.T) {
+		// The name is the camera's identity (and the id is slugged from it), so
+		// it is required on both create and update.
+		for _, name := range []string{"", "   "} {
+			req := createCameraReq{Name: name, Source: "rtsp://x/y"}
+			if _, msg := req.spec(); msg == "" {
+				t.Errorf("empty name %q accepted; want rejected", name)
 			}
 		}
 	})
 
 	t.Run("source required", func(t *testing.T) {
-		req := createCameraReq{ID: "cam", Source: "  "}
+		req := createCameraReq{Name: "Cam", Source: "  "}
 		if _, msg := req.spec(); msg == "" {
 			t.Error("empty source accepted; want rejected")
 		}
 	})
 
 	t.Run("transport constrained", func(t *testing.T) {
-		req := createCameraReq{ID: "cam", Source: "rtsp://x/y", Transport: "quic"}
+		req := createCameraReq{Name: "Cam", Source: "rtsp://x/y", Transport: "quic"}
 		if _, msg := req.spec(); msg == "" {
 			t.Error("bad transport accepted; want rejected")
 		}
 		for _, tr := range []string{"", "auto", "tcp", "udp", "TCP"} {
-			req := createCameraReq{ID: "cam", Source: "rtsp://x/y", Transport: tr}
+			req := createCameraReq{Name: "Cam", Source: "rtsp://x/y", Transport: tr}
 			if _, msg := req.spec(); msg != "" {
 				t.Errorf("transport %q rejected: %s", tr, msg)
 			}
@@ -47,7 +51,7 @@ func TestCreateCameraReqSpec(t *testing.T) {
 	})
 
 	t.Run("defaults applied when flags omitted", func(t *testing.T) {
-		req := createCameraReq{ID: "cam", Source: "rtsp://x/y"}
+		req := createCameraReq{Name: "Cam", Source: "rtsp://x/y"}
 		s, msg := req.spec()
 		if msg != "" {
 			t.Fatalf("unexpected validation error: %s", msg)
@@ -69,7 +73,7 @@ func TestCreateCameraReqSpec(t *testing.T) {
 
 	t.Run("explicit false flags honored", func(t *testing.T) {
 		no := false
-		req := createCameraReq{ID: "cam", Source: "rtsp://x/y", Record: &no, MSE: &no}
+		req := createCameraReq{Name: "Cam", Source: "rtsp://x/y", Record: &no, MSE: &no}
 		s, _ := req.spec()
 		if s.Record || s.MSE {
 			t.Errorf("explicit false not honored: record=%v mse=%v", s.Record, s.MSE)
@@ -85,7 +89,7 @@ func TestCreateCameraReqSpec(t *testing.T) {
 
 	t.Run("explicit playback overrides the record-derived default", func(t *testing.T) {
 		no, yes := false, true
-		req := createCameraReq{ID: "cam", Source: "rtsp://x/y", Record: &no, Playback: &yes}
+		req := createCameraReq{Name: "Cam", Source: "rtsp://x/y", Record: &no, Playback: &yes}
 		s, _ := req.spec()
 		if s.Record {
 			t.Error("record should be false")
@@ -96,12 +100,12 @@ func TestCreateCameraReqSpec(t *testing.T) {
 	})
 
 	t.Run("trims whitespace", func(t *testing.T) {
-		req := createCameraReq{ID: "  cam  ", Name: "  Front  ", Source: "  rtsp://x/y  "}
+		req := createCameraReq{Name: "  Front  ", Source: "  rtsp://x/y  "}
 		s, msg := req.spec()
 		if msg != "" {
 			t.Fatalf("unexpected error: %s", msg)
 		}
-		if s.ID != "cam" || s.Name != "Front" || s.Source != "rtsp://x/y" {
+		if s.Name != "Front" || s.Source != "rtsp://x/y" {
 			t.Errorf("not trimmed: %+v", s)
 		}
 	})

@@ -7,6 +7,12 @@ const state = {
   wallFilterBeforeCam: null,
   camerasCache: null,
   lastPtzCam: null,
+  // overlay names the full-screen panel currently stacked on top of the
+  // main app: null = main view (live/playback), otherwise one of
+  // "account" | "users" | "cameras" | "status". A change drives both the
+  // URL (?view=<name>) and the actual enter/exit of the panel — the
+  // listener in app-shell.js performs the open/close.
+  overlay: null,
 };
 
 function loadWallFilter() {
@@ -71,11 +77,18 @@ export function setLastPtzCam(cam) {
   state.lastPtzCam = cam;
 }
 
+export function setOverlay(v) {
+  if (state.overlay === v) return;
+  state.overlay = v;
+  emit("overlay", v);
+}
+
 export function resetOnLogout() {
   state.wallFilter = { type: "all" };
   state.wallFilterBeforeCam = null;
   state.viewMode = "live";
   state.camerasCache = null;
   state.lastPtzCam = null;
+  state.overlay = null;
   remove(WALL_FILTER_KEY);
 }

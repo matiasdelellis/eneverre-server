@@ -14,18 +14,22 @@ import (
 	"eneverre/internal/thingino"
 )
 
-// camIDPattern constrains a camera id to a short, filesystem- and URL-safe
-// token. The id is used as a recording subdirectory (the `%path` segment) and
-// throughout the API paths, so path separators, dots, and whitespace are
-// rejected; the first character must be alphanumeric.
-var camIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+// idPattern constrains an id to a short, filesystem- and URL-safe token: it is
+// used as a recording subdirectory (the `%path` segment) and throughout the API
+// paths, so path separators, dots, and whitespace are rejected and the first
+// character must be alphanumeric. Camera ids are no longer entered by hand —
+// they are derived from the name (camera.Slugify, which produces a token in
+// this shape) — but schedules still take an operator-supplied id, so the
+// pattern lives on (see schedIDPattern).
+var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 // createCameraReq is the JSON body of POST /api/cameras. The three-state
 // booleans (record/mse/relay/privacy/playback) and the numeric fields are
 // pointers so an omitted key falls back to the same defaults the INI loader
-// applies, rather than to Go's zero value.
+// applies, rather than to Go's zero value. There is no `id` field: the camera
+// id is always derived from the name by the handler (it is the recording path
+// and only ever appears in URLs thereafter).
 type createCameraReq struct {
-	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Comment     string `json:"comment"`
 	Location    string `json:"location"`
@@ -90,9 +94,16 @@ func floatOr(p *float64, def float64) float64 {
 // non-empty message describing the first validation failure (for a 422), in
 // which case the returned Spec is unusable.
 func (req createCameraReq) spec() (camera.Spec, string) {
-	id := strings.TrimSpace(req.ID)
-	if !camIDPattern.MatchString(id) {
-		return camera.Spec{}, "id must be 1–64 chars of letters, digits, '-' or '_', starting with a letter or digit"
+	// The returned Spec carries no id: on create the handler derives it from the
+	// name (camera.Slugify + uniqueness), and on update the handler sets it from
+	// the URL path. The id is never part of the request body.
+	//
+	// The name is required on both create and update: it is the camera's
+	// identity (the id is a slug of it on create) and there is no reason to strip
+	// it when editing. Renaming is allowed — it just never changes the id.
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return camera.Spec{}, "name is required"
 	}
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
@@ -105,8 +116,7 @@ func (req createCameraReq) spec() (camera.Spec, string) {
 		return camera.Spec{}, "transport must be one of auto, tcp, udp"
 	}
 	s := camera.Spec{
-		ID:          id,
-		Name:        strings.TrimSpace(req.Name),
+		Name:        name,
 		Comment:     strings.TrimSpace(req.Comment),
 		Location:    strings.TrimSpace(req.Location),
 		Source:      source,
@@ -171,6 +181,24 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 	// create/update/delete so they can't interleave.
 	a.camMutateMu.Lock()
 	defer a.camMutateMu.Unlock()
+
+	// The id is always derived from the name: slug it, then disambiguate against
+	// existing cameras. Done under the lock so the uniqueness probe (UniqueID)
+	// and the insert are atomic with respect to other camera mutations.
+	base := camera.Slugify(s.Name)
+	if base == "" {
+		// The name is present (spec() enforced that) but has nothing sluggable,
+		// so no id can be derived from it.
+		httpError(w, http.StatusUnprocessableEntity, "name must contain at least one letter or digit")
+		return
+	}
+	id, err := a.camStore.UniqueID(base)
+	if err != nil {
+		slog.Error("derive camera id failed", "name", s.Name, "err", err)
+		httpError(w, http.StatusInternalServerError, "could not assign a camera id")
+		return
+	}
+	s.ID = id
 
 	cam, err := a.camStore.Create(s, time.Now().Unix())
 	if errors.Is(err, camera.ErrExists) {
@@ -252,12 +280,12 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	req.ID = id // the id is set by the path; any body id is ignored
 	s, msg := req.spec()
 	if msg != "" {
 		httpError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
+	s.ID = id // the id is fixed by the URL path; it is never in the body
 	if ok, err := a.scheduleExists(s.ScheduleID); err != nil {
 		slog.Error("schedule lookup failed", "id", s.ScheduleID, "err", err)
 		httpError(w, http.StatusInternalServerError, "could not validate schedule")

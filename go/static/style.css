@@ -1783,7 +1783,7 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* --- Camera management + create wizard ------------------------------- */
 /* Give the location column a bit more room than the users table default. */
-.cameras-row { grid-template-columns: 1.2fr 1fr 1fr auto; }
+.cameras-row { grid-template-columns: 1.5fr 1fr auto; }
 .cam-caps { display: block; font-size: 11px; font-weight: 400; }
 
 .cam-wizard-card { width: 460px; }
@@ -1808,13 +1808,19 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
   border: 1px solid var(--border);
   color: var(--muted);
   white-space: nowrap;
+  cursor: pointer;
 }
+.cam-wizard-steps li:hover { border-color: var(--accent); }
+.cam-wizard-steps li:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cam-wizard-steps li.active { border-color: var(--accent); color: var(--fg); font-weight: 600; }
 .cam-wizard-steps li.done { color: var(--good); }
 
 .cam-step { display: flex; flex-direction: column; gap: 10px; }
 .cam-step small.muted { font-weight: 400; }
 .cam-step .req { color: var(--danger); }
+/* Keeps a field label and its required "*" on one line (the label is a flex
+   column, so without this the "*" would drop below the label text). */
+.label-line { display: inline-flex; align-items: baseline; gap: 3px; }
 .cam-step input.readonly, .users-form input.readonly { opacity: 0.6; cursor: not-allowed; }
 
 /* Inline text-button used inside a hint (e.g. "Manage schedules…"). */

@@ -107,6 +107,24 @@ func (st *Store) Exists(id string) (bool, error) {
 	return err == nil, err
 }
 
+// UniqueID returns base if no camera uses it, otherwise the first free
+// "base-2", "base-3", … suffix. Used to turn a name slug into a collision-free
+// id at create time. Callers hold camMutateMu so no concurrent create can claim
+// the returned id between this probe and the insert. base must be non-empty.
+func (st *Store) UniqueID(base string) (string, error) {
+	candidate := base
+	for n := 2; ; n++ {
+		exists, err := st.Exists(candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+		candidate = fmt.Sprintf("%s-%d", base, n)
+	}
+}
+
 // Create inserts a new camera from its spec and returns the derived public
 // model. It appends to the end of the display order (max sort_order + 1) and
 // returns ErrExists if the id is already taken. createdAt is the caller's

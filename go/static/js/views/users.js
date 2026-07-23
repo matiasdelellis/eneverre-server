@@ -5,6 +5,7 @@ import { api } from "../api.js";
 import { blankToNull, displayName } from "../util/format.js";
 import { alertModal, confirmModal, promptModal } from "../ui/dialog.js";
 import { trapFocus } from "../util/focus-trap.js";
+import { setOverlay } from "../state.js";
 
 // Focus-trap release for the open user-edit / my-password modals (null when closed).
 let userEditRelease = null;
@@ -467,9 +468,9 @@ async function submitMyPassword(e) {
 }
 
 export function initUsers() {
-  document.getElementById("account-btn")?.addEventListener("click", () => { closeUserMenu(); enterUsersView("account"); });
-  document.getElementById("users-btn")?.addEventListener("click", () => { closeUserMenu(); enterUsersView("manage"); });
-  document.getElementById("users-back")?.addEventListener("click", exitUsersView);
+  document.getElementById("account-btn")?.addEventListener("click", () => { closeUserMenu(); setOverlay("account"); });
+  document.getElementById("users-btn")?.addEventListener("click", () => { closeUserMenu(); setOverlay("users"); });
+  document.getElementById("users-back")?.addEventListener("click", () => setOverlay(null));
   document.getElementById("users-new")?.addEventListener("click", openUserEditModal);
   document.getElementById("user-edit-cancel")?.addEventListener("click", closeUserEditModal);
   document.getElementById("user-edit-form")?.addEventListener("submit", submitNewUser);

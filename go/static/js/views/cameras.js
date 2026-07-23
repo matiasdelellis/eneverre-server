@@ -1,8 +1,8 @@
 import { escapeHtml } from "../util/dom.js";
 import {
-  api, createCamera, updateCamera, getCameraConfig, deleteCamera, probeCamera, probeThingino, invalidateCameras,
+  api, createCamera, updateCamera, getCameraConfig, deleteCamera, probeCamera, probeThingino, invalidateCameras, fetchStatus,
 } from "../api.js";
-import { getState } from "../state.js";
+import { getState, setOverlay } from "../state.js";
 import { confirmModal } from "../ui/dialog.js";
 import { closeUserMenu } from "../ui/user-menu.js";
 import { moveGlobalControlsTo, closeOverlayViews, backLabel } from "./app-shell.js";
@@ -17,6 +17,15 @@ let camerasCache = null; // [Camera, ...] as returned by GET /api/cameras
 let wizardStep = 1;
 let editingId = null; // non-null when the wizard is editing an existing camera
 const LAST_STEP = 5;
+
+// recordingEnabled is the cached value of /api/status.recording_enabled: when
+// the server has recording turned off globally, the "Record to disk" toggle
+// in the wizard is forced off and disabled, and a one-line friendly banner is
+// shown above it (no technical INI references — see the i18n key). null = the
+// status call hasn't been issued yet; once resolved, a fetch failure leaves
+// the toggle enabled (the server is the source of truth and will ignore the
+// per-camera opt-in anyway).
+let recordingEnabled = null;
 
 // --- view open/close ------------------------------------------------------
 
@@ -101,7 +110,6 @@ function renderCameras() {
     const caps = capsSummary(c);
     row.innerHTML = `
       <div class="users-fullname" title="${escapeHtml(c.name || "—")}">${escapeHtml(c.name || "—")}${caps ? `<small class="muted cam-caps">${escapeHtml(caps)}</small>` : ""}</div>
-      <div class="users-name" title="${escapeHtml(c.id)}">${escapeHtml(c.id)}</div>
       <div title="${escapeHtml(c.location || "—")}">${escapeHtml(c.location || "—")}</div>
       <div class="users-actions">
         <button data-act="edit">${t("cameras.edit")}</button>
@@ -146,8 +154,10 @@ async function onCameraActionClick(e, c) {
 // --- wizard ---------------------------------------------------------------
 
 // openWizard opens the create wizard, or — when passed a camera config (the
-// full spec from GET .../config) — the edit wizard: fields prefilled, the id
-// locked (it is the recording path and cannot change), and submit doing a PUT.
+// full spec from GET .../config) — the edit wizard: fields prefilled and submit
+// doing a PUT. The camera id is never shown or edited here: on create the
+// server derives it from the name, and it is immutable thereafter (it is the
+// recording path), living only in the URLs.
 function openWizard(config = null) {
   wizardStep = 1;
   editingId = config ? config.id : null;
@@ -157,13 +167,14 @@ function openWizard(config = null) {
   document.getElementById("cam-probe-result").textContent = "";
   document.getElementById("cam-wizard-title").textContent = editingId ? t("cameras.edit_title") : t("cameras.add_title");
   document.getElementById("cam-wizard-create").textContent = editingId ? t("cameras.save_changes") : t("cameras.create");
-  const idInput = form.elements.id;
-  idInput.readOnly = !!editingId;
-  idInput.classList.toggle("readonly", !!editingId);
   if (config) fillForm(config);
   // Fill the schedule dropdown from the server and preselect the camera's
   // program (fire-and-forget; the wizard opens on "Always" until it resolves).
   populateScheduleSelect(form.elements.schedule_id, config ? config.schedule_id : "");
+  // Apply the global recording state — forced off when the server has it
+  // disabled, otherwise leave the toggle free. fetchStatus is admin-only and
+  // so is the cameras view, so this is always allowed.
+  refreshRecordingState();
   const modal = document.getElementById("cam-wizard-modal");
   modal.hidden = false;
   // Release a stale trap first: closeOverlayViews (overlay switch / logout)
@@ -172,7 +183,7 @@ function openWizard(config = null) {
   if (wizardRelease) wizardRelease();
   wizardRelease = trapFocus(modal);
   showStep(1);
-  (editingId ? form.elements.name : form.elements.id).focus();
+  form.elements.name.focus();
 }
 
 // fillForm prefills the wizard from a stored camera config (spec JSON). The
@@ -191,7 +202,6 @@ function fillForm(c) {
   const calib = (name, v) => {
     f[name].value = (v == null || String(v) === f[name].placeholder) ? "" : String(v);
   };
-  text("id", c.id);
   text("name", c.name);
   text("location", c.location);
   text("comment", c.comment);
@@ -227,6 +237,43 @@ function closeWizard() {
   if (wizardRelease) { wizardRelease(); wizardRelease = null; }
 }
 
+// refreshRecordingState caches the server's global recording toggle and
+// applies it to the wizard. Called on first open and from openWizard when
+// the cache is empty; the value rarely changes, so subsequent opens reuse it.
+async function refreshRecordingState() {
+  if (recordingEnabled !== null) {
+    applyRecordingState();
+    return;
+  }
+  try {
+    const s = await fetchStatus();
+    recordingEnabled = !!s.recording_enabled;
+  } catch (e) {
+    // Admin-only endpoint; a failure here just means the toggle stays usable
+    // (the server enforces the global switch regardless).
+    recordingEnabled = true;
+  }
+  applyRecordingState();
+}
+
+// applyRecordingState inhibits the "Record to disk" toggle when the server
+// has recording disabled globally, and reveals the friendly one-line banner.
+// Otherwise the toggle is interactive and the banner is hidden.
+function applyRecordingState() {
+  const form = document.getElementById("cam-wizard-form");
+  if (!form) return;
+  const cb = form.elements.record;
+  const banner = document.getElementById("cam-record-disabled");
+  if (recordingEnabled === false) {
+    cb.checked = false;
+    cb.disabled = true;
+    if (banner) banner.hidden = false;
+  } else {
+    cb.disabled = false;
+    if (banner) banner.hidden = true;
+  }
+}
+
 function showStep(n) {
   wizardStep = n;
   for (const el of document.querySelectorAll("#cam-wizard-form .cam-step")) {
@@ -247,11 +294,10 @@ function showStep(n) {
 // Returns "" when ok, or a message for the wizard status line.
 function validateStep(n) {
   const form = document.getElementById("cam-wizard-form");
-  if (n === 1) {
-    const id = form.elements.id.value.trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) {
-      return t("cameras.id_error");
-    }
+  if (n === 1 && !form.elements.name.value.trim()) {
+    // The name is the sole identity the operator provides; the server slugs it
+    // into the camera id.
+    return t("cameras.name_required");
   }
   if (n === 2 && !form.elements.source.value.trim()) {
     return t("cameras.source_required");
@@ -277,6 +323,25 @@ function onNext() {
 function onBack() {
   wizardStatus("");
   showStep(Math.max(wizardStep - 1, 1));
+}
+
+// goToStep jumps to a step from a click on the stepper. Editing a camera (all
+// fields already valid) or going backward is unrestricted; jumping forward
+// while creating validates every step it passes over, stopping at the first
+// that fails — so the id/source requirements can't be skipped.
+function goToStep(n) {
+  if (n === wizardStep) return;
+  if (editingId || n < wizardStep) {
+    wizardStatus("");
+    showStep(n);
+    return;
+  }
+  for (let s = wizardStep; s < n; s++) {
+    const err = validateStep(s);
+    if (err) { wizardStatus(err); showStep(s); return; }
+  }
+  wizardStatus("");
+  showStep(n);
 }
 
 async function onProbe() {
@@ -370,7 +435,6 @@ function collectForm() {
     return v === "" ? undefined : Number(v);
   };
   const body = {
-    id: trim("id"),
     name: trim("name"),
     location: trim("location"),
     comment: trim("comment"),
@@ -405,7 +469,6 @@ function buildReview() {
   const b = collectForm();
   const dl = document.getElementById("cam-review");
   const rows = [
-    [t("cameras.review_id"), b.id],
     [t("cameras.review_name"), b.name || "—"],
     [t("cameras.review_location"), b.location || "—"],
     [t("cameras.review_source"), maskSource(b.source)],
@@ -475,13 +538,25 @@ async function refreshUnderlyingViews() {
 // --- init -----------------------------------------------------------------
 
 export function initCameras() {
-  document.getElementById("cameras-btn")?.addEventListener("click", () => { closeUserMenu(); enterCamerasView(); });
-  document.getElementById("cameras-back")?.addEventListener("click", exitCamerasView);
+  document.getElementById("cameras-btn")?.addEventListener("click", () => { closeUserMenu(); setOverlay("cameras"); });
+  document.getElementById("cameras-back")?.addEventListener("click", () => setOverlay(null));
   document.getElementById("cameras-new")?.addEventListener("click", () => openWizard());
   document.getElementById("cameras-schedules")?.addEventListener("click", () => openSchedules());
   document.getElementById("cam-wizard-cancel")?.addEventListener("click", closeWizard);
   document.getElementById("cam-wizard-next")?.addEventListener("click", onNext);
   document.getElementById("cam-wizard-back")?.addEventListener("click", onBack);
+  // Clicking a step in the stepper navigates to it (see goToStep for the
+  // create-mode guard). Keyboard: Enter/Space activate the focused step.
+  const steps = document.getElementById("cam-wizard-steps");
+  steps?.addEventListener("click", (e) => {
+    const li = e.target.closest("li[data-step]");
+    if (li) goToStep(Number(li.dataset.step));
+  });
+  steps?.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const li = e.target.closest("li[data-step]");
+    if (li) { e.preventDefault(); goToStep(Number(li.dataset.step)); }
+  });
   document.getElementById("cam-manage-schedules")?.addEventListener("click", () => {
     const form = document.getElementById("cam-wizard-form");
     const current = form.elements.schedule_id.value;

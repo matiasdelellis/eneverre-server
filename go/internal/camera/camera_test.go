@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -65,21 +66,21 @@ func TestLoadOneFlags(t *testing.T) {
 	}{
 		{
 			name:      "defaults when absent",
-			body:      "[camera]\nid = c1\nsource = rtsp://x/c1\n",
+			body:      "[camera]\nname = c1\nsource = rtsp://x/c1\n",
 			wantMSE:   true,
 			wantRelay: true,
 			wantRec:   true,
 		},
 		{
 			name:      "all off",
-			body:      "[camera]\nid = c1\nsource = rtsp://x/c1\nmse = false\nrelay = false\nrecord = false\n",
+			body:      "[camera]\nname = c1\nsource = rtsp://x/c1\nmse = false\nrelay = false\nrecord = false\n",
 			wantMSE:   false,
 			wantRelay: false,
 			wantRec:   false,
 		},
 		{
 			name:      "record-only",
-			body:      "[camera]\nid = c1\nsource = rtsp://x/c1\nmse = false\nrelay = false\n",
+			body:      "[camera]\nname = c1\nsource = rtsp://x/c1\nmse = false\nrelay = false\n",
 			wantMSE:   false,
 			wantRelay: false,
 			wantRec:   true,
@@ -112,9 +113,9 @@ func TestLoadPrivacyCapability(t *testing.T) {
 		body string
 		want bool
 	}{
-		{"default on", "[camera]\nid = c1\nsource = rtsp://x/c1\n", true},
-		{"opt out", "[camera]\nid = c1\nsource = rtsp://x/c1\nprivacy = false\n", false},
-		{"explicit on", "[camera]\nid = c1\nsource = rtsp://x/c1\nprivacy = true\n", true},
+		{"default on", "[camera]\nname = c1\nsource = rtsp://x/c1\n", true},
+		{"opt out", "[camera]\nname = c1\nsource = rtsp://x/c1\nprivacy = false\n", false},
+		{"explicit on", "[camera]\nname = c1\nsource = rtsp://x/c1\nprivacy = true\n", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -188,21 +189,21 @@ func TestLoadPTZCalibration(t *testing.T) {
 	}{
 		{
 			name:         "defaults when no [thingino] section",
-			body:         "[camera]\nid = c1\nsource = rtsp://x/c1\n[thingino]\nptz = true\n",
+			body:         "[camera]\nname = c1\nsource = rtsp://x/c1\n[thingino]\nptz = true\n",
 			wantPanSteps: 2130, wantPanDeg: 360,
 			wantTiltSt: 1600, wantTiltDeg: 180,
 			wantFOVH: 113,
 		},
 		{
 			name:         "overrides honored",
-			body:         "[camera]\nid = c1\nsource = rtsp://x/c1\n[thingino]\nptz = true\npan_steps = 1000\npan_degrees = 270\ntilt_steps = 800\ntilt_degrees = 90\nfov_h = 90.5\n",
+			body:         "[camera]\nname = c1\nsource = rtsp://x/c1\n[thingino]\nptz = true\npan_steps = 1000\npan_degrees = 270\ntilt_steps = 800\ntilt_degrees = 90\nfov_h = 90.5\n",
 			wantPanSteps: 1000, wantPanDeg: 270,
 			wantTiltSt: 800, wantTiltDeg: 90,
 			wantFOVH: 90.5,
 		},
 		{
 			name:         "no PTZ section at all still gives defaults for the public block",
-			body:         "[camera]\nid = c1\nsource = rtsp://x/c1\n",
+			body:         "[camera]\nname = c1\nsource = rtsp://x/c1\n",
 			wantPanSteps: 2130, wantPanDeg: 360,
 			wantTiltSt: 1600, wantTiltDeg: 180,
 			wantFOVH: 113,
@@ -407,4 +408,39 @@ func TestPTZDegreesToSteps(t *testing.T) {
 			t.Errorf("zero calibration = x:%v y:%v; want 0,0", x, y)
 		}
 	})
+}
+
+// TestSlugify pins the name→id derivation: accents fold, everything lowercases,
+// non-alphanumeric runs collapse to a single '-', edges are trimmed, and a
+// name that carries no usable characters yields "" so callers can reject it.
+func TestSlugify(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Front door", "front-door"},
+		{"Cámara Niño", "camara-nino"},
+		{"  Patio  Trasero  ", "patio-trasero"},
+		{"Garage #1", "garage-1"},
+		{"Entrée café", "entree-cafe"},
+		{"--already--slugged--", "already-slugged"},
+		{"ÁÉÍÓÚñÇ", "aeiounc"},
+		{"", ""},
+		{"???", ""},
+		{"...", ""},
+	}
+	for _, c := range cases {
+		if got := Slugify(c.in); got != c.want {
+			t.Errorf("Slugify(%q) = %q; want %q", c.in, got, c.want)
+		}
+	}
+	// The result must always be a valid, non-empty id when non-empty: start
+	// alphanumeric, contain only [a-z0-9-], and fit within the length cap.
+	valid := regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	for _, in := range []string{"Front door", "Cámara Niño", strings.Repeat("a", 200)} {
+		got := Slugify(in)
+		if got == "" || !valid.MatchString(got) {
+			t.Errorf("Slugify(%q) = %q; not a valid id", in, got)
+		}
+		if len(got) > slugMaxLen {
+			t.Errorf("Slugify(%q) length %d exceeds cap %d", in, len(got), slugMaxLen)
+		}
+	}
 }

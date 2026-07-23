@@ -327,6 +327,74 @@ func toInt(value string, def int) int {
 	return n
 }
 
+// slugMaxLen caps a derived slug so a uniqueness suffix ("-2", … "-9999") can
+// still be appended without breaking the 1–64 char id limit (see idPattern
+// in the server package).
+const slugMaxLen = 58
+
+// foldAccent maps a lowercase accented Latin letter to its plain ASCII form so
+// Spanish/Western-European names slug cleanly ("Cámara Niño" → "camara-nino").
+// Runes it doesn't know are returned unchanged (Slugify then drops any that
+// aren't alphanumeric). Input is expected already lowercased.
+func foldAccent(r rune) rune {
+	switch r {
+	case 'á', 'à', 'ä', 'â', 'ã', 'å', 'ā', 'ą':
+		return 'a'
+	case 'é', 'è', 'ë', 'ê', 'ē', 'ę', 'ě':
+		return 'e'
+	case 'í', 'ì', 'ï', 'î', 'ī', 'į':
+		return 'i'
+	case 'ó', 'ò', 'ö', 'ô', 'õ', 'ø', 'ō':
+		return 'o'
+	case 'ú', 'ù', 'ü', 'û', 'ū', 'ů':
+		return 'u'
+	case 'ñ':
+		return 'n'
+	case 'ç', 'ć', 'č':
+		return 'c'
+	case 'ý', 'ÿ':
+		return 'y'
+	case 'ß':
+		return 's'
+	}
+	return r
+}
+
+// Slugify derives a filesystem- and URL-safe camera id from a display name:
+// Latin accents are folded (á→a), the result is lowercased, every run of
+// non-alphanumeric characters collapses to a single '-', leading/trailing '-'
+// are trimmed, and it is capped at slugMaxLen chars (leaving room for a "-N"
+// uniqueness suffix). Returns "" when nothing usable remains (e.g. a name of
+// only punctuation), so callers can fall back or reject. The output always
+// satisfies the server's idPattern when non-empty: it starts with an
+// alphanumeric (a leading '-' is never emitted) and contains only [a-z0-9-].
+func Slugify(name string) string {
+	var b strings.Builder
+	dashPending := false
+	for _, r := range strings.ToLower(name) {
+		r = foldAccent(r)
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			if dashPending {
+				b.WriteByte('-')
+				dashPending = false
+			}
+			b.WriteRune(r)
+			continue
+		}
+		// Any other rune (space, punctuation, unhandled accent) becomes a single
+		// separator, but only between alphanumeric runs — never leading, and a
+		// trailing one is dropped below by never flushing a pending dash.
+		if b.Len() > 0 {
+			dashPending = true
+		}
+	}
+	s := b.String()
+	if len(s) > slugMaxLen {
+		s = strings.TrimRight(s[:slugMaxLen], "-")
+	}
+	return s
+}
+
 // Default PTZ calibration values used when a camera declares PTZ but the
 // operator hasn't customized the [thingino] section. The numbers match the
 // typical thingino gimbal (2130/360 pan, 1600/180 tilt) so existing installs
@@ -404,9 +472,12 @@ func loadSpec(path string) (Spec, bool) {
 		return Spec{}, false
 	}
 	cam := f.Section("camera")
-	id := cam.Key("id").String()
-	if id == "" {
-		slog.Warn("skipping camera ini: missing id", "file", name)
+	// The camera id is not read from the INI: it is derived from the name at
+	// seed time (SeedFromINI slugs the name and disambiguates), so a name is
+	// what gives the camera its identity. Any `id` key in the file is ignored.
+	camName := strings.TrimSpace(cam.Key("name").String())
+	if camName == "" {
+		slog.Warn("skipping camera ini: missing name", "file", name)
 		return Spec{}, false
 	}
 
@@ -443,19 +514,19 @@ func loadSpec(path string) (Spec, bool) {
 	playback := cam.Key("playback").MustBool(record)
 
 	s := Spec{
-		ID:             id,
-		Name:           cam.Key("name").String(),
-		Comment:        cam.Key("comment").String(),
-		Location:       cam.Key("location").String(),
-		Source:         source,
-		Backchannel:    backchannel,
-		SnapshotURL:    snapshotURL,
-		Transport:      transport,
-		Record:         record,
-		MSE:            mse,
-		Relay:          relay,
-		Privacy:        privacyAllowed,
-		Playback:       playback,
+		// ID is intentionally left empty; SeedFromINI derives it from the name.
+		Name:        camName,
+		Comment:     cam.Key("comment").String(),
+		Location:    cam.Key("location").String(),
+		Source:      source,
+		Backchannel: backchannel,
+		SnapshotURL: snapshotURL,
+		Transport:   transport,
+		Record:      record,
+		MSE:         mse,
+		Relay:       relay,
+		Privacy:     privacyAllowed,
+		Playback:    playback,
 		// ScheduleID is deliberately NOT read from the INI: a seeded camera
 		// always starts recording 24/7. Recording schedules are a DB/API concept
 		// (named programs live only in the DB), so a schedule is assigned through

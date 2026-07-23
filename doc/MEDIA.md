@@ -267,7 +267,7 @@ clients.
 
 ```ini
 [camera]
-id     = calle
+name   = Calle
 source = rtsp://user:pass@192.168.1.91:554/ch0
 ; recording is on by default; the playback switch appears automatically once
 ; segments exist. Add `record = false` (or `playback = false` to keep

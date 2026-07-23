@@ -32,7 +32,7 @@ adds `gortsplib` (RTSP client) + `mediacommon` (fMP4) + `pion/*` (RTP/SDP).
 ## Project documentation
 - [`README.md`](README.md) — user-facing intro, quick start, install recipe.
 - [`doc/example/README.md`](doc/example/README.md) — every INI key of
-  `eneverre.ini` and `cameras.d/<id>.ini`, the `systemd` install steps,
+  `eneverre.ini` and `cameras.d/*.ini`, the `systemd` install steps,
   and the hardening notes.
 - [`doc/MEDIA.md`](doc/MEDIA.md) — the embedded media engine: recording,
   RTSP relay, browser (MSE) live, playback, codecs and configuration. Read
@@ -299,8 +299,10 @@ see request query strings and the more verbose media-engine traces
   per-camera `*.ini` files under `cameras_dir` are only an **initial seed**:
   `camera.SeedFromINI` imports them once when the table is empty (a fresh
   install, or an upgrade from the old file-based layout), then they are ignored.
-  A file missing a `[camera]` section or `id` is skipped during the seed.
-  Thereafter cameras are created and deleted through the admin API
+  A file missing a `[camera]` section or `name` is skipped during the seed. The
+  camera id is not read from the INI (any `id` key is ignored): it is derived
+  from the name (`camera.Slugify` + a numeric suffix on collision), the same way
+  the create API assigns one. Thereafter cameras are created and deleted through the admin API
   (`POST /api/cameras`, `DELETE /api/camera/{id}`) and the web wizard
   ("Manage cameras" in the user menu). Create/delete take effect **without a
   restart**: `engine.AddCamera`/`RemoveCamera` bring the camera's recorder,

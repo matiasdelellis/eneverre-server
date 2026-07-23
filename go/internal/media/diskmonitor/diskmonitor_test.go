@@ -45,16 +45,16 @@ func TestWatcherTransitions(t *testing.T) {
 	// 0.3G (below again, fire OnLow again).
 	low := uint64(1 << 30)
 	fs.samples = []uint64{
-		3 * low / 2, // 1.5G: not low
-		low / 2,     // 0.5G: low -> OnLow
+		3 * low / 2,  // 1.5G: not low
+		low / 2,      // 0.5G: low -> OnLow
 		low * 7 / 10, // 0.7G: still low, no event
-		5 * low / 2, // 2.5G: above 2G -> OnRecovered
-		low / 4,     // 0.25G: low again
+		5 * low / 2,  // 2.5G: above 2G -> OnRecovered
+		low / 4,      // 0.25G: low again
 	}
 
 	var (
-		mu             sync.Mutex
-		lowEvents      []uint64
+		mu              sync.Mutex
+		lowEvents       []uint64
 		recoveredEvents []uint64
 	)
 	w := New("/some/path", low)

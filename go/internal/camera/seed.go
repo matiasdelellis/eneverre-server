@@ -2,6 +2,7 @@ package camera
 
 import (
 	"database/sql"
+	"fmt"
 	"log/slog"
 
 	"eneverre/internal/config"
@@ -34,14 +35,29 @@ func SeedFromINI(db *sql.DB, cfg *config.Config, createdAt int64) (int, error) {
 		return 0, nil
 	}
 
+	// The id is derived from the name (loadSpec never reads one from the INI):
+	// slug the name and give it a uniqueness suffix on collision ("patio",
+	// "patio-2", …). seen tracks ids assigned so far; the table starts empty
+	// (checked above), so this in-memory set is the whole population.
+	seen := map[string]bool{}
 	imported := 0
 	for _, s := range specs {
+		base := Slugify(s.Name)
+		if base == "" {
+			// loadSpec guarantees a name, but one of only punctuation slugs to "".
+			slog.Warn("cameras: cannot derive an id from the name, skipping INI", "name", s.Name)
+			continue
+		}
+		id := base
+		for n := 2; seen[id]; n++ {
+			id = fmt.Sprintf("%s-%d", base, n)
+		}
+		s.ID = id
 		if _, err := st.Create(s, createdAt); err != nil {
-			// A duplicate id across two INI files is the operator's mistake, not
-			// fatal: log and keep importing the rest.
 			slog.Warn("cameras: skipping INI during seed", "id", s.ID, "err", err)
 			continue
 		}
+		seen[s.ID] = true
 		imported++
 	}
 	slog.Info("cameras: seeded from INI", "imported", imported, "dir", cfg.CamerasDir)

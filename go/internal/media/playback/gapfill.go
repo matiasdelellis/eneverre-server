@@ -13,6 +13,7 @@ import (
 
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 )
+
 // gapFillCacheSubdir is the subfolder, under the configured cache dir, where the
 // generated black-frame assets are persisted (one Annex-B .h264 per resolution).
 const gapFillCacheSubdir = "gapfill"
