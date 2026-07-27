@@ -115,7 +115,33 @@ func Recalibrate(host, apiKey string) (json.RawMessage, error) {
 // Some are read-only status, others map to existing config toggles, so adding
 // them means deciding which become user-visible state vs. editable settings.
 type Heartbeat struct {
-	PrivacyEnabled bool `json:"privacy_enabled"`
+	PrivacyEnabled Bool `json:"privacy_enabled"`
+}
+
+// Bool decodes a boolean that different Thingino firmwares spell differently: a
+// real JSON bool, a number (0/1), or a quoted one ("0"/"1", "true"/"false").
+// Anything non-zero / non-empty counts as true; an unparseable value decodes as
+// false rather than failing the whole payload, since a single odd field
+// shouldn't make an otherwise reachable camera look offline.
+type Bool bool
+
+func (b *Bool) UnmarshalJSON(data []byte) error {
+	s := string(bytes.Trim(bytes.TrimSpace(data), `"`))
+	switch s {
+	case "", "null":
+		*b = false
+		return nil
+	}
+	if v, err := strconv.ParseBool(s); err == nil {
+		*b = Bool(v)
+		return nil
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		*b = f != 0
+		return nil
+	}
+	*b = false
+	return nil
 }
 
 // State fetches the camera's slow heartbeat. This is a heavy call on the camera

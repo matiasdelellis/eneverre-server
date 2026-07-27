@@ -1,6 +1,7 @@
 package thingino
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,6 +94,40 @@ func TestPosition(t *testing.T) {
 	}
 	if gotToken != "secret-token" {
 		t.Errorf("token = %q; want secret-token", gotToken)
+	}
+}
+
+// TestHeartbeatFlexibleBool pins the tolerant bool decoding: firmwares differ
+// on whether privacy_enabled is a JSON bool, a number, or a quoted one, and a
+// strict bool field made the whole heartbeat — and so the wizard's connection
+// test — fail on the numeric variants.
+func TestHeartbeatFlexibleBool(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+	}{
+		{`{"privacy_enabled":true}`, true},
+		{`{"privacy_enabled":false}`, false},
+		{`{"privacy_enabled":1}`, true},
+		{`{"privacy_enabled":0}`, false},
+		{`{"privacy_enabled":"1"}`, true},
+		{`{"privacy_enabled":"0"}`, false},
+		{`{"privacy_enabled":"true"}`, true},
+		{`{"privacy_enabled":null}`, false},
+		{`{"privacy_enabled":""}`, false},
+		{`{"privacy_enabled":"nonsense"}`, false},
+		{`{}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.body, func(t *testing.T) {
+			var hb Heartbeat
+			if err := json.Unmarshal([]byte(c.body), &hb); err != nil {
+				t.Fatalf("Unmarshal(%s): %v", c.body, err)
+			}
+			if bool(hb.PrivacyEnabled) != c.want {
+				t.Errorf("privacy_enabled = %v; want %v", hb.PrivacyEnabled, c.want)
+			}
+		})
 	}
 }
 

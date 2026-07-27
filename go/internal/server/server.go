@@ -489,7 +489,7 @@ func (a *App) seedPrivacyFor(c camera.Camera) {
 			return
 		}
 		a.privacyMu.Lock()
-		a.privacy[c.ID] = hb.PrivacyEnabled
+		a.privacy[c.ID] = bool(hb.PrivacyEnabled)
 		a.privacyMu.Unlock()
 		// A camera that booted in privacy must also be paused (stop
 		// recording + transmission), not just reflected in the state map.
