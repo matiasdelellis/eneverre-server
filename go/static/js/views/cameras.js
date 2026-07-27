@@ -27,6 +27,14 @@ const LAST_STEP = 5;
 // per-camera opt-in anyway).
 let recordingEnabled = null;
 
+// playbackTouched tracks whether the operator has toggled "Advertise playback"
+// by hand in this wizard session. While false (and only while creating),
+// playback mirrors the "Record to disk" toggle — the same rule the server
+// applies to an omitted `playback` key — so a camera created with recording off
+// doesn't advertise an archive it will never have. Once the operator sets it
+// explicitly, the mirroring stops rather than fighting them.
+let playbackTouched = false;
+
 // --- view open/close ------------------------------------------------------
 
 function isCamerasViewOpen() {
@@ -161,6 +169,7 @@ async function onCameraActionClick(e, c) {
 function openWizard(config = null) {
   wizardStep = 1;
   editingId = config ? config.id : null;
+  playbackTouched = false;
   const form = document.getElementById("cam-wizard-form");
   form.reset();
   document.getElementById("cam-wizard-status").hidden = true;
@@ -272,6 +281,22 @@ function applyRecordingState() {
     cb.disabled = false;
     if (banner) banner.hidden = true;
   }
+  // Forcing record off has to carry through to playback, or a new camera is
+  // created advertising an archive that recording-off makes impossible.
+  syncPlaybackToRecord();
+}
+
+// syncPlaybackToRecord mirrors the record toggle into the playback toggle while
+// creating, unless the operator has already set playback by hand. Deliberately
+// a no-op when editing: `record = false` does not mean "no recordings" — a
+// camera that recorded for months still has segments worth advertising, and the
+// server gates the capability on the segments actually on disk (not on the
+// record flag), so an existing camera's stored choice is left alone.
+function syncPlaybackToRecord() {
+  if (editingId || playbackTouched) return;
+  const form = document.getElementById("cam-wizard-form");
+  if (!form) return;
+  form.elements.playback.checked = form.elements.record.checked;
 }
 
 function showStep(n) {
@@ -566,7 +591,12 @@ export function initCameras() {
   });
   document.getElementById("cam-probe-btn")?.addEventListener("click", onProbe);
   document.getElementById("cam-thingino-probe-btn")?.addEventListener("click", onProbeThingino);
-  document.getElementById("cam-wizard-form")?.addEventListener("submit", onSubmit);
+  const wizardForm = document.getElementById("cam-wizard-form");
+  wizardForm?.addEventListener("submit", onSubmit);
+  // Keep "Advertise playback" honest about recording (see syncPlaybackToRecord),
+  // and stop mirroring as soon as the operator states a preference.
+  wizardForm?.elements.record?.addEventListener("change", syncPlaybackToRecord);
+  wizardForm?.elements.playback?.addEventListener("change", () => { playbackTouched = true; });
   const modal = document.getElementById("cam-wizard-modal");
   if (modal) {
     modal.addEventListener("click", (e) => { if (e.target === modal) closeWizard(); });

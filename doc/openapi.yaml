@@ -2165,8 +2165,12 @@ components:
           description: Whether the runtime privacy toggle is offered; false marks an always-on camera.
         playback:
           type: boolean
-          default: false
-          description: Whether this camera advertises recordings to clients.
+          default: true
+          description: >-
+            Whether this camera advertises recordings to clients. Omitted, it
+            follows `record` (so true unless recording was opted out). It is an
+            opt-out only: a camera with no segments on disk never advertises
+            playback regardless of this flag.
         width:
           type: integer
           default: 16

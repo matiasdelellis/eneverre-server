@@ -390,7 +390,11 @@
           <label class="switch"><input type="checkbox" name="privacy" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.privacy_toggle">Offer privacy toggle</span></label>
           <p class="muted small" id="cam-record-disabled" data-i18n="wizard.record_disabled_msg" hidden></p>
           <label class="switch"><input type="checkbox" name="record" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.record">Record to disk</span></label>
-          <label class="switch"><input type="checkbox" name="playback" /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.playback">Advertise playback capability</span></label>
+          <!-- Checked by default, like the other three opt-out sinks above: the
+               wizard always submits `playback` explicitly, so the server's
+               "defaults to record" fallback never applies and this attribute is
+               what a new camera actually gets. -->
+          <label class="switch"><input type="checkbox" name="playback" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.playback">Advertise playback capability</span></label>
           <label><span data-i18n="wizard.schedule">Recording schedule</span>
             <select name="schedule_id">
               <option value="" data-i18n="wizard.schedule_always">Always (24/7)</option>
