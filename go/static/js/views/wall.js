@@ -1,5 +1,5 @@
 import { $, $$, escapeHtml, makeMsg } from "../util/dom.js";
-import { getState, setWallFilter, setWallFilterBeforeCam, setOverlay, on, emit } from "../state.js";
+import { getState, setWallFilter, setOverlay, on, emit } from "../state.js";
 import { fetchCameras, token, apiFetch } from "../api.js";
 import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js";
 import { attachMse, captureVideoFrame } from "./mse.js";
@@ -158,15 +158,16 @@ async function tryLoadThumbnail(tile, camId) {
   } catch {}
 }
 
-function toggleCamFilterFromTile(camId) {
-  const { wallFilter, wallFilterBeforeCam } = getState();
-  if (wallFilter.type === "cam" && wallFilter.value === camId) {
-    setWallFilter(wallFilterBeforeCam || { type: "all" });
-    setWallFilterBeforeCam(null);
-  } else {
-    setWallFilterBeforeCam(wallFilter);
-    setWallFilter({ type: "cam", value: camId });
-  }
+// selectCamFromTile zooms the wall to a single camera. One-way by design:
+// clicking the already-selected tile does nothing. A click used to step back
+// out, but its destination was whatever filter happened to precede the zoom (all
+// cameras, or some location) — the same gesture landing somewhere different
+// depending on history, which read as arbitrary. Escape is the only way out, and
+// it always goes to the camera's own location (see the keydown handler below).
+function selectCamFromTile(camId) {
+  const { wallFilter } = getState();
+  if (wallFilter.type === "cam" && wallFilter.value === camId) return;
+  setWallFilter({ type: "cam", value: camId });
 }
 
 function renderWallTile(cam) {
@@ -278,16 +279,14 @@ function renderWallTile(cam) {
     }
     if (document.fullscreenElement === tile) document.exitFullscreen();
     if (!cam.capabilities?.ptz) {
-      toggleCamFilterFromTile(cam.id);
+      selectCamFromTile(cam.id);
       return;
     }
     // PTZ-capable tiles also handle dblclick (center-on-point, below).
-    // Delay the zoom toggle briefly so a following second click — the
-    // first half of a double-click — can cancel it: without this, a
-    // dblclick's two "click" events would zoom in and immediately back out
-    // (or vice versa) before the center move ever fires.
+    // Delay the zoom briefly so a following second click — the first half of a
+    // double-click — can cancel it, letting the center move fire on its own.
     clearTimeout(tile._clickTimer);
-    tile._clickTimer = setTimeout(() => toggleCamFilterFromTile(cam.id), 250);
+    tile._clickTimer = setTimeout(() => selectCamFromTile(cam.id), 250);
   });
   tile.addEventListener("dblclick", async (e) => {
     clearTimeout(tile._clickTimer);

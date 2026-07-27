@@ -7,7 +7,7 @@ import {
 import { api, token, setOnUnauthorized } from "../api.js";
 import { t } from "../i18n.js";
 import {
-  getState, setViewMode as setViewModeState, setWallFilter, setWallFilterBeforeCam,
+  getState, setViewMode as setViewModeState, setWallFilter,
   setSidebarCollapsed, setOverlay, resetOnLogout, on,
 } from "../state.js";
 import { closeUserMenu, refreshUserMenu } from "../ui/user-menu.js";

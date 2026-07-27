@@ -4,7 +4,6 @@ const state = {
   viewMode: "live",
   sidebarCollapsed: get(SIDEBAR_KEY) === "1",
   wallFilter: loadWallFilter(),
-  wallFilterBeforeCam: null,
   camerasCache: null,
   lastPtzCam: null,
   // overlay names the full-screen panel currently stacked on top of the
@@ -65,10 +64,6 @@ export function setWallFilter(next) {
   emit("wallFilter", next);
 }
 
-export function setWallFilterBeforeCam(v) {
-  state.wallFilterBeforeCam = v;
-}
-
 export function setCamerasCache(cams) {
   state.camerasCache = cams;
 }
@@ -85,7 +80,6 @@ export function setOverlay(v) {
 
 export function resetOnLogout() {
   state.wallFilter = { type: "all" };
-  state.wallFilterBeforeCam = null;
   state.viewMode = "live";
   state.camerasCache = null;
   state.lastPtzCam = null;

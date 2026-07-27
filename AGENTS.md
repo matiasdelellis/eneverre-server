@@ -523,9 +523,11 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
   relative pan/tilt using the camera's lens FOV (`cam.ptz.fov_h`/`fov_v`,
   server-supplied) and the `<video>`'s actual displayed rect (accounting for
   `object-fit: contain` letterboxing), then `centerOnVideoPoint` posts it to
-  `/ptz/move`. A single click still toggles the wall-filter zoom; it's
+  `/ptz/move`. A single click still zooms the wall filter to that camera; it's
   delayed 250ms on PTZ tiles so a following second click (the first half of a
-  dblclick) can cancel it before the zoom fires.
+  dblclick) can cancel it before the zoom fires. The zoom is one-way — only
+  Escape walks the filter back out (camera → its location → all), so a click
+  never has a history-dependent destination.
 - **Admin status view** (`js/views/status.js`): a `GET /api/status` overlay
   (version, uptime, per-camera connected/recording/privacy, totals, and —
   when recording is enabled — storage headroom) plus a persistent low-disk

@@ -1,5 +1,5 @@
 import { $, $$, escapeHtml } from "../util/dom.js";
-import { setWallFilter, setWallFilterBeforeCam, getState, on } from "../state.js";
+import { setWallFilter, getState, on } from "../state.js";
 import { fetchCameras, apiFetch } from "../api.js";
 import { isMobileViewport, closeSidebarDrawer } from "./app-shell.js";
 import { loadJson, saveJson, LOCATION_ORDER_KEY } from "../util/storage.js";
@@ -291,15 +291,13 @@ function initSidebarDnd() {
   side.addEventListener("drop", (e) => e.preventDefault());
 }
 
-function toggleCamFilter(camId) {
-  const { wallFilter, wallFilterBeforeCam } = getState();
-  if (wallFilter.type === "cam" && wallFilter.value === camId) {
-    setWallFilter(wallFilterBeforeCam || { type: "all" });
-    setWallFilterBeforeCam(null);
-  } else {
-    setWallFilterBeforeCam(wallFilter);
-    setWallFilter({ type: "cam", value: camId });
-  }
+// selectCamFilter zooms the wall to a single camera. One-way, matching the wall
+// tiles (see selectCamFromTile in wall.js): re-clicking the selected camera does
+// nothing, and Escape is what walks back out to its location.
+function selectCamFilter(camId) {
+  const { wallFilter } = getState();
+  if (wallFilter.type === "cam" && wallFilter.value === camId) return;
+  setWallFilter({ type: "cam", value: camId });
 }
 
 function toggleLocFilter(locName) {
@@ -307,13 +305,12 @@ function toggleLocFilter(locName) {
   if (wallFilter.type === "loc" && wallFilter.value === locName) {
     setWallFilter({ type: "all" });
   } else {
-    setWallFilterBeforeCam(null);
     setWallFilter({ type: "loc", value: locName });
   }
 }
 
 function onSidebarThumbClick(cam) {
-  if (isWallLike()) toggleCamFilter(cam.id);
+  if (isWallLike()) selectCamFilter(cam.id);
 }
 
 async function loadViewerThumb(cam, tile, { force = false } = {}) {
