@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -180,7 +181,7 @@ func (a *App) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	offset, ok := queryBoundedInt(w, r, "offset", 0, 0, 1<<31)
+	offset, ok := queryBoundedInt(w, r, "offset", 0, 0, math.MaxInt32)
 	if !ok {
 		return
 	}
