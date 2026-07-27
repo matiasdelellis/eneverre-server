@@ -29,8 +29,8 @@ import (
 
 // version is set at build time via -ldflags "-X main.version=...". The
 // Makefile injects the value of $(VERSION) (git describe, or the
-// fallback 0.1.0-dev).
-var version = "0.1.0-dev"
+// fallback 1.0.0-dev).
+var version = "1.0.0-dev"
 
 // logWriter is where the logger sends its output. It defaults to stderr and is
 // overridden once at startup by resolveLogWriter — on Windows, a service
