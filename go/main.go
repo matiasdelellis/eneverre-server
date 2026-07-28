@@ -195,8 +195,9 @@ func main() {
 	// URL, because that's the point of the app. The optional [media] section
 	// tunes the engine (paths, segment timing, retention, …) and can opt out
 	// of any of the three (`record = false`, `mse = false`, `relay = false`).
-	// Per-camera `record = false` / `live = false` INI keys opt a single
-	// camera out of recording or out of the live pipeline respectively. A
+	// The same three switches exist per camera (Camera.ResolveFeatures ANDs
+	// them with the globals), so a camera can opt out of MSE, relay or
+	// recording but never opt back in when the global one is off. A
 	// missing [media] section (cfg.Media == nil) still yields the defaults;
 	// recordings land under the record_dir resolved from cfg.DataDir.
 	mopts := media.OptionsFromSection(cfg.Media, cfg.DataDir)

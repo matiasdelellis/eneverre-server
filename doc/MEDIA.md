@@ -244,15 +244,17 @@ segment_duration = 60s
 part_duration    = 1s          ; recovery-point objective (crash loses ≤ this)
 ;max_part_size   = 50M         ; force a part out past this size (K/M/G, base 1024)
 retain           = 7d          ; default 7d; 0 = keep forever
-;min_free_bytes  = 1G          ; force-purge oldest recordings below this; 0 disables (K/M/G/T)
+;min_free_bytes  = 1G          ; force-purge oldest recordings below this; 0 disables (K/M/G)
 rtsp_address     = :8554       ; RTSP relay listen address
 ;rtsp_host       = nvr.example.com  ; pin the public host in the `rtsp` URL (else the request host)
 transport        = auto        ; source transport: auto (default) | tcp | udp
 ;rotate_hours    = 24          ; stream/relay credential rotation
 ```
 
-See [`doc/example/eneverre.ini`](example/eneverre.ini) for the annotated
-reference. `record_dir` is optional: unset, the engine uses
+The three on/off switches (`mse`, `relay`, `record` — all `true` by default)
+are covered above; [`doc/example/README.md`](example/README.md#media) documents
+every key in prose and [`doc/example/eneverre.ini`](example/eneverre.ini) is the
+annotated template. `record_dir` is optional: unset, the engine uses
 `/var/lib/eneverre/recordings` when that directory exists (the systemd
 `StateDirectory`) and otherwise falls back to `<data_dir>/recordings`. If you
 set it explicitly, keep it under `/var/lib/eneverre` or add it to the unit's

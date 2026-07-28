@@ -14,6 +14,22 @@
 #                       REST API at /api/* (live + recordings included)
 #   - RTSP relay     : 127.0.0.1:8554  - exposed directly, not proxied
 
+# REQUIRED for push-to-talk. Caddy advertises HTTP/3 (`alt-svc: h3=":443"`) by
+# default, and it does not translate WebSocket-over-HTTP/3 (RFC 9220 Extended
+# CONNECT) into the HTTP/1.1 `Upgrade` the backend needs — so the browser
+# negotiates h3, and `GET /api/camera/{id}/talk` fails with "can't establish a
+# connection to the server at wss://...". Everything else keeps working, which
+# makes it a confusing failure. Capping the offered protocols at h1/h2 fixes it
+# permanently. Drop this block only if you don't use two-way audio.
+#
+# Note: browsers cache `alt-svc: h3` for up to 30 days, so after adding this and
+# reloading Caddy, test in a private window.
+{
+    servers {
+        protocols h1 h2
+    }
+}
+
 nvr.example.com {
     encode gzip zstd
 

@@ -75,9 +75,11 @@ All code lives under `go/` (module `eneverre`).
   record = false` for **live-only mode** (per-camera `record = false` opts
   individual cameras out either way). `server.SetMediaEngine()` wires the engine into the
   handler set regardless of mode. `server.New()` is built next, then the server runs
-  on an `http.Server` with explicit timeouts (ReadHeader 5s / Read 15s
-  / Write 30s / Idle 60s) so a slow or idle client can't hold a goroutine
-  open indefinitely. Credential rotation is started when the engine is
+  on an `http.Server` with explicit timeouts (ReadHeader 5s / Read from
+  `[server] read_timeout`, default 5m / Write 30s / Idle 60s) so a slow or
+  idle client can't hold a goroutine open indefinitely; the long-streaming
+  handlers (live MSE, clip download, APK publish/download) lift the write
+  deadline per-request via `clearWriteDeadline`. Credential rotation is started when the engine is
   running (always). SIGINT/SIGTERM trigger a graceful `srv.Shutdown`
   (10s) followed by `engine.Close()`, which finalizes each camera's
   in-progress fMP4 segment so a clean stop doesn't lose the tail of a
@@ -99,11 +101,14 @@ All code lives under `go/` (module `eneverre`).
 - `go/static/` — the vanilla-JS frontend (no build step). `index.html`,
   `style.css`, `timeline.js`, vendored `hls.min.js`, and `app.js` — the entry
   module that imports and boots the ES modules under `go/static/js/`. Those are
-  split into `js/api.js` (fetch wrapper + token), `js/state.js`, `js/util/*`
-  (dom/format/storage helpers), `js/ui/*` (theme, password reveal, user menu,
-  dialog, **icons** — see below) and `js/views/*` (login, force-password,
-  app-shell, sidebar, wall, ptz, playback, hls, mse, users, device-auth). The
-  browser resolves the imports directly.
+  split into `js/api.js` (fetch wrapper + token), `js/state.js`,
+  `js/i18n.js` + `js/i18n/{en,es}.js` (string catalogs; the UI ships English
+  and Spanish), `js/util/*` (dom, format, storage, focus-trap, talk-client),
+  `js/ui/*` (theme, password reveal, user menu, dialog, toast, help,
+  buffering, cam-status, **icons** — see below) and `js/views/*` — one module
+  per screen: login, force-password, device-auth, app-shell, sidebar, wall,
+  cameras, ptz, talk, playback, mse, schedules, status, users,
+  upgrade-prompt. The browser resolves the imports directly (no build step).
   This is the canonical copy; edit here.
 - `go/internal/config` — INI loading and path resolution. Searches
   `/etc/eneverre/...` then `./data/...`; env overrides
@@ -182,14 +187,19 @@ All code lives under `go/` (module `eneverre`).
   plus record/list/get/delete. `RecordMotion` extends an overlapping row to
   the union of ranges.
 - `go/internal/updates` — auto-update sidecar store (one directory per client
-  track, `tv` and `phone`). Each track holds a `manifest.json` + the current
+  track). Track names are arbitrary operator/CI-chosen identifiers (`tv`,
+  `phone`, `tablet`, …) — there is no fixed list; a `Registry` lazily creates
+  and caches one `Store` per name so concurrent publishes to the same track
+  serialize through one mutex. Each track holds a `manifest.json` + the current
   APKs + an in-flight `pending.json`. Supports single- and multi-POST
   publishes (the publish handler can stream one APK per POST and finalize with
   `finalize=true`); at commit, APKs that aren't in the new release are
   deleted (rotation is bounded to the current release's APKs). The wire
   protocol lives in `doc/UPDATES.md`.
-- `go/internal/media` — **embedded media engine** (active when `[media]` is
-  configured). One binary, no external streamer. Subpackages:
+- `go/internal/media` — **embedded media engine**. Always built and started;
+  the optional `[media]` section only tunes it (a missing section behaves
+  exactly like a present-but-empty one). One binary, no external streamer.
+  Subpackages:
   - `engine` — top-level orchestrator: owns the recorder, RTSP relay, live
     broadcaster and retention cleaner per camera; `OptionsFromSection` maps
     `[media]` INI keys to a struct; `Close` finalizes every in-progress
@@ -216,6 +226,14 @@ All code lives under `go/` (module `eneverre`).
     `Expired(cutoff,limit)` and `DeleteBatch(fpaths)` (one transaction, one
     fsync, instead of N round-trips) / `Oldest(limit)` for the low-disk
     emergency purge (force-remove oldest-first, ignoring `[media] retain`).
+  - `recovery` — re-indexes segments that are on disk but missing from the
+    index, the footage a hard crash (power loss, SIGKILL, panic) leaves
+    behind: `Recover` runs per camera at startup and scans only the recent
+    tail, `Reindex` rescans everything and is what `--reindex` drives. Both
+    keep existing rows and add only what's missing.
+  - `probe.go` — one-shot RTSP probe (codec, resolution) used by
+    `POST /api/cameras/probe` so the UI can validate a `source` URL before
+    the camera is saved.
   - `diskmonitor` — polls free space on the recording volume and fires
     `OnLow` / `OnRecovered` callbacks when the free-bytes figure crosses
     below `[media] min_free_bytes` (default 1 GiB; `0` disables). Hysteresis
@@ -257,6 +275,9 @@ All code lives under `go/` (module `eneverre`).
   (`statfs`) and Windows (`GetDiskFreeSpaceEx`). Returns the caller-available
   figure, which is the honest "free space" for an unprivileged process
   watching recording headroom.
+- `go/internal/timeutil` — the shared unix-or-RFC3339 timestamp parsing used
+  by the recordings handlers and the events store, so the accepted formats
+  can't drift between them (they used to keep separate layout lists).
 - `go/internal/metrics` — Prometheus + JSON instrumentation (`Store`, wired
   into `App` via `SetMetrics`). Collectors are called once per scrape: Go
   runtime (stdlib collector), DB pool stats (`db.Stats()`), aggregate camera
@@ -273,8 +294,17 @@ All code lives under `go/` (module `eneverre`).
   (camera CRUD/probe, PTZ move/home/recalibrate/position), `handlers_events.go`,
   `handlers_live.go` (embedded engine's `live/info` and `live/stream`),
   `handlers_playback.go` (recordings list/get/timeline/gaps/HLS-VOD),
+  `handlers_schedules.go` (recording-program CRUD + assignment),
+  `handlers_talk.go` (push-to-talk WebSocket → `internal/backchannel`),
   `handlers_users.go`, `handlers_updates.go`. Routes under
-  `/api/camera/{id}/recordings/*` are the canonical names.
+  `/api/camera/{id}/recordings/*` are the canonical names. The
+  non-handler files carry the cross-cutting middleware: `logging.go`
+  (access log + client-IP resolution honoring `[server] trusted_proxies`),
+  `seclog.go` (the auth-failure security log fail2ban tails —
+  `doc/security-logging.md`), `ratelimit.go` (failed-auth throttle keyed per
+  peer socket IP *and* per attempted username; only failures count) and
+  `static.go` (embedded-UI serving: content-hash `ETag`, gzip,
+  `Cache-Control`).
 
 ## Run / verify
 - Build: `go -C go build -o ../eneverre .` → one static binary.
@@ -445,7 +475,8 @@ see request query strings and the more verbose media-engine traces
   client is `static/js/util/talk-client.js`, wired to a hold-to-talk button
   (pointer-capture, no leaked listeners) in the PTZ/control modal
   (`static/js/views/ptz.js`). Note: WebSocket over HTTP/3 fails behind Caddy —
-  restrict it to `protocols h1 h2` (see the project memory note).
+  restrict it to `protocols h1 h2` (documented in `doc/example/Caddyfile` and
+  `doc/TALK.md#deployment-gotcha-websocket-over-http3`).
 
 ## Adding an API endpoint
 - Register the route in `server.go`'s `Handler()` with a method+pattern
@@ -500,8 +531,10 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
 
 ## Frontend notes
 - Single static page in `go/static/`, embedded in the binary. No build step.
-- `ENEVERRE_STATIC_DIR` (or an on-disk `./app/static` / `../app/static`) takes
-  precedence over the embedded copy — handy for live edits without rebuilding.
+- `ENEVERRE_STATIC_DIR=go/static` takes precedence over the embedded copy —
+  handy for live edits without rebuilding. It is the only override; there is
+  no cwd-relative autodetection, so a released binary always serves the assets
+  embedded in it.
 - The Bearer token lives in `localStorage`.
 - **Forced password change** (`js/views/force-password.js`): when the stored
   user carries `must_change_password`, the app is gated behind a mandatory
@@ -510,11 +543,14 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
   `showApp()` re-gates on reload while the flag is still set. A successful
   `PUT /api/users/me/password` clears the flag server-side and in the stored
   user, then `showApp()` proceeds.
-- **Live view** (`js/views/wall.js` + `js/views/hls.js` + `js/views/mse.js`):
-  the wall uses `camera.live_mse` (the embedded engine's MSE feed at
-  `/api/camera/{id}/live/stream`, ~1-2s latency) when the camera exposes
-  it. With neither `[media]` nor another streamer in front, the wall
-  falls back to `camera.hls` (played with hls.js).
+- **Live view** (`js/views/wall.js` + `js/views/mse.js`): the wall plays
+  `camera.live_mse` (the embedded engine's MSE feed at
+  `/api/camera/{id}/live/stream`, ~1-2s latency). There is no live fallback
+  anymore — the old `camera.hls` path went away with the external streamer,
+  so a camera without `live_mse` (own `mse = false`, global `[media] mse =
+  false`, or an unsupported codec) renders a "no live stream" placeholder,
+  and a camera in privacy renders its own placeholder rather than hammering
+  a dead endpoint. hls.js is still vendored, but only for VOD playback.
 - **PTZ** (`js/views/ptz.js`): all pan/tilt is in degrees (`STEP_DEG = 10` per
   arrow tap), matching the server's degrees-only API — no firmware step
   values ever reach the client. Double-clicking a live wall tile for a
@@ -561,6 +597,19 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
   (with Android in the UA), `SmartTV`, `BRAVIA` and `; CrKey`; anything
   else matching `Android` is treated as a phone/tablet. iOS, desktop and
   non-Android TVs are not detected.
+- **i18n** (`js/i18n.js` + `js/i18n/{en,es}.js`): flat `key -> string`
+  dictionaries, one module per language, imported statically so everything
+  resolves at load and `applyI18n()` can run synchronously at boot. Two ways
+  to reach a string: `t("key", vars)` from JS (`{name}`-style holes filled
+  from `vars`), or a `data-i18n*` attribute in `index.html` —
+  `data-i18n` (textContent), `-html`, `-placeholder`, `-title`,
+  `-aria-label`. A missing key falls back to English and then to the key
+  itself, so a gap shows up as visible mojibake rather than a blank label.
+  **Adding a string means adding the key to every `js/i18n/*.js`** — there is
+  no build step to catch a missing one. `setLang()` persists the choice
+  (`util/storage.js` `LANG_KEY`) and re-runs the static pass in place;
+  dynamic views pick it up on their next render, so a view that caches
+  rendered text must re-read `t()` rather than hold the string.
 - **Icons** (`js/ui/icons.js`): a small set of inline Lucide/Feather-style
   SVG icons (24×24, 2px stroke, `currentColor` for theming). `icon(name)`
   returns an SVG string — drop it into a template literal or assign with

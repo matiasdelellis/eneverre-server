@@ -212,6 +212,32 @@ If the camera backchannel fails to come up, the server accepts the upgrade and
 then closes the socket with a close reason `RTSP error: ...` (surfaces in
 `onClosing`/`onClosed`).
 
+### Deployment gotcha: WebSocket over HTTP/3
+
+If the handshake fails in a browser with nothing more useful than *"can't
+establish a connection to the server at wss://..."* while the rest of the API
+works fine, check the reverse proxy's HTTP version. Caddy advertises HTTP/3
+(`alt-svc: h3=":443"`) by default and does **not** translate
+WebSocket-over-HTTP/3 (RFC 9220 Extended CONNECT) into the HTTP/1.1 `Upgrade`
+the server needs: over h1.1 the handshake returns `101` correctly (verify with
+`curl --http1.1`), over h3 it never reaches the handler.
+
+The fix is a global options block in the Caddyfile so the site stops offering
+h3 — see [`example/Caddyfile`](example/Caddyfile):
+
+```
+{
+    servers {
+        protocols h1 h2
+    }
+}
+```
+
+Browsers cache `alt-svc: h3` for up to 30 days, so test in a private window
+after reloading Caddy. (As a client-side check only,
+`network.http.http3.enable = false` in Firefox's `about:config` confirms the
+diagnosis without touching the server.)
+
 ## Android implementation (Kotlin + OkHttp)
 
 ### Dependencies

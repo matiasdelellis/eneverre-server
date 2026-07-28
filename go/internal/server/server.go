@@ -557,16 +557,14 @@ func (a *App) updatePTZPos(cam camera.Camera, body []byte) {
 	a.setPTZPos(cam, x, y)
 }
 
+// resolveStaticDir returns the on-disk directory to serve the web UI from, or
+// "" to use the copy embedded at build time. ENEVERRE_STATIC_DIR is the only
+// way to select one: point it at go/static to iterate on the UI without
+// rebuilding. There is deliberately no cwd-relative autodetection — a released
+// binary must serve exactly the assets embedded in it, no matter which
+// directory it happens to be started from.
 func resolveStaticDir() string {
-	if d := os.Getenv("ENEVERRE_STATIC_DIR"); d != "" {
-		return d
-	}
-	for _, d := range []string{"./app/static", "../app/static"} {
-		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-			return d
-		}
-	}
-	return ""
+	return strings.TrimSpace(os.Getenv("ENEVERRE_STATIC_DIR"))
 }
 
 // Handler returns the fully wired HTTP handler (routes + CORS).

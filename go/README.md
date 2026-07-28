@@ -37,15 +37,24 @@ calling out:
 
 Config resolution:
 
-| What        | Search order                                      | Env override            |
-|-------------|---------------------------------------------------|-------------------------|
-| Config file | `/etc/eneverre/eneverre.ini`, `./data/eneverre.ini` | `ENEVERRE_CONFIG_PATH`  |
-| Cameras dir | `/etc/eneverre/cameras.d`, `./data/cameras.d`     | `ENEVERRE_CAMERAS_DIR`  |
+| What        | Search order                                          | Env override           |
+|-------------|-------------------------------------------------------|------------------------|
+| Config file | `/etc/eneverre/eneverre.ini`, `./data/eneverre.ini`   | `ENEVERRE_CONFIG_PATH` |
+| Cameras dir | `/etc/eneverre/cameras.d`, `./data/cameras.d`         | `ENEVERRE_CAMERAS_DIR` |
+| Database    | `/var/run/eneverre/eneverre.db`, `./data/eneverre.db` | `ENEVERRE_DB_PATH`     |
+| Static UI   | embedded in the binary                                | `ENEVERRE_STATIC_DIR`  |
+| Log level   | `[server] log_level` (default `info`)                 | `ENEVERRE_LOG_LEVEL`   |
+
+`--data-dir` / `ENEVERRE_DATA_DIR` short-circuits the first three rows: each
+one defaults to `<dir>/eneverre.ini`, `<dir>/cameras.d`, `<dir>/eneverre.db`
+instead of running the `./data`-anchored search. A per-path override still
+wins over it.
 
 The config file is optional: when the search finds none, Eneverre starts on
 built-in defaults (`Config.FileLoaded` is false). An **explicit** path
 (`--config` / `ENEVERRE_CONFIG_PATH`) that doesn't exist is fatal, and a file
-that exists but fails to parse is fatal too.
+that exists but fails to parse is fatal too. The full key-by-key reference is
+[`doc/example/README.md`](../doc/example/README.md).
 
 > **Cameras are DB-backed.** The `cameras.d/*.ini` files are only an *initial
 > seed*, imported into the database once on first start (when no cameras exist
@@ -53,9 +62,6 @@ that exists but fails to parse is fatal too.
 > Manage cameras**, admin only) or the API (`POST /api/cameras`,
 > `DELETE /api/camera/{id}`); changes take effect immediately, no restart.
 > Editing an INI file after the first run has no effect.
-| Database    | `/var/run/eneverre/eneverre.db`, `./data/eneverre.db` | `ENEVERRE_DB_PATH`  |
-| Static UI   | `./app/static`, `../app/static`, then embedded    | `ENEVERRE_STATIC_DIR`   |
-| Log level   | `[server] log_level` (default `info`)             | `ENEVERRE_LOG_LEVEL`    |
 
 ### Logging & debugging
 
@@ -101,9 +107,11 @@ per-request path never queries the DB.
 
 The web UI is embedded into the binary (`go:embed`) from `go/static/`, so the
 single file runs standalone. Edit the UI there and rebuild. For live edits
-without a rebuild, point `ENEVERRE_STATIC_DIR` at a directory on disk — it
-takes precedence over the embedded copy (and is served uncached so changes
-show up on refresh).
+without a rebuild, point `ENEVERRE_STATIC_DIR` at a directory on disk
+(`ENEVERRE_STATIC_DIR=go/static ./eneverre`) — it takes precedence over the
+embedded copy and is served uncached, so changes show up on refresh. That env
+var is the only override: the server never picks up a static dir from the
+working directory, so a released binary always serves what was embedded in it.
 
 Embedded assets are served with a content-hash `ETag` and `Cache-Control:
 no-cache`, so repeat loads revalidate with `If-None-Match` and get a `304`
@@ -122,10 +130,14 @@ not block Basic-auth API calls). Admins can require the same change when
 creating a user or resetting a password; a self password change clears it. The
 listen address comes from
 `[server] host`/`port`, defaulting to `0.0.0.0:8080`. The server runs with
-explicit HTTP timeouts (`ReadHeaderTimeout` 5s, `ReadTimeout` 15s,
-`WriteTimeout` 30s, `IdleTimeout` 60s) so a slow/idle client cannot hold a
-connection open indefinitely; `WriteTimeout` is generous because the thumbnail
-and playback handlers proxy upstream responses. SIGINT/SIGTERM trigger a
+explicit HTTP timeouts (`ReadHeaderTimeout` 5s, `ReadTimeout` from
+`[server] read_timeout` / `ENEVERRE_READ_TIMEOUT`, default 5m, `WriteTimeout`
+30s, `IdleTimeout` 60s) so a slow/idle client cannot hold a connection open
+indefinitely; `ReadTimeout` is generous because publishing a ~200 MiB APK over
+a slow link legitimately takes minutes, and `WriteTimeout` because the
+thumbnail and playback handlers proxy upstream responses (handlers that stream
+for longer — live MSE, clip download, APK download — lift it per-request via
+`clearWriteDeadline`). SIGINT/SIGTERM trigger a
 graceful `srv.Shutdown` (10s) followed by the embedded engine's
 `Close()` — which finalizes and indexes every in-progress fMP4 segment so a
 clean stop doesn't drop the recording since the last segment rotation.
@@ -138,23 +150,31 @@ go vet ./...
 ## Layout
 
 ```
-main.go                       server bootstrap
+main.go                       flag parsing + server bootstrap
+lifecycle.go                  graceful shutdown: drain in-flight requests (10s), then cleanup
+embed.go                      go:embed of static/ (the web UI), with on-disk override
+run_unix.go / run_windows.go  per-OS run loop: SIGINT/SIGTERM vs Service Control Manager,
+                              and where log output goes (stderr vs ENEVERRE_LOG_FILE)
 internal/config               INI loading + path resolution
 internal/store                SQLite open + schema + admin seed
 internal/auth                 Werkzeug-format hashing + Basic/Bearer auth
-internal/camera               Camera model + INI loader
+internal/camera               Camera model + DB store + one-time INI seed
+internal/schedule             named recording programs (per-weekday armed windows) + DB store
 internal/streamauth           rotating credential store + RTSP URL builder
 internal/thingino             PTZ move + JPEG snapshot HTTP calls
 internal/events               event model + record/list/get/delete
-internal/updates              Android auto-update sidecar store
+internal/updates              Android auto-update store + per-track registry
 internal/backchannel          ONVIF Profile T backchannel + G.711/RTP (push-to-talk)
 internal/diskfree             shared statfs wrapper (Available/Total), unix + Windows
+internal/timeutil             shared unix-or-RFC3339 timestamp parsing
 internal/metrics              Prometheus + JSON instrumentation (/api/metrics{,/json})
-internal/media/               embedded media engine (active when [media] is configured)
+internal/media/               embedded media engine (always built; [media] only tunes it)
   engine.go                   orchestrator: recorder + RTSP relay + live MSE + retention per camera
+  probe.go                    one-shot RTSP probe (codec/resolution) behind POST /api/cameras/probe
   recorder/                   per-camera gortsplib client, fMP4 segments, media watchdog
   recstore/                   record_path template -> on-disk path; common root for retention
   index/                      SQLite segment index (range, timeline, gaps, batched delete)
+  recovery/                   re-indexes segments left on disk by a hard crash (startup + --reindex)
   diskmonitor/                polls free space, fires OnLow/OnRecovered (low-disk emergency purge)
   liverelay/                  raw RTP passthrough served over RTSP on [media] rtsp_address
   live/                       chunked-HTTP fMP4 broadcaster (MSE feed for browsers)
@@ -162,14 +182,21 @@ internal/media/               embedded media engine (active when [media] is conf
   playback/                   VOD muxer: /get with gap fill + HLS VOD playlist
   retention/                  periodic cleaner (batched delete + dir prune) + PurgeToFree (low-disk)
 internal/server               HTTP routes + handlers
-  server.go                   App + mux + handler registry, GET /api/status
+  server.go                   App + mux + handler registry, GET /api/status, privacy, thumbnail
   handlers_auth.go            login/logout/refresh, device login
   handlers_cameras.go         camera list/CRUD/probe, PTZ move/home/recalibrate/position
+  handlers_schedules.go       recording-program CRUD + per-camera assignment
   handlers_events.go          webhook + list/delete events
   handlers_live.go            live/info + live/stream (embedded engine, MSE fMP4)
   handlers_playback.go        recordings list/get/timeline/gaps + HLS VOD
+  handlers_talk.go            push-to-talk WebSocket -> backchannel (see doc/TALK.md)
   handlers_users.go           self + admin user CRUD, sessions
   handlers_updates.go         Android auto-update publish + download
+  logging.go                  access log + client-IP resolution (trusted_proxies)
+  seclog.go                   auth-failure security log (fail2ban/CrowdSec format)
+  ratelimit.go                failed-auth throttle, keyed per peer IP and per username
+  static.go                   embedded UI serving: ETag, gzip, Cache-Control
+static/                       the web UI itself (js/views/*.js, one module per screen)
 ```
 
 ## Endpoints
@@ -179,19 +206,28 @@ The REST surface is implemented and exercised: health, `GET /api/status`
 totals, and — when recording is enabled — the recording volume's disk
 headroom), login/logout/refresh, cameras (list + admin CRUD + probe), ptz
 (move/home/recalibrate/position — pan/tilt in degrees, never firmware
-steps), privacy (lens blackout), thumbnail, the device-login flow, events
-(webhook + list + delete), and the full users CRUD (self + admin routes,
-with `me` taking precedence over `{username}`). An earlier external-MediaMTX
-proxy (`POST /api/auth` + `playback/{list,get}` → MediaMTX control API) was
-removed when the embedded engine replaced it.
+steps), privacy (stops recording + transmission; lens blackout on Thingino),
+thumbnail, the device-login flow, events (webhook + list + delete),
+recording schedules (`/api/schedules` + `/api/schedule/{id}`, admin CRUD;
+a camera references one by id and is armed 24/7 without one), and the full
+users CRUD (self + admin routes, with `me` taking precedence over
+`{username}`). An earlier external-MediaMTX proxy (`POST /api/auth` +
+`playback/{list,get}` → MediaMTX control API) was removed when the embedded
+engine replaced it.
 
-The embedded media engine (`[media]`) is now the only streaming mode and
-adds a separate surface of its own, mounted under `/api/camera/{id}/`:
+The embedded media engine is now the only streaming mode (always built; the
+optional `[media]` section only tunes it) and adds a separate surface of its
+own, mounted under `/api/camera/{id}/`:
 
 - `live/{info,stream}` — MSE fMP4 live feed (browser).
 - `recordings/{list,get,timeline,gaps,hls/*}` — VOD from the in-process
   segment index.
 - `GET /api/recordings/paths` — camera ids that have recordings.
+
+`GET /api/camera/{id}/talk` is the push-to-talk WebSocket: it upgrades the
+connection and pumps the client's audio into the camera's ONVIF Profile T
+backchannel. Advertised only for cameras with a `backchannel` URL. Note it
+does not survive HTTP/3 behind Caddy — see [`doc/TALK.md`](../doc/TALK.md).
 
 `GET /api/metrics` (+ `/api/metrics/json`) exposes Prometheus instrumentation,
 open to a local scraper over loopback and authenticated otherwise. Camera

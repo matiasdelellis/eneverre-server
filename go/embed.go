@@ -7,11 +7,11 @@ import "embed"
 // the copy go:embed reads at build time (embed cannot reference paths outside
 // the module).
 //
-// At runtime the server prefers an on-disk static dir when one is found
-// (ENEVERRE_STATIC_DIR, or ./app/static / ../app/static relative to the
-// current working directory), so live edits don't require a rebuild; the
-// embedded copy is the fallback served from /. Set ENEVERRE_STATIC_DIR
-// during development to iterate without rebuilding.
+// At runtime the embedded copy is what gets served from / — unless
+// ENEVERRE_STATIC_DIR points at a directory on disk, which takes precedence so
+// live UI edits don't require a rebuild (`ENEVERRE_STATIC_DIR=go/static`).
+// That env var is the only override; the server never guesses a static dir
+// from the working directory.
 //
 //go:embed all:static
 var staticFiles embed.FS
