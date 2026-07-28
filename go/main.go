@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,25 @@ func setupLogging(level string) {
 func fatal(msg string, args ...any) {
 	slog.Error(msg, args...)
 	os.Exit(1)
+}
+
+// exampleConfigPath returns the bundled example config when it can be found
+// next to the binary. The release tarball ships doc/example/ beside the
+// executable — the same layout scripts/install.sh reads to seed
+// /etc/eneverre/eneverre.ini — so on a downloaded release this resolves to a
+// real, copy-pasteable path. It returns "" when the binary was built or
+// installed without the docs (a plain `go build`, or the binary copied on its
+// own), leaving the caller to name the repo path instead.
+func exampleConfigPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	p := filepath.Join(filepath.Dir(exe), "doc", "example", "eneverre.ini")
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
 }
 
 // resolveLogLevel picks the log level with the precedence CLI flag > env
@@ -131,6 +151,16 @@ func main() {
 		slog.Info("config loaded", "file", cfg.ConfigFile)
 	} else {
 		slog.Info("no config file found, using defaults", "searched", cfg.ConfigFile)
+		// Running on defaults is fully supported, but nothing tuned from the UI
+		// or the flags survives a restart. Point at the annotated template and
+		// at the exact path the loader just looked in, so the fix is a single
+		// copy away.
+		const hint = "to make configuration changes permanent, copy the example config to the searched path"
+		if ex := exampleConfigPath(); ex != "" {
+			slog.Info(hint, "example", ex, "target", cfg.ConfigFile)
+		} else {
+			slog.Info(hint, "example", "doc/example/eneverre.ini", "target", cfg.ConfigFile)
+		}
 	}
 
 	db, err := store.Open(cfg.DBFile)

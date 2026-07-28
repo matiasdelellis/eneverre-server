@@ -12,7 +12,14 @@ built-in default (the same as an empty file). It only fails to start if the
 file *you pointed it at* is missing — i.e. an explicit `ENEVERRE_CONFIG_PATH`
 or `--config` path that does not exist — or if a file that *does* exist fails
 to parse. So a minimal install needs no `eneverre.ini` at all, but a typo in an
-explicit path is caught instead of silently falling back to defaults.
+explicit path is caught instead of silently falling back to defaults. When it
+starts without one, Eneverre logs the exact path it searched and where to copy
+the example from, so making a setting permanent is a single `cp` away:
+
+```
+level=INFO msg="no config file found, using defaults" searched=data/eneverre.ini
+level=INFO msg="to make configuration changes permanent, copy the example config to the searched path" example=/opt/eneverre/doc/example/eneverre.ini target=data/eneverre.ini
+```
 
 Cameras are **not** configured here: they live in the database and are managed
 from the web UI / API. The `cameras.d/*.ini` files are only a one-time seed for
