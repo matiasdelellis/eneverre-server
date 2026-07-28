@@ -189,7 +189,14 @@ async function load() {
 }
 
 export function enterStatusView() {
-  if (!isAdmin()) return;
+  if (!isAdmin()) {
+    // A non-admin followed a ?view=status link (shared, or bookmarked before
+    // the role changed). There is no panel to open, so clear the overlay
+    // rather than leaving the app parked on a view that never appears — that
+    // also normalizes the URL and reveals the main view.
+    setOverlay(null);
+    return;
+  }
   closeOverlayViews(); // never stack on top of Users/Cameras
   document.getElementById("app").hidden = true;
   const v = document.getElementById("status-view");

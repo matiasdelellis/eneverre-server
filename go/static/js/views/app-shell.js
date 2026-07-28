@@ -184,6 +184,14 @@ async function applyUrlState(state) {
       // real cleanup — see the overlay listener below).
       setOverlay(null);
     } else {
+      // An overlay URL carries no main-view mode (`view` is taken by the panel
+      // name), so set up the view underneath from the session — live on a fresh
+      // tab. Without this, a tab opened straight on ?view=status has a main
+      // view that was never initialized: #wall stays hidden and the Live /
+      // Playback tabs have no active one, so closing the panel reveals a blank
+      // page. It also gives backLabel() the mode to name.
+      const saved = sessionGet(VIEW_KEY);
+      setViewMode(saved === "playback" ? "playback" : "live");
       // Open the named overlay panel. The listener in initDeepLinks calls
       // the matching enter* and, if another overlay was open, its exit* first.
       setOverlay(state.view);
