@@ -627,6 +627,17 @@ export class Timeline {
 
   getInterval() { return this.intervalMsec; }
 
+  // setInterval jumps the window straight to `interval`, clamped to the same
+  // range the stepped increase/decreaseInterval ladder spans. Unlike
+  // setIntervalWithAnimation this does NOT ease, which is exactly what a
+  // continuous gesture needs: a pinch delivers a new scale on every
+  // pointermove, and easing each one would fight the fingers (every frame
+  // would start a fresh 150ms tween from a stale value and cancel the last).
+  setInterval(interval) {
+    this.intervalMsec = Math.max(INTERVAL_MIN_1, Math.min(INTERVAL_DAY_30, interval));
+    this.scheduleDraw();
+  }
+
   increaseInterval() {
     if (this.intervalMsec > INTERVAL_DAY_7 - 1) this.setIntervalWithAnimation(INTERVAL_DAY_30);
     else if (this.intervalMsec > INTERVAL_DAY_1 - 1) this.setIntervalWithAnimation(INTERVAL_DAY_7);

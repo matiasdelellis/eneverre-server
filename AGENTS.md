@@ -54,6 +54,25 @@ adds `gortsplib` (RTSP client) + `mediacommon` (fMP4) + `pion/*` (RTP/SDP).
   `internal/backchannel` with `gortsplib.Client` (already a dependency via
   the recorder). ~4-6.5 days, deletes ~540 lines, medium risk. Same end state
   on the wire.
+- [`doc/PLANS/WEBRTC.md`](doc/PLANS/WEBRTC.md) — evaluation of browser
+  live (and the browser leg of talk) over WebRTC: why there is no WebRTC
+  today (an omission, not a rejection — three commits on 2026-07-07),
+  what it would buy (200-500ms, audio on every camera since G711 is a
+  native WebRTC codec, the `<video>` element survives), the AAC-vs-G711
+  audio trade-off, and ~2.5-3 weeks of work. **Evaluated and declined**
+  (2026-08-15): the Android/TV clients already have sub-second live over
+  the RTSP relay, and the web UI is for consultation, where ~1-2s is
+  adequate — so the latency premise doesn't hold. Kept as the decision
+  record, with measurements (Firefox offers baseline-only H264 over
+  WebRTC; the fleet encodes Main) and the conditions that would reopen
+  it.
+- [`doc/PLANS/MOQ.md`](doc/PLANS/MOQ.md) — decision record on
+  Media-over-QUIC for browser live: where the current ~1-2s latency
+  actually comes from, what MoQ would buy (sub-300ms, G711 audio in the
+  browser, per-track priorities), what it would cost (a hand-written
+  WebCodecs player, TLS/UDP where we terminate no TLS today), and the
+  triggers to revisit. **Not adopted**, and its premise was superseded
+  along with WebRTC's — browser live latency is not a product goal.
 - [`doc/UPDATES.md`](doc/UPDATES.md) — the auto-update protocol for the
   Android clients.
 - [`doc/TALK.md`](doc/TALK.md) — the two-way-audio (push-to-talk) WebSocket
@@ -574,11 +593,18 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
 - **HLS VOD playback** (`js/views/playback.js`): the timeline plays
   `/api/camera/{id}/recordings/hls/playlist.m3u8` via hls.js
   (CMAF; `EXT-X-DISCONTINUITY` at coverage gaps), one instance per camera
-  tile. The cursor advances from wall-clock (1x) so it stays monotonic
-  across gaps. Per-tile "No recording" overlays appear when the cursor
-  sits inside a coverage gap; the tile's HLS instance is reinitialized at
-  the cursor's current wall-clock when it exits the gap. Scrubbing resets
-  everything. Auth: every playlist/init/segment request needs the Bearer
+  tile. The cursor advances from wall-clock — scaled by the selected
+  playback speed (`vodCursorMsec` = anchor + elapsed × `pbSpeed`), so it
+  tracks the frame on screen at 0.5x/1.5x/2x — and stays monotonic across
+  gaps. A speed change re-anchors first (`reanchorVodCursor`) so the new
+  rate applies from that moment instead of retroactively re-timing what
+  was already played. Per-tile "No recording" overlays appear when the
+  cursor sits inside a coverage gap; the tile's HLS instance is
+  reinitialized at the cursor's current wall-clock when it exits the gap.
+  Scrubbing resets everything. The play/pause control is painted only by
+  `setPlayButtonState`, from `vodPaused` (never from a tile's
+  `video.paused` — a tile paused inside a gap would misreport the state).
+  Auth: every playlist/init/segment request needs the Bearer
   token (use hls.js `xhrSetup`).
 - The playback timeline (`timeline.js`) draws recordings as the background
   bar and motion events from `GET /api/camera/{id}/events` as red Major1
@@ -610,6 +636,10 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
   (`util/storage.js` `LANG_KEY`) and re-runs the static pass in place;
   dynamic views pick it up on their next render, so a view that caches
   rendered text must re-read `t()` rather than hold the string.
+  `applyDocumentLang()` keeps `<html lang>` on the active catalog — at boot
+  (`index.html` can only ship the static `en`, so an auto-detected or
+  restored `es` would otherwise be announced as English) and on every
+  switch.
 - **Icons** (`js/ui/icons.js`): a small set of inline Lucide/Feather-style
   SVG icons (24×24, 2px stroke, `currentColor` for theming). `icon(name)`
   returns an SVG string — drop it into a template literal or assign with

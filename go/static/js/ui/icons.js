@@ -28,6 +28,14 @@ const PATHS = {
   // Media
   play:           '<polygon points="6 3 20 12 6 21 6 3" fill="currentColor" stroke="none"/>',
   pause:          '<rect x="6"  y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none"/>',
+  // Jump to the previous / next recorded segment (the on-screen equivalent of
+  // the j / l keys, which a phone has no way to press).
+  "skip-back":    '<polygon points="19 5 9 12 19 19 19 5" fill="currentColor" stroke="none"/><rect x="4" y="5" width="3" height="14" rx="1" fill="currentColor" stroke="none"/>',
+  "skip-forward": '<polygon points="5 5 15 12 5 19 5 5" fill="currentColor" stroke="none"/><rect x="17" y="5" width="3" height="14" rx="1" fill="currentColor" stroke="none"/>',
+  // Timeline zoom (the +/- keys). "in" narrows the window, "out" widens it.
+  "zoom-in":      '<circle cx="11" cy="11" r="7"/><line x1="16.2" x2="21" y1="16.2" y2="21"/><line x1="11" x2="11" y1="8" y2="14"/><line x1="8" x2="14" y1="11" y2="11"/>',
+  "zoom-out":     '<circle cx="11" cy="11" r="7"/><line x1="16.2" x2="21" y1="16.2" y2="21"/><line x1="8" x2="14" y1="11" y2="11"/>',
+  "help-circle":  '<circle cx="12" cy="12" r="10"/><path d="M9.2 9.2a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><line x1="12" x2="12.01" y1="17.5" y2="17.5"/>',
   camera:         '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
   "camera-off":   '<line x1="2" x2="22" y1="2" y2="22"/><path d="M7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16"/><path d="M9.5 4h5L17 7h3a2 2 0 0 1 2 2v7.5"/><path d="M14.12 15.12A3 3 0 1 1 9.88 10.88"/>',
   "volume-x":     '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>',

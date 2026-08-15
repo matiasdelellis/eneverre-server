@@ -338,6 +338,24 @@ input {
   border-top: 1px solid var(--border);
   position: relative;
 }
+/* The canvas is first in the DOM (so the mobile breakpoint can hand it a full
+   -width row with flex-wrap alone); `order` puts it back in the middle here,
+   giving the desktop the original transport | timeline | tools reading order. */
+.pb-transport { order: 1; }
+.pb-canvas    { order: 2; }
+.pb-tools     { order: 3; }
+.pb-transport,
+.pb-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+/* Desktop reaches zoom through the wheel and the -/+ keys, and has room for the
+   full speed button group; both mobile stand-ins stay out of the way until the
+   900px breakpoint swaps them in. */
+.pb-zoom-btn,
+.pb-speed-select { display: none; }
 .pb-btn {
   background: var(--panel-2);
   border: 1px solid var(--border-strong);
@@ -364,6 +382,10 @@ input {
   background: var(--panel-2);
   border-radius: var(--radius);
   position: relative;
+  /* Drag-to-pan and pinch-to-zoom are handled by the pointer listeners in
+     playback.js. Without this the browser claims both gestures first (page
+     scroll / page zoom) and the timeline never sees them. */
+  touch-action: none;
 }
 
 .pb-speed {
@@ -1049,13 +1071,49 @@ button.icon-btn {
   .topbar button.topbar-hide-sm { display: none; }
   .user-menu-item-sm { display: block; }
 
-  /* Playback bar: canvas gets more space, controls stay tappable. */
-  .playback-bar { padding: 8px 10px; gap: 8px; }
+  /* Playback bar: two rows. Everything used to share one line, which at 360px
+     added up to ~375px of buttons before the canvas got a single pixel — so the
+     timeline, the control the whole view is about, was the thing that got
+     squeezed. Now it takes the full width on its own row and the buttons wrap
+     underneath it. */
+  .playback-bar {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    /* Kept as ONE declaration: a bare `padding` shorthand here would reset the
+       safe-area bottom set for this same breakpoint above. */
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0));
+  }
+  /* buildPlaybackTimeline sizes the canvas inline at 24px per camera, which on
+     a phone lets a dozen cameras claim more height than the video they belong
+     to. Capping it just makes the lanes thinner — timeline.js derives lane
+     height from clientHeight, which max-height does constrain. */
+  .pb-canvas { order: 1; flex: 1 0 100%; max-height: 35vh; }
+  .pb-transport { order: 2; }
+  .pb-tools { order: 3; flex-wrap: wrap; justify-content: center; }
   .pb-btn {
     min-width: 40px;
     min-height: 40px;
     padding: 6px 10px;
     font-size: 15px;
+  }
+  /* No wheel and no -/+ keys on a phone: pinch works, but a visible control is
+     what makes zoom discoverable. inline-block matches the other .pb-btn. */
+  .pb-zoom-btn { display: inline-block; }
+  /* Four buttons at ~160px is half the screen; the <select> does the same job
+     in ~60px. setPbSpeed() keeps whichever is hidden in sync. */
+  .pb-speed { display: none; }
+  .pb-speed-select {
+    display: block;
+    min-height: 40px;
+    padding: 0 6px;
+    background: var(--panel-2);
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
   }
 }
 
@@ -2090,6 +2148,85 @@ html.booting body > *:not(#boot) { display: none !important; }
      cell — drop the per-button text down to a tighter size so the
      four actions (Name, Promote, Password, Delete) don't wrap. */
   .users-actions button { padding: 5px 8px; font-size: 12px; }
+}
+
+/* The camera wizard and the schedules manager are the two content-heavy
+   dialogs: 5 step chips plus a dozen fields, and a 7-row weekday editor. As
+   centered cards on a phone they scrolled inside a box shorter than the
+   on-screen keyboard, so below 700px they become full-screen sheets. Declared
+   after the block above because both carry .user-edit-modal / .user-edit-card
+   too, and those rules have the same specificity — source order decides. */
+@media (max-width: 700px) {
+  #cam-wizard-modal,
+  #schedules-modal {
+    padding: 0;
+    align-items: stretch;
+  }
+  #cam-wizard-modal .user-edit-card,
+  #schedules-modal .user-edit-card {
+    width: 100%;
+    max-width: none;
+    border: 0;
+    border-radius: 0;
+    overflow-y: auto;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0));
+  }
+  /* Step chips as one horizontally scrollable strip. Wrapping five of them at
+     360px produced three stacked rows that pushed the form off-screen. The
+     negative margin lets the strip bleed to the sheet edges, which is the cue
+     that it scrolls. */
+  .cam-wizard-steps {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin: 0 -16px;
+    padding: 0 16px 2px;
+  }
+  .cam-wizard-steps::-webkit-scrollbar { display: none; }
+  .cam-wizard-steps li { flex: 0 0 auto; padding: 8px 12px; }
+  /* Cancel/Back/Next stay reachable without scrolling to the end of a long
+     step. Sticky resolves against the sheet, which is the scroll container. */
+  .cam-wizard-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    background: var(--panel);
+    padding: 10px 0;
+  }
+}
+
+/* Below ~560px the users/cameras tables stop being tables: four grid columns
+   leave each cell a few characters wide. Every row becomes a stacked card and
+   the column header — which labels columns that no longer exist — goes away. */
+@media (max-width: 560px) {
+  .users-row.users-header { display: none; }
+  .users-table .users-row:not(.users-empty) {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 12px;
+  }
+  /* The 700px rule spans the actions across the grid with `grid-column`, which
+     means nothing once the row is a flex column — re-state it as a flex row of
+     equal-width buttons at a real tap size. */
+  .users-row .users-actions {
+    justify-content: flex-start;
+    gap: 8px;
+  }
+  .users-actions button {
+    flex: 1 1 auto;
+    min-height: 36px;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+  .session-row { align-items: flex-start; }
+  .session-row button { width: 100%; min-height: 36px; }
+
+  /* The shortcut/gesture list: a rigid 130px term column left the description
+     two words per line. Stack term over description instead. */
+  .help-list > div { flex-direction: column; gap: 2px; padding: 6px 0; }
+  .help-list dt { flex: 0 0 auto; }
 }
 
 /* ---------- Upgrade prompt (Android TV / phone) ---------- */

@@ -388,6 +388,10 @@ export async function buildPlaybackTimeline(filtered) {
     // it so "go live" wins.
     if (pbTimeline) { clearTimeout(pbTimeline.timerSelectedId); pbTimeline.timerSelectedId = 0; }
     killVods();
+    // Same reset the #pb-live button does: with no VOD left, the control is
+    // idle, so it must not keep showing the "pause" glyph from the scrub that
+    // was just torn down.
+    setPlayButtonState(true);
     // Lazy-load the wall module to break the wall <-> playback import
     // cycle. The wall module is always already loaded by the time the
     // live callback fires (this buildPlaybackTimeline() was called from
@@ -500,17 +504,139 @@ function resizePbCanvas() {
   pbTimeline.draw();
 }
 
+// setPlayButtonState paints the playback bar's play/pause control from the
+// paused state. The glyph names the action a click performs, so a paused
+// timeline shows "play". Single writer, so the three call sites (toggle,
+// playback start, go-live) can't drift.
+function setPlayButtonState(paused) {
+  const btn = $("#pb-play");
+  if (!btn) return;
+  btn.innerHTML = icon(paused ? "play" : "pause");
+  btn.setAttribute("aria-label", paused ? t("pb.play") : t("pb.pause"));
+}
+
+// seekToRecord parks the cursor at `rec`'s start and restarts playback there.
+function seekToRecord(rec) {
+  if (!rec || !pbTimeline) return;
+  pbTimeline.setCurrent(rec.timestampMsec);
+  pbTimeline.draw();
+  startVodPlayback(pbCams, rec.timestampMsec);
+}
+
+// stepRecording jumps to the previous (dir < 0) or next (dir > 0) marker on the
+// selected lane: coverage segments by default, event markers when `events` is
+// set. Shared by the j/l/p/n keys and the on-screen prev/next buttons, which is
+// the whole point — the buttons are the only way to reach this on a phone.
+function stepRecording(dir, events = false) {
+  if (!pbTimeline) return;
+  const lane = pbTimeline.timelineSelected;
+  const recs = (events ? pbTimeline.getMajor1Records(lane) : pbTimeline.getBackgroundRecords(lane)) || [];
+  const cur = pbTimeline.getCurrent();
+  seekToRecord(dir < 0 ? pbTimeline.getPrevRecord(cur, recs) : pbTimeline.getNextRecord(cur, recs));
+}
+
+// setPbSpeed is the single writer for the playback rate. It mirrors the value
+// onto BOTH speed controls — the button group (desktop) and the <select>
+// (mobile, where the group's ~160px is half the screen) — so whichever one the
+// user touched, the other agrees.
+function setPbSpeed(next) {
+  // Re-anchor first, while pbSpeed is still the OLD value: the cursor mapping
+  // is a single rate applied to the whole elapsed span, so changing the rate
+  // without re-basing would retroactively re-time everything already played.
+  reanchorVodCursor();
+  pbSpeed = next;
+  for (const b of $$("#pb-speed .pb-speed-btn")) {
+    const active = parseFloat(b.dataset.speed) === next;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  const sel = $("#pb-speed-select");
+  if (sel) sel.value = String(next);
+  for (const h of vodInstances.values()) {
+    const m = h && h.media;
+    if (m) m.playbackRate = next;
+  }
+}
+
 export function setupPlaybackBar() {
   const playBtn = $("#pb-play");
   const liveBtn = $("#pb-live");
   const canvas = $("#pb-canvas");
   const speedBtns = $$("#pb-speed .pb-speed-btn");
 
-  // ----- Timeline click / scroll -----
-  canvas.addEventListener("click", (e) => {
+  // ----- Timeline pointer interaction (mouse + touch) -----
+  //
+  // One pointer: drag to pan the window, release without moving to seek.
+  // Two pointers: pinch to zoom. Touch has no wheel and no +/- keys, so
+  // before this a phone was stuck in whatever window the view loaded with
+  // and could only tap inside it. Pointer events cover mouse and touch in
+  // one path, so the desktop gains drag-to-pan for free while click-to-seek
+  // survives via the slop test below.
+  //
+  // `touch-action: none` on .pb-canvas (style.css) is what stops the browser
+  // from claiming these same gestures for page scroll / pinch-zoom. The old
+  // `click` listener is gone on purpose: a tap already seeks from pointerup,
+  // and keeping both would seek twice per tap.
+  const TAP_SLOP_PX = 8;        // total travel still counted as a tap, not a drag
+  const pointers = new Map();   // live pointerId -> last clientX
+  let dragStartX = 0;
+  let dragMoved = false;        // set once travel passes the slop, or on any pinch
+  let pinchStartSpan = 0;
+  let pinchStartInterval = 0;
+
+  // Horizontal separation of the two fingers. The timeline only maps time to
+  // x, so the vertical component of a pinch is noise.
+  const pinchSpan = () => {
+    const [a, b] = [...pointers.values()];
+    return Math.max(Math.abs(a - b), 1);
+  };
+  const canvasOffset = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return { offsetX: e.clientX - r.left, offsetY: e.clientY - r.top };
+  };
+
+  canvas.addEventListener("pointerdown", (e) => {
     if (!pbTimeline) return;
-    pbTimeline.onSingleTapUp({ offsetX: e.offsetX, offsetY: e.offsetY });
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, e.clientX);
+    if (pointers.size === 1) {
+      dragStartX = e.clientX;
+      dragMoved = false;
+    } else if (pointers.size === 2) {
+      pinchStartSpan = pinchSpan();
+      pinchStartInterval = pbTimeline.getInterval();
+      dragMoved = true;  // a pinch must never also register as a tap-to-seek
+    }
   });
+
+  canvas.addEventListener("pointermove", (e) => {
+    if (!pbTimeline || !pointers.has(e.pointerId)) return;
+    const prevX = pointers.get(e.pointerId);
+    pointers.set(e.pointerId, e.clientX);
+    if (pointers.size >= 2) {
+      // The visible window scales inversely with finger separation: spreading
+      // the fingers shows less time (zooms in), pinching them shows more.
+      pbTimeline.setInterval(pinchStartInterval * (pinchStartSpan / pinchSpan()));
+      return;
+    }
+    if (Math.abs(e.clientX - dragStartX) > TAP_SLOP_PX) dragMoved = true;
+    // onScroll(deltaX) moves the cursor back in time for a positive delta, so
+    // passing the raw pointer delta makes the footage follow the finger.
+    if (dragMoved && e.clientX !== prevX) pbTimeline.onScroll(e.clientX - prevX);
+  });
+
+  // A tap only seeks once the LAST pointer lifts: releasing one finger of a
+  // pinch leaves dragMoved set, so it can't be mistaken for a tap.
+  const endPointer = (e) => {
+    if (!pointers.delete(e.pointerId)) return;
+    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    if (pointers.size) return;
+    if (!dragMoved) pbTimeline?.onSingleTapUp(canvasOffset(e));
+    dragMoved = false;
+  };
+  canvas.addEventListener("pointerup", endPointer);
+  canvas.addEventListener("pointercancel", endPointer);
+
   canvas.addEventListener("wheel", (e) => {
     if (!pbTimeline) return;
     e.preventDefault();
@@ -545,16 +671,14 @@ export function setupPlaybackBar() {
 
   // ----- Play / pause -----
   playBtn.addEventListener("click", () => {
-    const videos = $$("#wall .wall-tile video");
-    if (!videos.length) return;
-    const paused = videos[0].paused;
-    for (const v of videos) {
-      if (paused) v.play().catch(() => {});
-      else v.pause();
-    }
-    playBtn.innerHTML = icon(paused ? "pause" : "play");
-    playBtn.setAttribute("aria-label", paused ? t("pb.pause") : t("pb.play"));
-    setVodPaused(!paused);
+    // vodPaused is the source of truth, not the DOM. Reading videos[0].paused
+    // asked whichever tile happens to be first: one paused because the cursor
+    // sits in its coverage gap reported "everything is paused" while playback
+    // was in fact running, so the click flipped the glyph to "pause" and left
+    // setVodPaused a no-op. setVodPaused drives the videos and the cursor.
+    if (!vodInstances.size) return;
+    setVodPaused(!vodPaused);
+    setPlayButtonState(vodPaused);
   });
 
   // ----- Live button -----
@@ -562,26 +686,23 @@ export function setupPlaybackBar() {
     if (!pbTimeline) return;
     pbTimeline.setCurrent(Date.now());
     pbTimeline.draw();
-    playBtn.innerHTML = icon("play");
-    playBtn.setAttribute("aria-label", t("pb.play"));
+    setPlayButtonState(true);
   });
 
-  // ----- Speed control -----
+  // ----- Speed control (button group + mobile <select>, one writer) -----
   for (const btn of speedBtns) {
-    btn.addEventListener("click", () => {
-      pbSpeed = parseFloat(btn.dataset.speed);
-      for (const b of speedBtns) {
-        const active = b === btn;
-        b.classList.toggle("active", active);
-        b.setAttribute("aria-pressed", active ? "true" : "false");
-      }
-      // Apply to all existing VOD videos
-      for (const h of vodInstances.values()) {
-        const m = h && h.media;
-        if (m) m.playbackRate = pbSpeed;
-      }
-    });
+    btn.addEventListener("click", () => setPbSpeed(parseFloat(btn.dataset.speed)));
   }
+  $("#pb-speed-select")?.addEventListener("change", (e) => setPbSpeed(parseFloat(e.target.value)));
+
+  // ----- Prev / next recording (the j and l keys, as tappable buttons) -----
+  $("#pb-prev-rec")?.addEventListener("click", () => stepRecording(-1));
+  $("#pb-next-rec")?.addEventListener("click", () => stepRecording(1));
+
+  // ----- Timeline zoom (the - and + keys, as tappable buttons) -----
+  // increaseInterval widens the visible window, i.e. it zooms OUT.
+  $("#pb-zoom-out")?.addEventListener("click", () => pbTimeline?.increaseInterval());
+  $("#pb-zoom-in")?.addEventListener("click", () => pbTimeline?.decreaseInterval());
 
   // ----- Jump to date/time -----
   const gotoBtn = $("#pb-goto");
@@ -687,13 +808,16 @@ function toLocalDatetimeValue(msec) {
 //
 // The timeline cursor is driven by wall-clock, NOT by the player's
 // currentTime. This matters at gaps: the player seeks over the gap
-// (its currentTime jumps), but the cursor keeps advancing at 1x so
+// (its currentTime jumps), but the cursor keeps advancing smoothly so
 // the wall-clock of the playback remains monotonic. The cursor equals
 //
-//     playbackStartMsec + (Date.now() - playbackStartTime)
+//     playbackStartMsec + (Date.now() - playbackStartTime) * pbSpeed
 //
 // where playbackStartMsec is the wall-clock of the scrub position and
-// playbackStartTime is when this playback session started.
+// playbackStartTime is when this playback session started. The pbSpeed
+// factor is what keeps the cursor on the frame actually being shown when
+// the user picks 0.5x/1.5x/2x — the videos consume footage at that rate,
+// so the cursor must too (see vodCursorMsec / reanchorVodCursor).
 //
 // Per-tile "No recording" overlays are shown whenever the cursor's
 // wall-clock falls inside a coverage gap. The tile's video is paused
@@ -715,6 +839,29 @@ let vodPlaybackStartTime = 0;           // Date.now() at the start of the curren
 let vodPlaybackStartMsec = 0;           // wall-clock of the scrub position
 let vodPaused = false;                  // wall-clock cursor respects user pause
 let vodPausedAt = 0;                    // Date.now() when paused (for elapsed adjustment on resume)
+
+// vodCursorMsec maps a real-time instant to the wall-clock the playback is
+// showing. The videos run at pbSpeed, so a second of real time advances the
+// footage by pbSpeed seconds — without that factor the cursor (and everything
+// keyed off it: the gap state machine, "share this moment", the clip in/out
+// marks) drifts away from the frame on screen as soon as the speed leaves 1x.
+// `at` defaults to now; pass vodPausedAt to read the frozen cursor of a paused
+// timeline.
+function vodCursorMsec(at = Date.now()) {
+  return vodPlaybackStartMsec + (at - vodPlaybackStartTime) * pbSpeed;
+}
+
+// reanchorVodCursor re-bases the anchor onto the current cursor position, so a
+// pbSpeed change only applies from here on instead of retroactively rescaling
+// the time already played. Call it BEFORE assigning the new pbSpeed (it reads
+// the old one). While paused the cursor is frozen at vodPausedAt, so anchor
+// there — setVodPaused's resume adjustment then still lands on the same point.
+function reanchorVodCursor() {
+  if (!vodPlaybackStartTime) return; // nothing playing
+  const ref = vodPaused ? vodPausedAt : Date.now();
+  vodPlaybackStartMsec = vodCursorMsec(ref);
+  vodPlaybackStartTime = ref;
+}
 
 function tileOf(camId) {
   return $(`#wall .wall-tile[data-id="${CSS.escape(camId)}"]`);
@@ -950,8 +1097,7 @@ export function startVodPlayback(cams, startMsec) {
     vodInstances.set(cam.id, hls);
   }
   vodPaused = false;
-  const pbPlay = $("#pb-play");
-  if (pbPlay) { pbPlay.innerHTML = icon("pause"); pbPlay.setAttribute("aria-label", t("pb.pause")); }
+  setPlayButtonState(false);
   startVodCursor();
 }
 
@@ -969,7 +1115,7 @@ function startVodCursor() {
     if (!pbTimeline || pbTimeline.timerSelectedId) return;
     if (!vodPlaybackStartTime || vodPaused) return;
 
-    const cursorMsec = vodPlaybackStartMsec + (Date.now() - vodPlaybackStartTime);
+    const cursorMsec = vodCursorMsec();
     pbTimeline.setCurrent(cursorMsec);
     pbTimeline.scheduleDraw();
 
@@ -997,40 +1143,17 @@ export function initPlaybackKeys() {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
     if (!pbTimeline) return;
-    if (e.key === "j") {
+    if (e.key === "j" || e.key === "l") {
       e.preventDefault();
-      const records = pbTimeline.getBackgroundRecords(pbTimeline.timelineSelected);
-      const prev = pbTimeline.getPrevRecord(pbTimeline.getCurrent(), records || []);
-      if (prev) {
-        pbTimeline.setCurrent(prev.timestampMsec);
-        pbTimeline.draw();
-        startVodPlayback(pbCams, prev.timestampMsec);
-      }
+      stepRecording(e.key === "j" ? -1 : 1);
     } else if (e.key === "k" || e.key === " ") {
       e.preventDefault();
       const btn = $("#pb-play");
       if (btn) btn.click();
-    } else if (e.key === "l") {
-      e.preventDefault();
-      const records = pbTimeline.getBackgroundRecords(pbTimeline.timelineSelected);
-      const next = pbTimeline.getNextRecord(pbTimeline.getCurrent(), records || []);
-      if (next) {
-        pbTimeline.setCurrent(next.timestampMsec);
-        pbTimeline.draw();
-        startVodPlayback(pbCams, next.timestampMsec);
-      }
     } else if (e.key === "p" || e.key === "n") {
       // Jump between events (drawn as major markers on the timeline).
       e.preventDefault();
-      const events = pbTimeline.getMajor1Records(pbTimeline.timelineSelected);
-      const rec = e.key === "p"
-        ? pbTimeline.getPrevRecord(pbTimeline.getCurrent(), events || [])
-        : pbTimeline.getNextRecord(pbTimeline.getCurrent(), events || []);
-      if (rec) {
-        pbTimeline.setCurrent(rec.timestampMsec);
-        pbTimeline.draw();
-        startVodPlayback(pbCams, rec.timestampMsec);
-      }
+      stepRecording(e.key === "p" ? -1 : 1, true);
     } else if (e.key === "," || e.key === ".") {
       // Frame-step backward / forward. Only meaningful while paused.
       e.preventDefault();

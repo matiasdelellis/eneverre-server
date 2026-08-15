@@ -1,7 +1,10 @@
 import { $ } from "../util/dom.js";
+import { closeUserMenu } from "./user-menu.js";
 
-// Keyboard-shortcut help overlay plus the global `f` (fullscreen) shortcut.
-// Opened with `?`, closed with Esc, the close button, or a backdrop click.
+// Shortcut/gesture help overlay plus the global `f` (fullscreen) shortcut.
+// Opened with `?` or from the user menu — the menu entry is what makes it
+// reachable on a phone, which has no way to press `?`. Closed with Esc, the
+// close button, or a backdrop click.
 
 function isTyping(t) {
   return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
@@ -29,6 +32,7 @@ function focusedTile() {
 export function initHelp() {
   const ov = $("#help-overlay");
   $("#help-close")?.addEventListener("click", closeHelp);
+  $("#help-btn")?.addEventListener("click", () => { closeUserMenu(); openHelp(); });
   ov?.addEventListener("click", (e) => { if (e.target === ov) closeHelp(); });
 
   document.addEventListener("keydown", (e) => {

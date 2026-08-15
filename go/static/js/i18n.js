@@ -37,6 +37,17 @@ function detect() {
 
 let lang = detect();
 
+// Mirror the active catalog onto <html lang>. index.html can only ship a
+// static default ("en"), so without this a browser that auto-detects Spanish
+// (or a user whose choice is restored from localStorage) renders Spanish text
+// declared as English — which is what screen readers announce with and what
+// the browser's "translate this page?" prompt keys off. Applied once at boot
+// and again on every setLang().
+function applyDocumentLang() {
+  document.documentElement.lang = lang;
+}
+applyDocumentLang();
+
 export function getLang() {
   return lang;
 }
@@ -51,7 +62,7 @@ export function setLang(next) {
   if (!supported.includes(next) || next === lang) return;
   lang = next;
   set(LANG_KEY, next);
-  document.documentElement.lang = lang;
+  applyDocumentLang();
   applyI18n();
 }
 
