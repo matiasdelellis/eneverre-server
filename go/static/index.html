@@ -402,9 +402,13 @@
             <button type="button" id="cam-probe-btn" class="ghost" data-i18n="wizard.test">Test connection</button>
             <span id="cam-probe-result" class="cam-probe-result muted"></span>
           </div>
-          <label><span data-i18n="wizard.backchannel">Backchannel URL (two-way audio)</span>
-            <input name="backchannel" data-i18n-placeholder="wizard.backchannel_placeholder" placeholder="rtsp://user:pass@192.168.1.50:554/ch0" />
-          </label>
+          <details class="cam-advanced">
+            <summary data-i18n="wizard.advanced_backchannel">Advanced — backchannel URL</summary>
+            <label><span data-i18n="wizard.backchannel">Backchannel URL (two-way audio)</span>
+              <input name="backchannel" data-i18n-placeholder="wizard.backchannel_placeholder" placeholder="rtsp://user:pass@192.168.1.50:554/ch0" />
+              <small class="muted" data-i18n="wizard.backchannel_hint">Optional. Talk usually works on the camera's own RTSP URL — run "Test connection" and the field fills itself. Set it only to point elsewhere.</small>
+            </label>
+          </details>
           <label><span data-i18n="wizard.snapshot_url">Snapshot URL (still JPEG)</span>
             <input name="snapshot_url" data-i18n-placeholder="wizard.snapshot_url_placeholder" placeholder="http://user:pass@192.168.1.50/snapshot.jpg" />
             <small class="muted" data-i18n="wizard.snapshot_url_hint">Optional. The camera's own JPEG endpoint (ONVIF/CGI). Enables thumbnails for non-Thingino cameras.</small>

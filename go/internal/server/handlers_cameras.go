@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"math"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"eneverre/internal/backchannel"
 	"eneverre/internal/camera"
 	"eneverre/internal/media"
 	"eneverre/internal/thingino"
@@ -365,10 +367,14 @@ func (a *App) handleDeleteCamera(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleProbeCamera tests an RTSP source (admin only) for the wizard's "test
-// connection" step. It always answers 200: {"ok": true, codecs, width, height}
-// on success, or {"ok": false, "error": "..."} when the camera was unreachable
-// or rejected the credentials — so the UI can show the reason inline rather
-// than treating it as a request failure.
+// connection" step. It always answers 200: {"ok": true, codecs, width, height,
+// backchannel: {supported, codecs}} on success, or {"ok": false, "error":
+// "..."} when the camera was unreachable or rejected the credentials — so the
+// UI can show the reason inline rather than treating it as a request failure.
+// backchannel reports whether the same URL doubles as the ONVIF two-way-audio
+// backchannel (it does on thingino/prudynt) and which talk codecs it accepts,
+// so the wizard can fill the backchannel field without the operator retyping
+// the URL.
 func (a *App) handleProbeCamera(w http.ResponseWriter, r *http.Request) {
 	if a.requireAdmin(w, r) == nil {
 		return
@@ -385,11 +391,22 @@ func (a *App) handleProbeCamera(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+
+	// Backchannel probe: same handshake the server runs at startup, bounded by
+	// the same 8s budget so a hung camera can't stall the wizard.
+	bc := map[string]any{"supported": false}
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	if codecs, err := backchannel.ProbeCodecs(ctx, req.Source); err == nil && len(codecs) > 0 {
+		bc = map[string]any{"supported": true, "codecs": codecs}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":     true,
-		"codecs": res.Codecs,
-		"width":  res.Width,
-		"height": res.Height,
+		"ok":          true,
+		"codecs":      res.Codecs,
+		"width":       res.Width,
+		"height":      res.Height,
+		"backchannel": bc,
 	})
 }
 
@@ -476,6 +493,11 @@ func (a *App) publicCamera(c camera.Camera, reqHost string) camera.Camera {
 	}
 	a.talkCodecsMu.RLock()
 	out.Capabilities.TalkCodecs = a.talkCodecs[c.ID]
+	// Talk capability is advertised when the camera defines a backchannel URL
+	// OR the source probe found a backchannel on the source itself (see
+	// backchannelURL in server.go) — the explicit config is an override, not a
+	// requirement.
+	out.Capabilities.Talk = out.Capabilities.Talk || a.talkCodecs[c.ID] != nil
 	a.talkCodecsMu.RUnlock()
 	// Playback is advertised only when the camera actually has recordings on
 	// disk. The per-camera `playback` flag is an opt-out layered on top (an

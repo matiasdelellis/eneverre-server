@@ -463,15 +463,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/Message'
 
-  /api/cameras/probe:
+   /api/cameras/probe:
     post:
       summary: Probe an RTSP source (admin)
       description: >-
         Tests an RTSP source URL for the "test connection" step of the add/edit
         wizard, without creating anything. Always answers 200: on success the
-        detected codecs and dimensions, otherwise `{ok:false, error}` so the UI
-        can show the reason inline. Requires an admin token (403 for a
-        non-admin).
+        detected codecs, dimensions and two-way-audio backchannel info, otherwise
+        `{ok:false, error}` so the UI can show the reason inline. Requires an
+        admin token (403 for a non-admin).
       requestBody:
         required: true
         content:
@@ -506,6 +506,22 @@ paths:
                     type: integer
                   height:
                     type: integer
+                  backchannel:
+                    type: object
+                    description: >-
+                      Whether the same URL doubles as the ONVIF two-way-audio
+                      backchannel (it does on thingino/prudynt) and which talk
+                      codecs it accepts. supported is false when the URL has no
+                      send-capable audio track.
+                    properties:
+                      supported:
+                        type: boolean
+                      codecs:
+                        type: array
+                        items:
+                          type: string
+                          enum: [aac, g711]
+                        description: Talk codecs (present when supported is true).
                   error:
                     type: string
                     description: Failure reason (present when ok is false).
@@ -878,9 +894,11 @@ paths:
       summary: Push-to-talk WebSocket (two-way audio)
       description: >
         Upgrades to a WebSocket that relays client microphone audio to the
-        camera's ONVIF Profile T backchannel. Enabled only for cameras whose INI
-        defines a `backchannel` URL (`capabilities.talk = true`); at most one
-        session per camera. Because a browser cannot set an `Authorization`
+        camera's ONVIF Profile T backchannel. Enabled when the camera defines a
+        `backchannel` URL (an advanced override) or the startup/create-time
+        probe found the backchannel on the camera's own `source` URL
+        (`capabilities.talk = true`); at most one session per camera. Because a
+        browser cannot set an `Authorization`
         header on a WebSocket upgrade, the access token is carried in the
         `Sec-WebSocket-Protocol` header — the client offers `["eneverre-talk",
         <token>]` and the server echoes only `eneverre-talk` — which keeps the
@@ -2056,7 +2074,9 @@ components:
         talk:
           type: boolean
           description: >-
-            True when the camera has a two-way-audio backchannel configured
+            True when the camera has a two-way-audio backchannel: either a
+            `backchannel` URL is configured (advanced override) or the
+            startup/create-time probe found one on the camera's `source` URL
             (the `/api/camera/{id}/talk` WebSocket is available).
         talk_codecs:
           type: array
@@ -2130,7 +2150,10 @@ components:
           type: string
           description: >-
             Optional direct RTSP URL to the camera's ONVIF Profile T two-way-audio
-            backchannel; its presence enables the `talk` capability.
+            backchannel — an advanced override. When absent, the server probes the
+            camera's `source` URL and uses it as the backchannel when it carries a
+            send-capable audio track (the normal thingino case). Set it only when
+            the backchannel URL must differ from `source`.
         snapshot_url:
           type: string
           description: >-

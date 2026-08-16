@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,7 +39,18 @@ type Session struct {
 	stop          chan struct{}
 	done          chan struct{}
 	keepaliveDone chan struct{}
+	srDone        chan struct{}
 	closeOnce     sync.Once
+
+	// AAC path framing (from the track's a=fmtp, see parseAACParams). Zero
+	// values on a G.711 session.
+	aacParams aacParams
+
+	// RTCP Sender Report counters. Written by the RTP send loop, read by the
+	// SR goroutine — atomics so the two can run lock-free.
+	lastRTPTS   atomic.Uint32
+	sentPackets atomic.Uint32
+	sentOctets  atomic.Uint32
 }
 
 // sleepCtx blocks for d or until ctx is cancelled, returning ctx.Err() if the
@@ -133,19 +145,36 @@ func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 	medias := parseSDP(sdpRaw)
 	for _, m := range medias {
 		slog.Debug("sdp media", "type", m.mediaType, "dir", m.direction,
-			"control", m.control, "codec", m.codecName, "clock", m.clockRate, "pt", m.payloads)
+			"control", m.control, "rtpmap", m.formatList(), "pt", m.payloads)
 	}
 
-	bcMedia, err := findBackchannelMedia(medias, forceCodec)
+	bcMedia, want, err := findBackchannelMedia(medias, forceCodec)
 	if err != nil {
 		c.conn.Close()
 		return nil, err
 	}
 
-	codec, pt := chooseCodec(bcMedia)
+	codec, pt := chooseCodec(bcMedia, want)
 	s.codec = codec
 	s.pt = pt
-	s.clockRate = bcMedia.clockRate
+	f, ok := bcMedia.format(int(pt))
+	if ok {
+		s.clockRate = f.clockRate
+	}
+	if codec == "AAC" {
+		if !ok || f.fmtp == "" {
+			c.conn.Close()
+			return nil, fmt.Errorf("aac fmtp: track %s has no a=fmtp line for pt %d", bcMedia.control, pt)
+		}
+		p, err := parseAACParams(f.fmtp)
+		if err != nil {
+			c.conn.Close()
+			return nil, fmt.Errorf("track %s pt %d: %w", bcMedia.control, pt, err)
+		}
+		s.aacParams = p
+		slog.Debug("backchannel aac framing", "sizeLen", p.sizeLen,
+			"indexLen", p.indexLen, "frameSamples", p.frameSamples)
+	}
 
 	controlURL := resolveControlURL(c.baseURL, bcMedia.control)
 	transport := "RTP/AVP/TCP;unicast;interleaved=0-1"
@@ -179,12 +208,20 @@ func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 	s.keepaliveDone = make(chan struct{})
 	go keepalive(c, uri, s.keepaliveDone)
 
+	// RFC 3550 §6.4.1: as the RTP sender we must emit periodic Sender Reports
+	// (not Receiver Reports); some cameras — newer prudynt builds among them —
+	// drop the session if they see RTP without any RTCP liveness. One SR every
+	// 5 s on the interleaved channel paired with RTP (0-1 negotiation).
+	ssrc := rand.Uint32()
+	s.srDone = make(chan struct{})
+	go s.srLoop(ssrc)
+
 	if codec == "AAC" {
 		s.auIn = make(chan []byte, 64)
-		go s.sendLoopAAC()
+		go s.sendLoopAAC(ssrc)
 	} else {
 		s.audioIn = make(chan []int16, 64)
-		go s.sendLoop()
+		go s.sendLoop(ssrc)
 	}
 
 	slog.Debug("backchannel live", "codec", codec, "pt", pt, "clock", s.clockRate)
@@ -198,9 +235,10 @@ func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 // MPEG4-GENERIC track, "g711" for PCMA/PCMU. Labels are deduplicated and ordered
 // as they appear in the SDP. No RTP is set up; the connection is closed before
 // returning. Used at startup to populate camera capabilities so clients need not
-// guess which codecs a camera accepts.
-func ProbeCodecs(rawURL string) ([]string, error) {
-	c, err := dialRTSP(context.Background(), rawURL)
+// guess which codecs a camera accepts, and by the camera wizard's probe step.
+// ctx bounds the whole handshake, not just the TCP dial.
+func ProbeCodecs(ctx context.Context, rawURL string) ([]string, error) {
+	c, err := dialRTSP(ctx, rawURL)
 	if err != nil {
 		return nil, err
 	}
@@ -218,30 +256,46 @@ func ProbeCodecs(rawURL string) ([]string, error) {
 		return nil, fmt.Errorf("DESCRIBE: %w", err)
 	}
 
-	var codecs []string
+	return probeLabels(parseSDP(sdpRaw)), nil
+}
+
+// probeLabels maps the send-capable audio tracks of a parsed SDP to the
+// client-facing codec labels: "aac" for an MPEG4-GENERIC track, "g711" for
+// PCMA/PCMU. One track can yield several labels (thingino advertises a single
+// backchannel track carrying AAC, Opus and G.711 payload types); labels are
+// deduplicated and ordered as they appear in the SDP. Unsupported codecs
+// (e.g. Opus) are skipped.
+func probeLabels(medias []sdpMedia) []string {
+	var labels []string
 	seen := map[string]bool{}
-	for _, m := range parseSDP(sdpRaw) {
+	for _, m := range medias {
 		if m.mediaType != "audio" || (m.direction != "sendonly" && m.direction != "sendrecv") {
 			continue
 		}
-		var label string
-		switch m.codecName {
-		case "MPEG4-GENERIC", "AAC":
-			label = "aac"
-		case "PCMA", "PCMU":
-			label = "g711"
-		default:
-			continue
-		}
-		if !seen[label] {
-			seen[label] = true
-			codecs = append(codecs, label)
+		for _, pt := range m.payloads {
+			f, ok := m.formats[pt]
+			if !ok {
+				continue
+			}
+			var label string
+			switch f.name {
+			case "MPEG4-GENERIC", "AAC":
+				label = "aac"
+			case "PCMA", "PCMU":
+				label = "g711"
+			default:
+				continue
+			}
+			if !seen[label] {
+				seen[label] = true
+				labels = append(labels, label)
+			}
 		}
 	}
-	return codecs, nil
+	return labels
 }
 
-func (s *Session) sendLoop() {
+func (s *Session) sendLoop(ssrc uint32) {
 	defer close(s.done)
 
 	ticker := time.NewTicker(20 * time.Millisecond)
@@ -250,7 +304,6 @@ func (s *Session) sendLoop() {
 	var buf []int16
 	maxBuf := MaxBufferSamples
 
-	ssrc := rand.Uint32()
 	seq := uint16(rand.Intn(65536))
 	ts := uint32(rand.Intn(65536))
 
@@ -286,6 +339,9 @@ func (s *Session) sendLoop() {
 				slog.Warn("backchannel RTP send failed", "err", err)
 				return
 			}
+			s.lastRTPTS.Store(ts)
+			s.sentPackets.Add(1)
+			s.sentOctets.Add(uint32(len(payload)))
 			seq++
 			ts += FrameSamples
 		}
@@ -314,10 +370,9 @@ func (s *Session) FeedPCM(pcm []byte, nativeRate int) {
 	}
 }
 
-func (s *Session) sendLoopAAC() {
+func (s *Session) sendLoopAAC(ssrc uint32) {
 	defer close(s.done)
 
-	ssrc := rand.Uint32()
 	seq := uint16(rand.Intn(65536))
 	ts := uint32(rand.Intn(65536))
 
@@ -332,13 +387,40 @@ func (s *Session) sendLoopAAC() {
 			if len(au) == 0 {
 				continue
 			}
-			packet := buildRTPPacket(s.pt, seq, ts, ssrc, true, aacRTPPayload(au))
+			packet := buildRTPPacket(s.pt, seq, ts, ssrc, true,
+				aacRTPPayload(au, s.aacParams.sizeLen, s.aacParams.indexLen))
 			if err := s.writeInterleaved(0, packet); err != nil {
 				slog.Warn("backchannel AAC send failed", "err", err)
 				return
 			}
+			s.lastRTPTS.Store(ts)
+			s.sentPackets.Add(1)
+			s.sentOctets.Add(uint32(len(packet) - 12))
 			seq++
-			ts += AACFrameSamples
+			ts += uint32(s.aacParams.frameSamples)
+		}
+	}
+}
+
+// srLoop emits a periodic RTCP Sender Report (RFC 3550 §6.4.1) every 5 s on
+// the interleaved channel paired with RTP (0-1 negotiation). It exits when
+// the session closes; a send failure means the connection is gone, so it
+// exits quietly at debug level.
+func (s *Session) srLoop(ssrc uint32) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			report := buildRTCPReport(ssrc, ntpNow(),
+				s.lastRTPTS.Load(), s.sentPackets.Load(), s.sentOctets.Load())
+			if err := s.writeInterleaved(1, report); err != nil {
+				slog.Debug("backchannel rtcp sr send failed", "err", err)
+				return
+			}
+			slog.Debug("rtcp sr sent")
+		case <-s.srDone:
+			return
 		}
 	}
 }
@@ -380,6 +462,9 @@ func (s *Session) FeedAU(au []byte) {
 // deferred Close and the shutdown path's CloseAllTalk.
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
+		if s.srDone != nil {
+			close(s.srDone)
+		}
 		close(s.stop)
 		<-s.done
 		close(s.keepaliveDone)

@@ -113,7 +113,11 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
-	if !ok || !cam.Capabilities.Talk || cam.Backchannel == "" {
+	talkURL := ""
+	if ok {
+		talkURL = a.backchannelURL(cam)
+	}
+	if !ok || talkURL == "" {
 		httpError(w, http.StatusNotFound, "Two-way audio not available")
 		return
 	}
@@ -182,7 +186,7 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 	// does not cancel anything by itself).
 	dialCtx, cancelDial := context.WithTimeout(r.Context(), talkDialTimeout)
 	defer cancelDial()
-	sess, err := backchannel.Dial(dialCtx, cam.Backchannel, forceCodec)
+	sess, err := backchannel.Dial(dialCtx, talkURL, forceCodec)
 	if err != nil {
 		slog.Warn("talk backchannel dial failed", "camera", cam.ID, "err", err)
 		conn.WriteMessage(websocket.CloseMessage,

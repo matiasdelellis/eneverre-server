@@ -1992,6 +1992,7 @@ label.switch input:disabled + .switch-track { opacity: 0.5; cursor: not-allowed;
 .cam-advanced { margin-top: 10px; border: 1px solid var(--border, rgba(255,255,255,0.12)); border-radius: 8px; padding: 8px 12px; }
 .cam-advanced > summary { cursor: pointer; font-weight: 600; user-select: none; }
 .cam-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.cam-advanced > label { margin-top: 8px; }
 .cam-advanced .cam-row-2 { margin-top: 8px; }
 
 .cam-probe { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

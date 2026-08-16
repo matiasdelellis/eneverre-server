@@ -434,29 +434,58 @@ func (a *App) startEventCleaner(interval time.Duration) {
 	}
 }
 
-// seedTalkCodecs probes each backchannel-capable camera once to discover which
-// push-to-talk codecs it accepts, so /api/cameras can tell clients whether AAC
-// is available instead of leaving them to guess. Cameras are probed
-// concurrently; failures (unreachable / auth) are logged and leave the list
-// empty, which clients treat as G.711-only.
+// seedTalkCodecs probes each camera once to discover which push-to-talk
+// codecs it accepts, so /api/cameras can tell clients whether AAC is available
+// instead of leaving them to guess. Cameras are probed concurrently; failures
+// (unreachable / auth) are logged and leave the list empty, which clients treat
+// as G.711-only.
 func (a *App) seedTalkCodecs() {
 	for _, c := range a.listCameras() {
 		a.seedTalkCodecsFor(c)
 	}
 }
 
+// backchannelURL resolves the RTSP URL used for two-way audio: the explicit
+// `backchannel` config when set, otherwise the camera's `source` URL when the
+// startup/create-time probe found a send-capable audio track on it. An empty
+// string means talk is unavailable for the camera.
+func (a *App) backchannelURL(c camera.Camera) string {
+	if c.Backchannel != "" {
+		return c.Backchannel
+	}
+	if c.Source == "" {
+		return ""
+	}
+	a.talkCodecsMu.RLock()
+	_, ok := a.talkCodecs[c.ID]
+	a.talkCodecsMu.RUnlock()
+	if !ok {
+		return ""
+	}
+	return c.Source
+}
+
 // seedTalkCodecsFor probes one camera's backchannel codecs in the background
-// (no-op for cameras without talk). Called at startup by seedTalkCodecs and
-// again when a camera is created, so a newly added talk-capable camera advertises
-// its codecs without a restart.
+// (no-op for cameras with neither a backchannel nor a source URL). Called at
+// startup by seedTalkCodecs and again when a camera is created or updated, so a
+// newly added talk-capable camera advertises its codecs without a restart.
+// When the camera defines no explicit backchannel URL, the source URL itself is
+// probed — on thingino the ONVIF backchannel lives on the same RTSP endpoint —
+// and a successful probe turns talk on for the camera (backchannelURL above).
 func (a *App) seedTalkCodecsFor(c camera.Camera) {
-	if !c.Capabilities.Talk || c.Backchannel == "" {
+	url := c.Backchannel
+	if url == "" {
+		url = c.Source
+	}
+	if url == "" {
 		return
 	}
 	go func() {
-		codecs, err := backchannel.ProbeCodecs(c.Backchannel)
-		if err != nil {
-			slog.Warn("talk codec probe failed", "camera", c.ID, "err", err)
+		codecs, err := backchannel.ProbeCodecs(context.Background(), url)
+		if err != nil || len(codecs) == 0 {
+			if err != nil {
+				slog.Warn("talk codec probe failed", "camera", c.ID, "err", err)
+			}
 			return
 		}
 		a.talkCodecsMu.Lock()

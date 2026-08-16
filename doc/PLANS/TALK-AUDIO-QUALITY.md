@@ -17,7 +17,7 @@ browser client is `go/static/js/util/talk-client.js`.
 | — | AAC first-word clip → client silence warm-up | client + `TALK.md` / `session.go` | High (no clip, no added latency) | done | **done** |
 | — | AAC buffer drop-oldest | `session.go` | Medium (freshness under backlog) | done | **done** |
 | 2 | Stateful resampling | `session.go` / `resample.go` | Low (subtle artifact) | ~15 lines | deferred |
-| 3 | Parse AAC `a=fmtp` | `sdp.go` / `aac.go` | Medium (robustness on non-standard cameras) | ~40 lines | deferred |
+| 3 | Parse AAC `a=fmtp` | `sdp.go` / `aac.go` | Medium (robustness on non-standard cameras) | ~40 lines | **done** (see below) |
 | A | `AudioWorklet` capture | `talk-client.js` (+ new worklet file) | High (latency + robustness) | refactor | deferred |
 
 - **#A (AudioWorklet)** is the biggest lever on talk latency and glitch-freeness,
@@ -25,8 +25,9 @@ browser client is `go/static/js/util/talk-client.js`.
 - **#2 (stateful resampling)** is *correct in principle* — today's per-chunk
   resampling has textbook phase drift — but for 8 kHz telephony voice the audible
   benefit is marginal. Do it only if artifacts are heard in practice.
-- **#3 (parse AAC fmtp)** is robustness for cameras that deviate from the de-facto
-  AAC-hbr defaults. Low practical risk today; do it if such a camera turns up.
+- **#3 (parse AAC fmtp)** landed as Change 2 of
+  [`TALK-BACKCHANNEL-LOCAL-GAPS.md`](TALK-BACKCHANNEL-LOCAL-GAPS.md) — see the
+  section below.
 
 ---
 
@@ -151,10 +152,21 @@ Parse the MPEG4-GENERIC track's `a=fmtp` (the `config`, `sizeLength`,
 - at minimum, **log** the parsed config and **fail `Dial` with a clear error**
   when it isn't AAC-LC / 13 / 3, instead of emitting undecodable RTP.
 
+### Implemented
+
+Both options, as Change 2 of `TALK-BACKCHANNEL-LOCAL-GAPS.md`:
+`parseAACParams` (`aac.go`) parses `sizelength`/`indexlength` (case-insensitive
+keys, defaults 13/3), requires `mode=AAC-hbr` or absent, and **fails `Dial` with
+a clear error** when `config=` is missing — no more silently mis-framed RTP.
+`aacRTPPayload(au, sizeLen, indexLen)` frames the AU header from the advertised
+lengths, and the frame length is derived from the AudioSpecificConfig's
+`audioObjectType` (AAC-LD → 512, SBR/PS → 2048, else 1024) so the RTP timestamp
+increment stays correct on non-LC tracks.
+
 ### Verdict
 
-Deferred. Robustness/observability for non-standard cameras; implement when one
-actually turns up (the error path alone is a cheap first step).
+Done — implemented as part of the local-gaps plan (see above), with tests
+(`TestParseAACParams`, `TestAACRTPPayloadCustomFraming`).
 
 ---
 

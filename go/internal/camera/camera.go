@@ -27,8 +27,10 @@ type Capabilities struct {
 	Thumbnail bool `json:"thumbnail"`
 	Playback  bool `json:"playback"`
 	PTZ       bool `json:"ptz"`
-	// Talk is true when the camera INI defines a `backchannel` URL, enabling the
-	// two-way-audio (ONVIF Profile T) push-to-talk endpoint.
+	// Talk is true when the camera defines a `backchannel` URL, enabling the
+	// two-way-audio (ONVIF Profile T) push-to-talk endpoint. The server also
+	// raises it when the source-probe finds a backchannel on the camera's own
+	// source URL (see server.backchannelURL).
 	Talk bool `json:"talk"`
 	// TalkCodecs lists the push-to-talk codecs the camera accepts, discovered by
 	// probing its backchannel SDP at startup: "aac" (MPEG4-GENERIC, wideband) and
@@ -90,7 +92,9 @@ type Camera struct {
 	// Backchannel is the direct RTSP URL (with credentials) used for two-way
 	// audio. It must point at the camera itself, so it is stored raw and never
 	// rewritten by URL helpers. Tagged json:"-" so the credentials never leak in
-	// API responses.
+	// API responses. Optional: when empty, the server probes Source for a
+	// send-capable audio track and uses Source as the backchannel (see
+	// server.backchannelURL) — the explicit URL is an override.
 	Backchannel string `json:"-"`
 
 	// Source is the direct RTSP URL (with credentials) the embedded media engine

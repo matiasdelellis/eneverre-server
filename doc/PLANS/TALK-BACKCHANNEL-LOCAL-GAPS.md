@@ -1,9 +1,10 @@
 # Talk backchannel — fill the known gaps locally
 
-Status: **planned, not implemented.** The push-to-talk backchannel in
+Status: **implemented.** The push-to-talk backchannel in
 `go/internal/backchannel` works against thingino/prudynt today (hand-rolled RTSP
-client, SDP parser, RTP send loop). Several gaps are known and **additive** to
-fix without touching the public API or the send loop.
+client, SDP parser, RTP send loop). All four gaps below are closed: per-PT codec
+table (a functional fix, see Change 4), AAC `a=fmtp` parsing, RTCP Sender
+Reports, and Digest `qop=auth`. Each change was additive — no public API change.
 
 This is the **conservative** plan: extend the existing hand-rolled code where
 the gaps are. For the alternative — replace the hand-rolled client with
@@ -38,13 +39,27 @@ audio-quality roadmap (stateful resampling, AudioWorklet, etc., which are
 
 ---
 
-## Change 1 — Send RTCP SR (Sender Reports)
+## Change 1 — Send RTCP SR (Sender Reports) (**done**)
 
 ### Why
 
 RFC 3550 §6.4.1. We are the **sender** of the backchannel audio, so we send
 SR (not RR). Some cameras (notably newer prudynt) drop the session if they
 see RTP without periodic SR. We send nothing today.
+
+### Implemented
+
+`rtcp.go` carries `buildRTCPReport` (fixed 28-byte SR: V=2/PT=200/RC=0,
+sender SSRC, `ntpNow()` wall clock, last RTP timestamp, packet/octet
+counters) and `ntpNow()`. `Dial` generates the session SSRC once and starts
+`s.srLoop(ssrc)`: a ticker sends one SR every 5 s on interleaved channel 1
+(RTP rides channel 0), exits via `s.srDone` on `Close`. The send loops
+update `lastRTPTS`/`sentPackets`/`sentOctets` with atomics (lock-free
+hand-off to the SR goroutine); octets count RTP payload bytes.
+
+Deviations: none. Wireshark verification against a live camera is still
+pending; unit tests pin the packet layout (`TestBuildRTCPReport`,
+`TestNTPNow`).
 
 ### Design
 
@@ -83,7 +98,7 @@ see RTP without periodic SR. We send nothing today.
 
 ---
 
-## Change 2 — Parse the AAC `a=fmtp` from the SDP
+## Change 2 — Parse the AAC `a=fmtp` from the SDP (**done**)
 
 ### Why
 
@@ -96,6 +111,26 @@ camera cannot decode — with **no error surfaced**.
 Also: the plan currently assumes `AACFrameSamples = 1024` (AAC-LC). HE-AAC
 (2048) or AAC-LD (512) would make the RTP timestamp increment wrong →
 silent drift.
+
+### Implemented
+
+`a=fmtp:<pt>` params are stored **per payload type** on `sdpFormat.fmtp`
+(the table from Change 4 already keys by PT). `parseAACParams` (`aac.go`)
+parses RFC 3640 §4.1: `sizelength`/`indexlength` default to 13/3 (keys are
+case-insensitive — the real thingino SDP sends lowercase `sizelength`),
+`mode` must be `AAC-hbr` or absent, and `config=` is **required**. `Dial`
+fails with a clear error when the chosen AAC PT has no fmtp/config, or when
+the parsed params are invalid. Frame length comes from the
+AudioSpecificConfig's `audioObjectType` (AAC-LD → 512, SBR/PS → 2048, else
+1024); `aacRTPPayload(au, sizeLen, indexLen)` frames the AU header
+generically and `sendLoopAAC` increments the RTP timestamp by
+`aacParams.frameSamples`.
+
+Deviations: non-`AAC-hbr` modes **fail closed** with an error instead of
+the planned "log and proceed on an allowlist" (there is no mode variant we
+can remux transparently, so the allowlist would be empty). Tests:
+`TestParseAACParams` (thingino fmtp, HE-AAC, AAC-LD, custom sizes, and the
+negative paths), `TestAACRTPPayloadCustomFraming`.
 
 ### Design
 
@@ -148,7 +183,7 @@ fields onto the returned `codec` and `pt`. Then in `aac.go`:
 
 ---
 
-## Change 3 — Digest auth qop=auth + nonce counter
+## Change 3 — Digest auth qop=auth + nonce counter (**done**)
 
 ### Why
 
@@ -157,6 +192,29 @@ auth without `qop`. RFC 7616 — and a growing number of cameras (recent
 thingino builds) — require `qop=auth` with a `nc=` counter and a
 `cnonce=` on each request. Without it, the camera returns `401` with
 `stale=true` on the second request and the session loops.
+
+### Implemented
+
+`rtspClient` grew `qop`/`nc`/`cnonce` plus an `authMu` (the keepalive
+OPTIONS and the Close-time TEARDOWN build Authorization headers from
+different goroutines). `authHeader` takes the `qop=auth` branch:
+`response = MD5(HA1 : nonce : nc : cnonce : qop : HA2)` with `nc` as
+8-hex-digits incrementing per request and a 16-byte crypto/rand `cnonce`.
+`handleAuth` parses `qop=` from the `WWW-Authenticate` challenge and
+distinguishes a fresh nonce (reset `nc=1`, regenerate `cnonce`) from a
+stale retry under the same nonce (keep counting). The no-qop MD5 path is
+unchanged.
+
+Deviations: the test vector is RFC 2617 §3.5 (the MD5 `qop=auth` example) —
+RFC 7616 §3.9.1 vectors are SHA-256, and this client speaks MD5. Tests:
+`TestAuthHeaderDigestQop` (RFC vector), `TestAuthHeaderDigestLegacy`
+(RFC 2069 vector), `TestHandleAuthQop` (stale vs fresh nonce semantics).
+
+Also fixed while verifying against a live thingino camera: `options()` sent
+no Authorization header, and that camera 401s OPTIONS without one — so `Dial`
+and `ProbeCodecs` failed before DESCRIBE ever ran. `options()` now uses the
+same auth-retry pattern as `describe()` (first attempt gets the challenge,
+the retry carries the credentials).
 
 ### Design
 
@@ -207,83 +265,71 @@ fails with the underlying auth error.
 
 ---
 
-## Change 4 — Typed codec selection (helper, not a new type system)
+## Change 4 — Per-payload-type codec table (**done**)
 
 ### Why
 
-`findBackchannelMedia` (`sdp.go:81`) does string matching on
-`m.codecName`. It works, but it duplicates what a typed
-`description.Media` (gortsplib's type) would do. We do **not** want to
-adopt gortsplib here — that is the alternative plan — but a small
-internal typed value can make the selection logic easier to read and
-extend.
+`findBackchannelMedia` (`sdp.go`) did string matching on a single
+`m.codecName`, but `parseSDP` overwrote that field with **every** `a=rtpmap`
+line, so only the *last* codec of a track survived. Verified against a real
+thingino prudynt camera (`rtsp://thingino:thingino@192.168.1.91/ch0`,
+DESCRIBE with the ONVIF backchannel Require): its backchannel `track0` is one
+`a=sendonly` audio track advertising **four** payload types — AAC
+mpeg4-generic/48k (PT 97), Opus (102), PCMU (0), PCMA (8). The old code
+selected PCMA but `chooseCodec` returned `payloads[0]` = **97**, so A-law bytes
+went out labelled as AAC — the camera can't decode that. `forceCodec="PCMU"`
+and `"AAC"` also failed, because the track's codec table had collapsed to
+PCMA. This was a functional bug, not a readability one.
 
-### Design
+### What was done
 
-Replace the `sdpMedia` field-by-field string compares with a tiny
-`format` helper:
+`sdpMedia` now carries `formats map[int]sdpFormat`, a per-payload-type table
+built from every `a=rtpmap` line. `findBackchannelMedia` returns the track
+*and* the codec hint (PCMA preferred over PCMU within a track, G.711 over
+AAC across tracks), and `chooseCodec(m, want)` resolves the **matching** PT.
+`ProbeCodecs`' labeling was extracted to `probeLabels`, which walks the whole
+codec table — so this camera's capabilities now correctly report
+`["aac", "g711"]` (Opus is skipped) instead of just `["g711"]`.
 
-```go
-type bcFormat struct {
-    codec    string // "PCMA" / "PCMU" / "AAC" / "OPUS"
-    sampleHz int    // 8000 for G.711, parsed for AAC/Opus
-    mulaw    bool   // G.711 only
-}
-
-func (m sdpMedia) backchannelFormat() (bcFormat, bool) { ... }
-```
-
-The selection logic (`sdp.go:108-122`) becomes a loop over
-`backchannelFormat()` results with the existing preference order
-(G.711 → AAC → any audio) preserved.
-
-This is **purely a refactor** of `sdp.go` — no behavior change, no
-additional tests needed beyond what `TestFindBackchannelMedia*` already
-covers.
-
-### Cost
-
-- ~30 lines in `sdp.go` (one helper + a small rewrite of
-  `findBackchannelMedia`).
-- No new tests (existing `TestFindBackchannelMedia` and
-  `TestFindBackchannelMediaAAC` exercise all paths).
+Tests: `TestThinginoMultiCodecBackchannel` pins the verbatim camera SDP
+(auto → PCMA/8, forced PCMA/PCMU/AAC → 8/0/97), `TestChooseCodec` gained the
+multi-codec cases, and `TestProbeLabels` covers the single-/multi-track
+shapes. Static-PT inference and the legacy fallback (PCMA + first PT for
+unknown tracks) are preserved.
 
 ### Verification
 
-- The two existing `TestFindBackchannelMedia*` tests pass without
-  modification.
-- Manual smoke against thingino cameras (PR validation).
+- `go test ./internal/backchannel` (all pass, including the real-camera fixture).
+- Full RTSP handshake against `192.168.1.91` done manually (OPTIONS/DESCRIBE
+  with Require → 200, SETUP `track0` interleaved=0-1 → 200, PLAY → 200,
+  RTP accepted, TEARDOWN → 200).
 
 ---
 
 ## Total cost
 
-| Change | Lines | Tests | Behaviour change |
+| Change | Where | Tests | Behaviour change |
 |---|---|---|---|
-| 1. RTCP SR | +60 in `rtcp.go`, +4 in `session.go` | +30 | Cameras that drop on no-SR stop dropping |
-| 2. AAC fmtp | +40 in `sdp.go`, +10 in `aac.go` | +25 | Non-standard AAC fmtp surfaces a clear error instead of silent mis-frame |
-| 3. Digest qop | +80 in `rtsp.go` | +40 | Cameras enforcing qop=auth no longer 401-loop |
-| 4. Typed selection | +30 in `sdp.go` | 0 (reuses existing) | None — internal refactor only |
-| **Total** | **+224** | **+95** | Strictly additive; no API change |
+| 1. RTCP SR | done (`rtcp.go`, `session.go`) | done (`TestBuildRTCPReport`, `TestNTPNow`) | Cameras that drop on no-SR stop dropping |
+| 2. AAC fmtp | done (`aac.go`, `sdp.go`, `session.go`) | done (`TestParseAACParams`, `TestAACRTPPayloadCustomFraming`) | Non-standard AAC fmtp surfaces a clear error instead of silent mis-frame |
+| 3. Digest qop | done (`rtsp.go`) | done (`TestAuthHeaderDigestQop`, `TestAuthHeaderDigestLegacy`, `TestHandleAuthQop`) | Cameras enforcing qop=auth no longer 401-loop |
+| 4. Per-PT codec table | done (`sdp.go`, `session.go`, tests) | done | **Fixed:** multi-codec backchannel tracks (thingino) select the right PT; probe reports `aac` + `g711` |
 
-Estimated wall time: **1-2 days** including tests and a manual smoke
-against at least one thingino camera per change.
+All four changes landed; strictly additive, no API change.
 
 ## Work phases
 
 The changes are independent — order them by "most-impact-per-effort":
 
-1. **Change 2 (AAC fmtp)** — small, well-scoped, surfaces silent
-   misconfigurations. The error path is a cheap first step even if we
-   defer the rest of the change.
-2. **Change 1 (RTCP SR)** — additive, low-risk, protects against a
-   future camera regression.
-3. **Change 3 (Digest qop)** — only if/when a camera in our support
-   matrix starts requiring qop=auth. Otherwise it sits as code that's
-   not exercised in production.
-4. **Change 4 (typed selection)** — last; it's a refactor, no
-   behaviour change. Do it when the file is already open for one of
-   the other changes.
+1. ~~**Change 2 (AAC fmtp)**~~ — **done**.
+2. ~~**Change 1 (RTCP SR)**~~ — **done**.
+3. ~~**Change 3 (Digest qop)**~~ — **done**.
+4. ~~**Change 4 (typed selection)**~~ — **done**, and it turned out to be a
+   functional fix for multi-codec thingino backchannel tracks (see above).
+
+Remaining verification (not blocking): a Wireshark/`ENEVERRE_LOG_LEVEL=debug`
+smoke against a live thingino camera to confirm SRs flow on the interleaved
+channel and a `qop=auth`-enforcing camera completes the handshake.
 
 ## Why not the alternative
 

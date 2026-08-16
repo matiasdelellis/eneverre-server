@@ -35,8 +35,10 @@ GET wss://<host>/api/camera/{camera_id}/talk        (ws:// for plain HTTP)
 
 ## Capability discovery
 
-Only cameras whose INI defines a `backchannel` URL support this. Discover it from
-the camera list:
+A camera supports talk when its INI defines a `backchannel` URL **or** the
+server's startup/create-time probe found an ONVIF backchannel on the camera's
+own `source` URL (the normal thingino case — the `backchannel` key is an
+override). Discover it from the camera list:
 
 ```
 GET /api/cameras   →   [ { "id": "galeria",

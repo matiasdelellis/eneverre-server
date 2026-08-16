@@ -552,12 +552,15 @@ from the UI afterwards.
    on (that's `record`, above).
  * **width / height:** Pixel dimensions, used to give the playback boxes the
    right aspect ratio (default 16×9).
- * **backchannel:** Optional direct RTSP URL (with credentials) to the camera's
-   ONVIF Profile T two-way-audio backchannel. **Must point at the camera
-   itself** so it is kept raw and never rewritten by URL helpers. Its
-   presence enables the `talk` capability and the
-   `GET /api/camera/{id}/talk` push-to-talk WebSocket. Never exposed in
-   API responses. See [`TALK.md`](../TALK.md).
+  * **backchannel:** Optional direct RTSP URL (with credentials) to the camera's
+    ONVIF Profile T two-way-audio backchannel — an **advanced override**. It is
+    almost never needed: when the key is absent, the server probes the camera's
+    own `source` URL for a send-capable audio track at startup and uses it as
+    the backchannel (on thingino/prudynt the ONVIF backchannel lives on the
+    same RTSP endpoint as the video). Set it only when the backchannel URL must
+    differ from `source`. **Must point at the camera itself** so it is kept raw
+    and never rewritten by URL helpers. Never exposed in API responses. See
+    [`TALK.md`](../TALK.md).
  * **snapshot_url:** Optional HTTP(S) URL of the camera's own still-JPEG
    endpoint (many non-Thingino cameras expose one, e.g. an ONVIF/CGI snapshot
    path). Its presence enables the `thumbnail` capability and makes

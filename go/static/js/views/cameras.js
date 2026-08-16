@@ -389,10 +389,25 @@ async function onProbe() {
     result.className = "cam-probe-result ok";
     const codecs = (r.codecs || []).join(", ") || "no codecs reported";
     const dims = r.width && r.height ? ` · ${r.width}×${r.height}` : "";
-    result.textContent = t("cameras.probe_connected", { codecs, dims });
+    const bc = r.backchannel && r.backchannel.supported;
+    const talk = bc
+      ? ` · ${t("cameras.probe_talk", { codecs: (r.backchannel.codecs || []).join(" + ") })}`
+      : ` · ${t("cameras.probe_talk_none")}`;
+    result.textContent = t("cameras.probe_connected", { codecs, dims, talk });
     // Prefill resolution when the probe found it and the fields are empty.
     if (r.width && !form.elements.width.value) form.elements.width.value = r.width;
     if (r.height && !form.elements.height.value) form.elements.height.value = r.height;
+    // The backchannel URL is optional: on cameras that answer the ONVIF
+    // backchannel DESCRIBE on the source URL itself (thingino/prudynt), prefill
+    // the field so the operator just saves — the server also derives the
+    // backchannel from the source when the field stays empty.
+    if (bc && !form.elements.backchannel.value) {
+      form.elements.backchannel.value = source;
+      // Unfold the "Advanced" section the field lives in so the prefill is
+      // visible and confirmable instead of silently hiding behind the summary.
+      const adv = form.elements.backchannel.closest("details");
+      if (adv) adv.open = true;
+    }
   } catch (err) {
     result.className = "cam-probe-result error";
     result.textContent = t("cameras.probe_error", { msg: err.message || err });

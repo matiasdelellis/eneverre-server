@@ -196,11 +196,15 @@ All code lives under `go/` (module `eneverre`).
   PTZ, `Thumb` for JPEG). Unreachable/non-2xx → caller maps to `502`.
 - `go/internal/backchannel` — two-way-audio (push-to-talk) to a camera's ONVIF
   Profile T backchannel, a library port of the standalone `web2rtsp` PoC.
-  `Dial` opens the RTSP session (OPTIONS/DESCRIBE/SETUP/PLAY, Basic+Digest auth),
+  `Dial` opens the RTSP session (OPTIONS/DESCRIBE/SETUP/PLAY, Basic+Digest
+  auth incl. `qop=auth` with nonce counter), parses the SDP into a per-PT
+  codec table (multi-codec thingino tracks select the right payload type) and
+  the AAC `a=fmtp` framing (fails closed on missing `config=`), then
   `Session.FeedPCM` takes native-rate mono S16LE and does anti-alias LPF →
   linear resample to 8 kHz → G.711 (A-law/µ-law) → 160-sample RTP frames every
-  20 ms → RTSP interleaved (`$`-framing, channel 0). Hand-implemented RTSP/G.711/
-  RTP with the stdlib; only new external dep is `gorilla/websocket` (transport
+  20 ms → RTSP interleaved (`$`-framing, channel 0), with a periodic RTCP
+  Sender Report every 5 s on channel 1. Hand-implemented RTSP/G.711/RTP/RTCP
+  with the stdlib; only new external dep is `gorilla/websocket` (transport
   used by the handler). Trace via `ENEVERRE_LOG_LEVEL=debug`.
 - `go/internal/events` — `Event` model (RFC3339-on-the-wire, unix-internally)
   plus record/list/get/delete. `RecordMotion` extends an overlapping row to
@@ -477,9 +481,17 @@ see request query strings and the more verbose media-engine traces
   [`doc/MEDIA.md`](doc/MEDIA.md).
 - **Two-way audio (push-to-talk).** `GET /api/camera/{id}/talk` upgrades to a
   WebSocket that relays client mic audio to the camera's ONVIF backchannel
-  (see `internal/backchannel`). It is enabled only when the camera INI defines a
-  `backchannel` RTSP URL (→ `Capabilities.Talk`); that URL must reach the
-  camera directly. Auth (validated **before**
+  (see `internal/backchannel`). The backchannel URL is **optional**: when the
+  camera defines a `backchannel` RTSP URL that URL is used; otherwise the
+  camera's `source` URL itself is used, provided the startup/create-time probe
+  (`seedTalkCodecsFor` → `backchannel.ProbeCodecs`) found a send-capable audio
+  track on it — on thingino/prudynt the ONVIF backchannel lives on the same
+  RTSP endpoint as the video, so the second URL is almost never needed.
+  `Capabilities.Talk` is advertised when the config is explicit **or** the
+  probe succeeded; the probe result also populates `Capabilities.TalkCodecs`
+  (`["aac","g711"]`). `App.backchannelURL(c)` resolves the effective URL
+  (explicit config wins over probed source); the URL must reach the camera
+  directly. Auth (validated **before**
   the upgrade, by `auth.VerifyToken`): the access token rides the
   `Sec-WebSocket-Protocol` carrier — the browser offers `["eneverre-talk",
   <token>]` and the server echoes only `eneverre-talk`, keeping the token out of
@@ -513,9 +525,12 @@ see request query strings and the more verbose media-engine traces
 ## Adding a new camera
 The easiest way is the web wizard: **user menu → Manage cameras → Add camera**
 (admin only). It walks through basics, RTSP source (with a "test connection"
-probe), media options, and the optional Thingino section, then creates the
-camera live via `POST /api/cameras` — no restart. Delete is a button on the same
-screen (`DELETE /api/camera/{id}`), which stops the pipeline and removes the row;
+probe — which also discovers whether the same URL carries the ONVIF
+two-way-audio backchannel and with which codecs, prefilling the backchannel
+field under an "Advanced" collapsible), media options, and the optional
+Thingino section, then creates the camera live via `POST /api/cameras` — no
+restart. Delete is a button on the same screen
+(`DELETE /api/camera/{id}`), which stops the pipeline and removes the row;
 recorded footage on disk is left for retention to prune.
 
 The INI files are now only the **initial seed** (imported once into the DB when

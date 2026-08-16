@@ -226,8 +226,11 @@ own, mounted under `/api/camera/{id}/`:
 
 `GET /api/camera/{id}/talk` is the push-to-talk WebSocket: it upgrades the
 connection and pumps the client's audio into the camera's ONVIF Profile T
-backchannel. Advertised only for cameras with a `backchannel` URL. Note it
-does not survive HTTP/3 behind Caddy — see [`doc/TALK.md`](../doc/TALK.md).
+backchannel. Advertised when the camera defines a `backchannel` URL (an
+advanced override) or the startup/create-time probe found the backchannel on
+the camera's own `source` URL — the normal thingino case, no config needed.
+Note it does not survive HTTP/3 behind Caddy — see
+[`doc/TALK.md`](../doc/TALK.md).
 
 `GET /api/metrics` (+ `/api/metrics/json`) exposes Prometheus instrumentation,
 open to a local scraper over loopback and authenticated otherwise. Camera

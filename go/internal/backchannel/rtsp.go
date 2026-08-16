@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"crypto/md5"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -37,7 +39,14 @@ type rtspClient struct {
 	realm    string
 	nonce    string
 	opaque   string
+	qop      string // "" or "auth", from WWW-Authenticate (RFC 7616)
+	nc       int    // nonce count, 1-based, reset when the nonce changes
+	cnonce   string // per-session client nonce, regenerated when the nonce changes
 	useAuth  bool
+
+	// authMu serializes the qop state (nc/cnonce) — the keepalive OPTIONS and
+	// the Close-time TEARDOWN both build Authorization headers concurrently.
+	authMu sync.Mutex
 
 	readerStop chan struct{}
 	readerDone chan struct{}
@@ -200,9 +209,36 @@ func (c *rtspClient) authHeader(method, uri string) string {
 		return ""
 	}
 
+	c.authMu.Lock()
+	defer c.authMu.Unlock()
+
 	if c.realm != "" && c.nonce != "" {
 		h1 := md5.Sum([]byte(c.username + ":" + c.realm + ":" + c.password))
 		h2 := md5.Sum([]byte(method + ":" + uri))
+
+		if c.qop == "auth" {
+			// RFC 7616: response = MD5(HA1 : nonce : nc : cnonce : qop : HA2).
+			// nc increments per request under the same nonce; cnonce is
+			// generated once per nonce.
+			if c.nc == 0 {
+				c.nc = 1
+			}
+			if c.cnonce == "" {
+				c.cnonce = randomHex(16)
+			}
+			nc := fmt.Sprintf("%08x", c.nc)
+			c.nc++
+			response := fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf(
+				"%x:%s:%s:%s:auth:%x", h1, c.nonce, nc, c.cnonce, h2))))
+			auth := fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s", qop=auth, nc=%s, cnonce="%s"`,
+				c.username, c.realm, c.nonce, uri, response, nc, c.cnonce)
+			if c.opaque != "" {
+				auth += fmt.Sprintf(`, opaque="%s"`, c.opaque)
+			}
+			return auth
+		}
+
+		// Legacy MD5 digest without qop (RFC 2069).
 		response := fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%x:%s:%x", h1, c.nonce, h2))))
 		auth := fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s"`,
 			c.username, c.realm, c.nonce, uri, response)
@@ -214,6 +250,17 @@ func (c *rtspClient) authHeader(method, uri string) string {
 
 	cred := base64.StdEncoding.EncodeToString([]byte(c.username + ":" + c.password))
 	return "Basic " + cred
+}
+
+// randomHex returns n crypto-random bytes hex-encoded (2n hex digits).
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failing means the platform RNG is broken; fall back to a
+		// panic-free deterministic value so the session can still open.
+		return fmt.Sprintf("%0*x", 2*n, time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 func (c *rtspClient) handleAuth(statusCode int, headers map[string]string) bool {
@@ -229,17 +276,39 @@ func (c *rtspClient) handleAuth(statusCode int, headers map[string]string) bool 
 	c.useAuth = true
 
 	if strings.HasPrefix(wwwAuth, "Digest") {
+		var newRealm, newNonce, newOpaque, newQop string
 		for _, part := range strings.Split(wwwAuth[len("Digest"):], ",") {
 			part = strings.TrimSpace(part)
 			switch {
 			case strings.HasPrefix(part, "realm="):
-				c.realm = strings.Trim(part[6:], "\"")
+				newRealm = strings.Trim(part[6:], "\"")
 			case strings.HasPrefix(part, "nonce="):
-				c.nonce = strings.Trim(part[6:], "\"")
+				newNonce = strings.Trim(part[6:], "\"")
 			case strings.HasPrefix(part, "opaque="):
-				c.opaque = strings.Trim(part[7:], "\"")
+				newOpaque = strings.Trim(part[7:], "\"")
+			case strings.HasPrefix(part, "qop="):
+				newQop = strings.Trim(part[4:], "\"")
 			}
 		}
+
+		c.authMu.Lock()
+		if newRealm != "" {
+			c.realm = newRealm
+		}
+		if newOpaque != "" {
+			c.opaque = newOpaque
+		}
+		if newQop != "" {
+			c.qop = newQop
+		}
+		// A fresh nonce resets the qop counter and the client nonce; a stale
+		// retry under the same nonce keeps them so nc keeps counting up.
+		if newNonce != "" && newNonce != c.nonce {
+			c.nonce = newNonce
+			c.nc = 0
+			c.cnonce = ""
+		}
+		c.authMu.Unlock()
 		return false
 	}
 
@@ -251,14 +320,27 @@ func (c *rtspClient) handleAuth(statusCode int, headers map[string]string) bool 
 }
 
 func (c *rtspClient) options(uri string) error {
-	code, _, _, err := c.request("OPTIONS", uri, nil, nil)
-	if err != nil {
-		return err
+	// Same auth-retry pattern as describe: several cameras (thingino among
+	// them) answer OPTIONS 401 with a WWW-Authenticate challenge even though
+	// RFC 2326 does not require auth on OPTIONS, so the plain first attempt
+	// gets the challenge and the retry carries the credentials.
+	for attempt := 0; attempt < 2; attempt++ {
+		headers := map[string]string{}
+		if auth := c.authHeader("OPTIONS", uri); auth != "" {
+			headers["Authorization"] = auth
+		}
+		code, respHeaders, _, err := c.request("OPTIONS", uri, headers, nil)
+		if err != nil {
+			return err
+		}
+		if c.handleAuth(code, respHeaders) {
+			if code != 200 {
+				return fmt.Errorf("OPTIONS returned %d", code)
+			}
+			return nil
+		}
 	}
-	if code != 200 {
-		return fmt.Errorf("OPTIONS returned %d", code)
-	}
-	return nil
+	return fmt.Errorf("OPTIONS failed after auth retry")
 }
 
 func (c *rtspClient) describe(uri string) ([]byte, error) {
