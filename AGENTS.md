@@ -193,7 +193,24 @@ All code lives under `go/` (module `eneverre`).
   validate against, so a stream started before a rotation is not dropped
   the moment the pair rolls.
 - `go/internal/thingino` — direct HTTP calls to Thingino cameras (`Move` for
-  PTZ, `Thumb` for JPEG). Unreachable/non-2xx → caller maps to `502`.
+  PTZ, `Thumb` for JPEG, `State` for the slow heartbeat). The heartbeat
+  decodes the full read-only runtime state (day/night mode, illuminators,
+  motion, mic/speaker, per-channel recording) with tolerant `Bool`/`Num`
+  decoders (bool/number/string spellings across firmwares); the server caches
+  it per camera (startup seed + 5-min `heartbeatLoop`) and serves it on
+  `GET /api/camera/{id}/settings` — never fetched on a request path (~1s per
+  call). Privacy seeds from the same fetch. The writable side is `SetPrudynt` (partial
+  config fragment on `json-prudynt.cgi`) and `Imp` (allowlisted commands on
+  `json-imp.cgi`), exposed to admins as `PUT /api/camera/{id}/settings` under
+  the backend-agnostic `Capabilities.Settings` flag. Unreachable/non-2xx →
+  caller maps to `502`. Future: newer thingino firmware (raptor) replaces
+  this CGI surface with a REST agent on :8080 (GET `/api/v1/config`, POST
+  `/api/v1/actions/{record,privacy,daynight,snapshot}`, PATCH
+  `/api/v1/settings/{motion/enabled,audio/mic-enabled,audio/spk-enabled}`,
+  GET `/api/v1/runtime/media`) — verified live (2026-08) that stable
+  cameras only expose `POST /api/v1/config` (same fragment semantics), so
+  the setters stay on the CGIs until the fleet migrates; the full route map
+  is documented in `thingino.go`'s package comment.
 - `go/internal/backchannel` — two-way-audio (push-to-talk) to a camera's ONVIF
   Profile T backchannel, a library port of the standalone `web2rtsp` PoC.
   `Dial` opens the RTSP session (OPTIONS/DESCRIBE/SETUP/PLAY, Basic+Digest
@@ -440,8 +457,24 @@ see request query strings and the more verbose media-engine traces
 - The `[thingino]` section in a camera INI drives the Thingino capabilities:
   `ptz = true` marks the camera PTZ-capable, and a non-empty `thingino_api_key`
   enables the thumbnail capability plus the firmware lens blackout used by
-  privacy. The credential fields (`thingino_url`/`thingino_api_key`) never
-  appear in API responses.
+  privacy; the same credentials enable `Capabilities.Settings` — the
+  backend-agnostic flag advertising that admins can adjust the camera's live
+  settings (motion, mic/speaker, day/night auto) via
+  `PUT /api/camera/{id}/settings`. The credential fields
+  (`thingino_url`/`thingino_api_key`) never appear in API responses.
+- **Live camera settings (admin).** `PUT /api/camera/{id}/settings` adjusts a
+  camera's motion detection, mic input, speaker output and day/night auto —
+  admin-gated, advertised through the generic `Capabilities.Settings` flag so
+  the API shape is not thingino-specific. Today the only backend is thingino:
+  `thingino.SetPrudynt` posts a partial config fragment to
+  `json-prudynt.cgi` (motion/audio — the same channel privacy uses) and
+  `thingino.Imp` sends   allowlisted IMP commands to `json-imp.cgi` (day/night
+  auto; the full command vocabulary is firmware-specific and partly
+  board-dependent, so nothing is forwarded blindly). Fields apply in order
+  and the first failure answers 502; on success the heartbeat cache refreshes
+  so `GET /api/camera/{id}/settings` (admin, the same cached snapshot — 404
+  until the first heartbeat lands) shows the change within ~1s instead of
+  the next 5-min loop.
 - Privacy is a runtime pause available on **every** camera (`Capabilities.Privacy`
   from the `[camera] privacy` key, default true; `privacy = false` marks an
   always-on camera). Enabling it **stops recording and transmission**:
@@ -608,8 +641,25 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
   when recording is enabled — storage headroom) plus a persistent low-disk
   banner that polls the same endpoint every 30s and shows/hides based on
   `storage.low_space` (the engine's disk monitor crossing `[media]
-  min_free_bytes`). Admin-only; the overlay itself auto-refreshes every 10s
-  while open.
+  min_free_bytes`). Camera-side live settings are deliberately NOT part of
+  this snapshot — they live on the per-camera GET /api/camera/{id}/settings
+  (see the camera-settings dialog note). Admin-only; the overlay itself
+  auto-refreshes every 10s while open.
+- **Camera settings dialog** (`js/views/camera-settings.js`): the topbar
+  "sliders" button (next to talk/privacy) opens the live-settings dialog for
+  the camera selected in live view — a day/night mode selector (Auto / Day /
+  Night / Manual — manual disables auto while keeping the sensor's current
+  mode) above sectioned toggles: Illumination (IR cut, IR850, IR940, white
+  light — visible only while the selector sits on Manual, right under the
+  selector since it is the mode that reveals it), then Audio (mic, speaker)
+  and Motion, backed by `PUT /api/camera/{id}/settings`, with the
+  state read from the per-camera `GET /api/camera/{id}/settings` (the cached
+  heartbeat snapshot). Admin-gated (both endpoints are admin-only, so the
+  button never shows for non-admins). The dialog repaints after every change
+  with camera-confirmed values; the selector position is remembered
+  client-side (`uiMode`) because the heartbeat can't tell manual apart from
+  a fixed mode. It closes on backdrop click, the close button, or when the
+  selection changes away from a settings-capable camera.
 - **HLS VOD playback** (`js/views/playback.js`): the timeline plays
   `/api/camera/{id}/recordings/hls/playlist.m3u8` via hls.js
   (CMAF; `EXT-X-DISCONTINUITY` at coverage gaps), one instance per camera

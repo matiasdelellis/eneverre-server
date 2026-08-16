@@ -237,3 +237,26 @@ export async function probeThingino(thingino_url, thingino_api_key) {
 export async function fetchStatus() {
   return api("/api/status");
 }
+
+/**
+ * Admin-only: the cached live-settings snapshot of one camera (day/night
+ * mode, illuminators, motion, audio). 404 while no snapshot has been fetched
+ * yet or the camera lacks the settings capability.
+ */
+export async function fetchCameraSettings(camId) {
+  return api(`/api/camera/${camId}/settings`);
+}
+
+/**
+ * Admin-only: adjust a camera's live settings (motion detection, mic,
+ * speaker, day/night auto) — advertised by capabilities.settings, not
+ * camera-specific. Body is a partial object — only the keys present are
+ * changed. Throws on non-2xx, including 502 when the camera rejected the
+ * change.
+ */
+export async function setCameraSettings(camId, body) {
+  return api(`/api/camera/${camId}/settings`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}

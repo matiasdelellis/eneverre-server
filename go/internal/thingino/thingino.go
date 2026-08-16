@@ -1,6 +1,20 @@
 // Package thingino makes the direct HTTP calls to Thingino cameras (PTZ move
 // and JPEG snapshot). A single shared client with connection reuse keeps the
 // connection pool warm across requests.
+//
+// Backend note: this package targets the prudynt/stable firmware surface —
+// json-prudynt.cgi (config fragments), json-imp.cgi (IMP/illumination
+// commands) and json-heartbeat-slow.cgi (state). Newer firmware (master /
+// raptor) replaces it with a REST "agent" on :8080 (proxied through
+// /x/agent.cgi): GET /api/v1/config, POST /api/v1/actions/{record,privacy,
+// daynight,snapshot}, PATCH /api/v1/settings/{motion/enabled,
+// audio/mic-enabled,audio/spk-enabled}, GET /api/v1/runtime/media, authed
+// with the same API key. Verified against a live stable camera (2026-08):
+// the agent there exposes ONLY POST /api/v1/config with the same
+// fragment-apply semantics as json-prudynt.cgi — none of the REST routes
+// exist yet. When cameras migrate to raptor, the setters below should be
+// ported to the agent routes (the config-fragment shape remains the
+// contract in the meantime).
 package thingino
 
 import (
@@ -67,7 +81,7 @@ func ParseMotorPos(body []byte) (x, y float64, ok bool) {
 // when the cache is cold.
 func Position(host, apiKey string) (x, y float64, err error) {
 	url := fmt.Sprintf("%s/x/json-motor.cgi?d=j&token=%s", host, apiKey)
-	body, err := doGet(url, 3*time.Second)
+	body, err := doGet(url, apiKey, 3*time.Second)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -83,7 +97,7 @@ func Position(host, apiKey string) (x, y float64, err error) {
 // directional pad.
 func Move(host, apiKey string, x, y float64) (json.RawMessage, error) {
 	url := fmt.Sprintf("%s/x/json-motor.cgi?d=g&x=%s&y=%s&token=%s", host, formatCoord(x), formatCoord(y), apiKey)
-	return doGet(url, 3*time.Second)
+	return doGet(url, apiKey, 3*time.Second)
 }
 
 // MoveAbs issues an absolute PTZ move (d=x) — x/y are target coordinates, not
@@ -91,31 +105,56 @@ func Move(host, apiKey string, x, y float64) (json.RawMessage, error) {
 // the full range, so it gets a longer timeout than a relative step.
 func MoveAbs(host, apiKey string, x, y float64) (json.RawMessage, error) {
 	url := fmt.Sprintf("%s/x/json-motor.cgi?d=x&x=%s&y=%s&token=%s", host, formatCoord(x), formatCoord(y), apiKey)
-	return doGet(url, 10*time.Second)
+	return doGet(url, apiKey, 10*time.Second)
 }
 
 // Recalibrate runs the motor's recalibration routine (d=r). It physically homes
 // the gimbal against its end stops, so it gets a longer timeout than a move.
 func Recalibrate(host, apiKey string) (json.RawMessage, error) {
 	url := fmt.Sprintf("%s/x/json-motor.cgi?d=r&token=%s", host, apiKey)
-	return doGet(url, 10*time.Second)
+	return doGet(url, apiKey, 10*time.Second)
 }
 
 // Heartbeat is the subset of json-heartbeat-slow.cgi we consume. The endpoint
-// reports the camera's full live runtime state; we only decode privacy today.
-//
-// TODO: the heartbeat carries more state/config worth surfacing to the user
-// later. Notable fields (see the raw payload for the full set):
-//   - daynight_mode ("day"/"night"), daynight_enabled, daynight_brightness — IR/day-night
-//   - motion_enabled — motion detection on/off
-//   - mic_enabled, spk_enabled — audio in/out
-//   - rec_ch0, rec_ch1 — per-channel recording state
-//   - ircut_state, ir850_state, ir940_state, white_state — illuminators
-//
-// Some are read-only status, others map to existing config toggles, so adding
-// them means deciding which become user-visible state vs. editable settings.
+// reports the camera's full live runtime state; besides privacy (which the
+// server enforces) we decode the read-only status fields worth surfacing to
+// the operator on /api/status: day/night mode and the illuminator states,
+// motion detection, audio in/out and per-channel recording. None of these are
+// editable through the API today — they mirror the camera's own live state
+// (refreshed on a slow background loop, see server.heartbeatLoop).
 type Heartbeat struct {
 	PrivacyEnabled Bool `json:"privacy_enabled"`
+
+	DaynightMode       string `json:"daynight_mode"` // "day" / "night"
+	DaynightEnabled    Bool   `json:"daynight_enabled"`
+	DaynightBrightness Num    `json:"daynight_brightness"`
+	MotionEnabled      Bool   `json:"motion_enabled"`
+	MicEnabled         Bool   `json:"mic_enabled"`
+	SpkEnabled         Bool   `json:"spk_enabled"`
+	RecCh0             Bool   `json:"rec_ch0"`
+	RecCh1             Bool   `json:"rec_ch1"`
+	IRCutState         Bool   `json:"ircut_state"`
+	IR850State         Bool   `json:"ir850_state"`
+	IR940State         Bool   `json:"ir940_state"`
+	WhiteState         Bool   `json:"white_state"`
+}
+
+// Num decodes a number that different Thingino firmwares spell either as a
+// JSON number or as a quoted string ("80"). An unparseable value decodes as 0
+// rather than failing the whole payload, mirroring Bool — a single odd field
+// shouldn't make an otherwise reachable camera look offline.
+type Num int
+
+func (n *Num) UnmarshalJSON(data []byte) error {
+	s := string(bytes.Trim(bytes.TrimSpace(data), `"`))
+	if s == "" || s == "null" {
+		*n = 0
+		return nil
+	}
+	if v, err := strconv.Atoi(s); err == nil {
+		*n = Num(v)
+	}
+	return nil
 }
 
 // Bool decodes a boolean that different Thingino firmwares spell differently: a
@@ -148,7 +187,7 @@ func (b *Bool) UnmarshalJSON(data []byte) error {
 // (~1s), so use it sparingly (e.g. once at startup), never on a hot path.
 func State(host, apiKey string) (*Heartbeat, error) {
 	url := fmt.Sprintf("%s/x/json-heartbeat-slow.cgi?token=%s", host, apiKey)
-	body, err := doGet(url, 10*time.Second)
+	body, err := doGet(url, apiKey, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +215,7 @@ type MotorParams struct {
 // position instead of the operator hand-typing firmware step counts.
 func Params(host, apiKey string) (*MotorParams, error) {
 	url := fmt.Sprintf("%s/x/json-motor-params.cgi?token=%s", host, apiKey)
-	body, err := doGet(url, 5*time.Second)
+	body, err := doGet(url, apiKey, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -189,9 +228,42 @@ func Params(host, apiKey string) (*MotorParams, error) {
 
 // SetPrivacy toggles prudynt's privacy mode (lens blackout) on the camera.
 func SetPrivacy(host, apiKey string, enabled bool) (json.RawMessage, error) {
+	return SetPrudynt(host, apiKey, map[string]any{"privacy": map[string]any{"enabled": enabled}})
+}
+
+// SetPrudynt posts a config fragment to json-prudynt.cgi — the prudynt
+// configuration document, applied as a partial update (the camera merges the
+// fragment into its live config, exactly like the thingino web UI does).
+// Top-level keys mirror prudynt.cfg: privacy, motion, audio, streams, ... The
+// caller builds the fragment; only the keys present are changed.
+func SetPrudynt(host, apiKey string, fragment map[string]any) (json.RawMessage, error) {
 	url := fmt.Sprintf("%s/x/json-prudynt.cgi?token=%s", host, apiKey)
-	body := fmt.Sprintf(`{"privacy":{"enabled":%t}}`, enabled)
-	return doPost(url, []byte(body), 5*time.Second)
+	body, err := json.Marshal(fragment)
+	if err != nil {
+		return nil, err
+	}
+	return doPost(url, apiKey, body, 5*time.Second)
+}
+
+// Imp sends a command to json-imp.cgi, the IMP sensor/illumination control
+// endpoint of the thingino web UI. The command vocabulary (verified against
+// the firmware's own web UI): "auto" (day/night auto, val 0/1), "daynight"
+// (val "day"|"night"), "ircut", "ir850", "ir940", "white", "color" (val 0/1).
+// cmd must be on the caller's allowlist — the firmware's vocabulary is broad
+// and partly board-specific, so nothing is forwarded blindly. val is omitted
+// from the JSON body when nil (some commands take no value); it may be a
+// number or a string depending on the command.
+func Imp(host, apiKey, cmd string, val any) (json.RawMessage, error) {
+	url := fmt.Sprintf("%s/x/json-imp.cgi?token=%s", host, apiKey)
+	payload := map[string]any{"cmd": cmd}
+	if val != nil {
+		payload["val"] = val
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return doPost(url, apiKey, body, 5*time.Second)
 }
 
 // formatCoord renders a coordinate without a trailing ".0" so whole numbers
@@ -203,22 +275,22 @@ func formatCoord(v float64) string {
 // Thumb fetches a JPEG snapshot as raw bytes.
 func Thumb(host, apiKey string) ([]byte, error) {
 	url := fmt.Sprintf("%s/x/ch0.jpg?token=%s", host, apiKey)
-	return doGet(url, 10*time.Second)
+	return doGet(url, apiKey, 10*time.Second)
 }
 
-func doGet(url string, timeout time.Duration) ([]byte, error) {
-	return do(http.MethodGet, url, nil, timeout)
+func doGet(url, apiKey string, timeout time.Duration) ([]byte, error) {
+	return do(http.MethodGet, url, apiKey, nil, timeout)
 }
 
-func doPost(url string, body []byte, timeout time.Duration) ([]byte, error) {
-	return do(http.MethodPost, url, body, timeout)
+func doPost(url, apiKey string, body []byte, timeout time.Duration) ([]byte, error) {
+	return do(http.MethodPost, url, apiKey, body, timeout)
 }
 
 // maxResponseBytes caps how much of a camera response is buffered, matching
 // the server's generic snapshot cap (8 MiB).
 const maxResponseBytes = 8 << 20
 
-func do(method, url string, payload []byte, timeout time.Duration) ([]byte, error) {
+func do(method, url, apiKey string, payload []byte, timeout time.Duration) ([]byte, error) {
 	var reqBody io.Reader
 	if payload != nil {
 		reqBody = bytes.NewReader(payload)
@@ -229,6 +301,14 @@ func do(method, url string, payload []byte, timeout time.Duration) ([]byte, erro
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	// Two auth channels for two firmware generations: the `token` query
+	// parameter (already embedded in the URL by the callers, accepted by
+	// older firmwares) and the X-API-Key header (what the current web UI
+	// sends — newer firmwares reject ?token= with a 401). Sending both is
+	// harmless: each firmware ignores the one it doesn't know.
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

@@ -89,6 +89,7 @@
         </div>
         <span class="grow"></span>
         <button id="talk-toggle" class="ghost icon-btn talk-toggle" hidden data-i18n-title="talk.enable" title="Enable talk (allow microphone)" aria-label="Enable talk (allow microphone)" aria-pressed="false" data-icon="mic"></button>
+        <button id="settings-toggle" class="ghost icon-btn settings-toggle" hidden data-i18n-title="settings.enable" title="Camera settings" aria-label="Camera settings" data-icon="sliders"></button>
         <button id="privacy-toggle" class="ghost icon-btn privacy-toggle" hidden data-i18n-title="privacy.enable" title="Enable privacy" aria-label="Enable privacy" aria-pressed="false" data-icon="lock-open"></button>
         <div class="global-topbar-controls" id="global-topbar-controls">
           <button id="theme-toggle" class="ghost icon-btn topbar-hide-sm" data-i18n-title="theme.toggle" title="Toggle theme" aria-label="Toggle theme"></button>
@@ -578,6 +579,20 @@
             <div><dt><kbd>Esc</kbd></dt><dd data-i18n="help.esc">Close dialogs, or step back: camera → location → all</dd></div>
           </dl>
         </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="settings-modal" class="user-edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+    <div class="user-edit-card settings-card">
+      <div class="settings-head">
+        <h2 id="settings-modal-title" data-i18n="settings.title">Camera settings</h2>
+        <p id="settings-modal-sub" class="muted"></p>
+      </div>
+      <div id="settings-modal-body" class="settings-modal-body"></div>
+      <p id="settings-modal-error" class="error" hidden></p>
+      <div class="user-edit-actions">
+        <button type="button" id="settings-modal-close" class="ghost" data-i18n="dlg.close">Close</button>
       </div>
     </div>
   </div>

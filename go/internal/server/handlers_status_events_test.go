@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 
 	"eneverre/internal/camera"
 	"eneverre/internal/media"
+	"eneverre/internal/thingino"
 )
 
 func insertEvent(t *testing.T, a *App, camID string, endTS int64) {
@@ -126,9 +128,107 @@ func TestHandleStatus(t *testing.T) {
 		if resp.Totals.Privacy != 1 {
 			t.Errorf("totals.privacy = %d, want 1", resp.Totals.Privacy)
 		}
+		// Camera-side live settings are NOT part of the server snapshot.
+		if bytes.Contains(w.Body.Bytes(), []byte(`"settings"`)) {
+			t.Error("status snapshot must not carry a settings block")
+		}
 		// engine is nil in this test, so recording is off and no storage block.
 		if resp.RecordingEnabled {
 			t.Error("recording_enabled = true with no engine; want false")
+		}
+	})
+}
+
+func TestHandleSetCameraSettings(t *testing.T) {
+	a := withUsersApp(t)
+	insertUser(t, a.db, "admin", "adminpw", "admin")
+	insertUser(t, a.db, "bob", "bobpw", "user")
+	// No thingino credentials → Capabilities.Settings is false.
+	a.cameras = []camera.Camera{{ID: "plain", Name: "Plain"}}
+
+	t.Run("non-admin is forbidden", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		a.handleSetCameraSettings(w, adminRequest(t, http.MethodPut, "/api/camera/plain/settings", "bob", "bobpw", `{"motion_enabled":true}`))
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", w.Code)
+		}
+	})
+
+	t.Run("camera without the settings capability is 404", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		a.handleSetCameraSettings(w, adminRequest(t, http.MethodPut, "/api/camera/plain/settings", "admin", "adminpw", `{"motion_enabled":true}`))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", w.Code)
+		}
+	})
+
+	t.Run("empty body is 400", func(t *testing.T) {
+		// A camera with thingino credentials advertises the capability; the
+		// empty-body validation must fire before any network call. Route
+		// through the mux so the {cam_id} wildcard resolves.
+		a.cameras = []camera.Camera{{ID: "t", Name: "T", ThinginoURL: "http://cam", ThinginoAPIKey: "k"}}
+		// Capabilities.Settings is derived from the spec, not the public model —
+		// rebuild it so the gate matches what production computes.
+		a.cameras[0].Capabilities.Settings = true
+		w := httptest.NewRecorder()
+		req := adminRequest(t, http.MethodPut, "/api/camera/t/settings", "admin", "adminpw", `{}`)
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body: %s)", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestHandleGetCameraSettings(t *testing.T) {
+	a := withUsersApp(t)
+	insertUser(t, a.db, "admin", "adminpw", "admin")
+	insertUser(t, a.db, "bob", "bobpw", "user")
+	a.cameras = []camera.Camera{{ID: "t", Name: "T", ThinginoURL: "http://cam", ThinginoAPIKey: "k"}}
+	a.cameras[0].Capabilities.Settings = true
+
+	t.Run("non-admin is forbidden", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := adminRequest(t, http.MethodGet, "/api/camera/t/settings", "bob", "bobpw", "")
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", w.Code)
+		}
+	})
+
+	t.Run("no cached state yet is 404", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := adminRequest(t, http.MethodGet, "/api/camera/t/settings", "admin", "adminpw", "")
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body: %s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("cached snapshot is served", func(t *testing.T) {
+		a.heartbeats = map[string]heartbeatInfo{
+			"t": {HB: &thingino.Heartbeat{DaynightMode: "night", IR850State: true, MotionEnabled: true},
+				At: time.Unix(12345, 0)},
+		}
+		w := httptest.NewRecorder()
+		req := adminRequest(t, http.MethodGet, "/api/camera/t/settings", "admin", "adminpw", "")
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+		}
+		var resp struct {
+			DaynightMode  string `json:"daynight_mode"`
+			IR850         bool   `json:"ir850"`
+			MotionEnabled bool   `json:"motion_enabled"`
+			UpdatedAt     int64  `json:"updated_at"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.DaynightMode != "night" || !resp.IR850 || !resp.MotionEnabled {
+			t.Errorf("snapshot = %+v, want night + IR850 + motion", resp)
+		}
+		if resp.UpdatedAt != 12345 {
+			t.Errorf("updated_at = %d, want 12345", resp.UpdatedAt)
 		}
 	})
 }

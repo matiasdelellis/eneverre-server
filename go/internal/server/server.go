@@ -160,6 +160,14 @@ type App struct {
 	ptzPosMu sync.RWMutex
 	ptzPos   map[string]ptzPos
 
+	// heartbeats holds each thingino camera's last slow-heartbeat snapshot and
+	// when it was fetched, for the /api/status operator view (day/night mode,
+	// illuminators, motion, audio). Seeded at startup by seedHeartbeats and
+	// refreshed on a slow background loop (heartbeatLoop) — the heartbeat call
+	// costs ~1s on the camera, so it is never fetched on a request path.
+	heartbeatsMu sync.RWMutex
+	heartbeats   map[string]heartbeatInfo
+
 	// metrics exposes Prometheus and JSON instrumentation for the entire service.
 	// Nil when not configured (tests).
 	metrics *metrics.Store
@@ -169,6 +177,12 @@ type App struct {
 	version string
 	// startedAt is when the App was constructed, used for the status uptime.
 	startedAt time.Time
+}
+
+// heartbeatInfo is the cached slow-heartbeat state of one thingino camera.
+type heartbeatInfo struct {
+	HB *thingino.Heartbeat
+	At time.Time
 }
 
 // ptzPos is the cached last-known position for a single camera, in pan/tilt
@@ -224,6 +238,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		authThrottle:       newAuthThrottle(),
 		proxyTrust:         newProxyTrust(cfg.TrustedProxies()),
 		privacy:            make(map[string]bool),
+		heartbeats:         make(map[string]heartbeatInfo),
 		schedOff:           make(map[string]bool),
 		privacyOps:         make(map[string]*sync.Mutex),
 		updatesRoot:        updatesRoot,
@@ -238,9 +253,13 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 	if staticFS != nil {
 		a.assets = buildStaticAssets(staticFS)
 	}
-	// Seed live privacy state in the background — the slow heartbeat must not
-	// delay serving, and any camera that's unreachable just stays at false.
-	go a.seedPrivacy()
+	// Seed live privacy state and the heartbeat cache in the background — the
+	// slow heartbeat must not delay serving, and any camera that's unreachable
+	// just stays at false / uncached.
+	go a.seedHeartbeats()
+	// Refresh the heartbeat cache on a slow cadence so the status view stays
+	// current without hammering the cameras.
+	go a.heartbeatLoop()
 	// Seed the PTZ position cache the same way: prime once at startup so the
 	// first /ptz/position request has something to return even before any move.
 	// Unreachable cameras leave the cache empty; the next move handler will
@@ -354,8 +373,8 @@ func (a *App) SetMediaEngine(e *media.Engine) {
 	a.engine = e
 	// Re-apply any privacy state already seeded (thingino cameras that booted in
 	// privacy) so a boot-time privacy state also pauses recording + transmission,
-	// regardless of whether seedPrivacy ran before or after the engine attached.
-	// SetPrivacy is idempotent, so overlapping with seedPrivacy is harmless.
+	// regardless of whether the heartbeat seed ran before or after the engine attached.
+	// SetPrivacy is idempotent, so overlapping with the heartbeat seed is harmless.
 	a.privacyMu.RLock()
 	on := make([]string, 0, len(a.privacy))
 	for id, p := range a.privacy {
@@ -495,26 +514,37 @@ func (a *App) seedTalkCodecsFor(c camera.Camera) {
 	}()
 }
 
-// seedPrivacy queries each privacy-capable camera's slow heartbeat once to
-// initialize the in-memory privacy state. Cameras are polled concurrently;
-// failures (unreachable / bad token) are logged and leave the state false.
-func (a *App) seedPrivacy() {
+// seedHeartbeats queries each thingino camera's slow heartbeat once to seed
+// the privacy state and the operator-facing heartbeat cache. Cameras are
+// polled concurrently; failures (unreachable / bad token) are logged and
+// leave both the privacy state and the cache untouched.
+func (a *App) seedHeartbeats() {
 	for _, c := range a.listCameras() {
-		a.seedPrivacyFor(c)
+		a.seedHeartbeatFor(c)
 	}
 }
 
-// seedPrivacyFor queries one thingino camera's privacy heartbeat in the
-// background (no-op for non-thingino or privacy-disabled cameras). Called at
-// startup by seedPrivacy and again when a camera is created.
-func (a *App) seedPrivacyFor(c camera.Camera) {
-	if !c.Capabilities.Privacy || c.ThinginoURL == "" || c.ThinginoAPIKey == "" {
+// seedHeartbeatFor queries one thingino camera's slow heartbeat in the
+// background (no-op for cameras without thingino credentials). Called at
+// startup by seedHeartbeats, again when a camera is created or updated, and
+// on every heartbeatLoop tick. One fetch feeds both consumers: the privacy
+// state map (which also re-pauses a camera that booted in privacy) and the
+// heartbeat cache served by /api/status.
+func (a *App) seedHeartbeatFor(c camera.Camera) {
+	if c.ThinginoURL == "" || c.ThinginoAPIKey == "" {
 		return
 	}
 	go func() {
 		hb, err := thingino.State(c.ThinginoURL, c.ThinginoAPIKey)
 		if err != nil {
-			slog.Warn("privacy seed failed", "camera", c.ID, "err", err)
+			slog.Warn("heartbeat seed failed", "camera", c.ID, "err", err)
+			return
+		}
+		a.heartbeatsMu.Lock()
+		a.heartbeats[c.ID] = heartbeatInfo{HB: hb, At: time.Now()}
+		a.heartbeatsMu.Unlock()
+
+		if !c.Capabilities.Privacy {
 			return
 		}
 		a.privacyMu.Lock()
@@ -526,6 +556,22 @@ func (a *App) seedPrivacyFor(c camera.Camera) {
 			a.engine.SetPrivacy(c.ID, true)
 		}
 	}()
+}
+
+// heartbeatLoop refreshes the cached thingino heartbeats on a slow cadence so
+// /api/status shows day/night, illuminator, motion and audio state that is
+// minutes old at worst, without ever fetching on a request path (the call
+// costs ~1s per camera on the firmware). The ticker sleeps between rounds;
+// the first refresh happens one interval after startup, once the startup seed
+// has already populated the cache.
+func (a *App) heartbeatLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		for _, c := range a.listCameras() {
+			a.seedHeartbeatFor(c)
+		}
+	}
 }
 
 // seedPTZPositions reads each PTZ camera's motor position once at startup so
@@ -641,6 +687,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/home", a.handlePTZHome)
 	mux.HandleFunc("POST /api/camera/{cam_id}/ptz/recalibrate", a.handlePTZRecalibrate)
 	mux.HandleFunc("POST /api/camera/{cam_id}/privacy", a.handlePrivacy)
+	mux.HandleFunc("GET /api/camera/{cam_id}/settings", a.handleGetCameraSettings)
+	mux.HandleFunc("PUT /api/camera/{cam_id}/settings", a.handleSetCameraSettings)
 	mux.HandleFunc("GET /api/camera/{cam_id}/thumbnail", a.handleThumbnail)
 	mux.HandleFunc("GET /api/camera/{cam_id}/talk", a.handleTalk)
 	// recordings (embedded engine). All under the /recordings/ prefix,
@@ -867,6 +915,48 @@ type statusCamera struct {
 	MSEActive   bool   `json:"mse_active"`
 	Privacy     bool   `json:"privacy"`
 	ScheduleOff bool   `json:"schedule_off"`
+}
+
+// cameraSettings is the per-camera live-settings snapshot served by
+// GET /api/camera/{id}/settings: read-only camera state (day/night,
+// illuminators, motion, audio) plus the fetch time, so a stale entry is
+// visibly stale. Backend-agnostic shape — today the only backend populating
+// it is thingino's slow heartbeat.
+type cameraSettings struct {
+	DaynightMode    string `json:"daynight_mode"`
+	DaynightEnabled bool   `json:"daynight_enabled"`
+	Brightness      int    `json:"daynight_brightness"`
+	MotionEnabled   bool   `json:"motion_enabled"`
+	MicEnabled      bool   `json:"mic_enabled"`
+	SpkEnabled      bool   `json:"spk_enabled"`
+	RecCh0          bool   `json:"rec_ch0"`
+	RecCh1          bool   `json:"rec_ch1"`
+	IRCut           bool   `json:"ircut"`
+	IR850           bool   `json:"ir850"`
+	IR940           bool   `json:"ir940"`
+	White           bool   `json:"white"`
+	UpdatedAt       int64  `json:"updated_at"` // unix seconds
+}
+
+// settingsSnapshot builds the public cameraSettings view from a cached
+// heartbeat.
+func settingsSnapshot(hi heartbeatInfo) *cameraSettings {
+	hb := hi.HB
+	return &cameraSettings{
+		DaynightMode:    hb.DaynightMode,
+		DaynightEnabled: bool(hb.DaynightEnabled),
+		Brightness:      int(hb.DaynightBrightness),
+		MotionEnabled:   bool(hb.MotionEnabled),
+		MicEnabled:      bool(hb.MicEnabled),
+		SpkEnabled:      bool(hb.SpkEnabled),
+		RecCh0:          bool(hb.RecCh0),
+		RecCh1:          bool(hb.RecCh1),
+		IRCut:           bool(hb.IRCutState),
+		IR850:           bool(hb.IR850State),
+		IR940:           bool(hb.IR940State),
+		White:           bool(hb.WhiteState),
+		UpdatedAt:       hi.At.Unix(),
+	}
 }
 
 type statusStorage struct {

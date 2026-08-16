@@ -47,7 +47,8 @@ paths:
         Admin-only operational snapshot: per-camera connectivity, recording and
         privacy state, aggregate counts, and — when recording is enabled — the
         recording volume's disk headroom. Requires an admin token (403 for a
-        non-admin).
+        non-admin). Camera-side live settings are NOT part of this snapshot —
+        see GET /api/camera/{id}/settings.
       responses:
         '200':
           description: Status snapshot
@@ -77,6 +78,7 @@ paths:
                         recording: { type: boolean }
                         mse_active: { type: boolean }
                         privacy: { type: boolean }
+                        schedule_off: { type: boolean }
                   totals:
                     type: object
                     properties:
@@ -862,6 +864,114 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/camera/{camera_id}/settings:
+    get:
+      summary: Read the camera's live-settings state (admin)
+      description: >-
+        Returns the cached live-settings snapshot of one camera — day/night
+        mode, illuminators, motion detection, audio in/out — fetched in the
+        background by the server's heartbeat loop (never on the request
+        path). Admin-only (403 for a non-admin); 404 while no snapshot has
+        been fetched yet or when the camera does not advertise
+        `capabilities.settings`. Backend-agnostic shape — today only the
+        thingino slow heartbeat populates it.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      responses:
+        '200':
+          description: The cached snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  daynight_mode: { type: string, enum: [day, night] }
+                  daynight_enabled: { type: boolean }
+                  daynight_brightness: { type: integer }
+                  motion_enabled: { type: boolean }
+                  mic_enabled: { type: boolean }
+                  spk_enabled: { type: boolean }
+                  rec_ch0: { type: boolean }
+                  rec_ch1: { type: boolean }
+                  ircut: { type: boolean }
+                  ir850: { type: boolean }
+                  ir940: { type: boolean }
+                  white: { type: boolean }
+                  updated_at:
+                    type: integer
+                    format: int64
+                    description: Unix seconds of the last fetch.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      summary: Adjust the camera's live settings (admin)
+      description: >-
+        Adjusts a camera's live settings: motion detection, microphone input,
+        speaker output and day/night auto mode. Admin-only (403 for a
+        non-admin); the camera must advertise `capabilities.settings` (404
+        otherwise). The shape is backend-agnostic — today only thingino
+        cameras implement it (prudynt config fragments on json-prudynt.cgi for
+        motion/audio, IMP commands on json-imp.cgi for day/night). Only the
+        fields present in the body are changed, applied in order; the first
+        failure answers 502 with the failing field. On success the cached
+        state behind GET /api/status is refreshed in the background.
+      parameters:
+        - $ref: '#/components/parameters/camera_id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: >-
+                Partial update — at least one field required. Booleans only.
+              properties:
+                motion_enabled:
+                  type: boolean
+                mic_enabled:
+                  type: boolean
+                speaker_enabled:
+                  type: boolean
+                daynight_auto:
+                  type: boolean
+                daynight_mode:
+                  type: string
+                  enum: [day, night, manual]
+                  description: >-
+                    Fixed day/night mode. Sending any of these takes the
+                    camera out of auto mode (mirrors the firmware's own web
+                    UI); "manual" keeps the sensor's current mode while
+                    disabling auto.
+                ircut:
+                  type: boolean
+                ir850:
+                  type: boolean
+                ir940:
+                  type: boolean
+                white:
+                  type: boolean
+      responses:
+        '200':
+          description: All requested fields were applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          description: Empty body (no fields to update)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '502':
           $ref: '#/components/responses/BadGateway'
 
@@ -2080,6 +2190,13 @@ components:
             `backchannel` URL is configured (advanced override) or the
             startup/create-time probe found one on the camera's `source` URL
             (the `/api/camera/{id}/talk` WebSocket is available).
+        settings:
+          type: boolean
+          description: >-
+            True when an admin can adjust the camera's live settings (motion
+            detection, audio in/out, day/night auto) through
+            PUT /api/camera/{id}/settings (admin-only). Backend-agnostic — today
+            only thingino cameras implement it.
         talk_codecs:
           type: array
           items:

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -218,7 +219,7 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 		a.engine.AddCamera(cam)
 	}
 	a.addCamera(cam)
-	a.seedPrivacyFor(cam)
+	a.seedHeartbeatFor(cam)
 	a.seedPTZPositionsFor(cam)
 	a.seedTalkCodecsFor(cam)
 	// Apply the recording schedule immediately: a camera created off-hours must
@@ -251,8 +252,8 @@ func (a *App) handleGetCameraConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
-// dropCameraState clears every per-camera runtime cache (privacy, talk
-// codecs, PTZ position). Called when a camera is updated (the config the
+// dropCameraState clears every per-camera runtime cache (privacy, heartbeat,
+// talk codecs, PTZ position). Called when a camera is updated (the config the
 // caches were derived from may have changed) or deleted, so a new per-camera
 // cache only needs a line here to be handled by both.
 func (a *App) dropCameraState(id string) {
@@ -263,6 +264,9 @@ func (a *App) dropCameraState(id string) {
 	a.talkCodecsMu.Lock()
 	delete(a.talkCodecs, id)
 	a.talkCodecsMu.Unlock()
+	a.heartbeatsMu.Lock()
+	delete(a.heartbeats, id)
+	a.heartbeatsMu.Unlock()
 	a.ptzPosMu.Lock()
 	delete(a.ptzPos, id)
 	a.ptzPosMu.Unlock()
@@ -323,7 +327,7 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 	// Reset runtime state and re-probe: the thingino/backchannel config may have
 	// changed, so the old privacy/talk-codec/position state no longer applies.
 	a.dropCameraState(id)
-	a.seedPrivacyFor(cam)
+	a.seedHeartbeatFor(cam)
 	a.seedPTZPositionsFor(cam)
 	a.seedTalkCodecsFor(cam)
 	// The schedule assignment may have changed (and RemoveCamera+AddCamera reset
@@ -465,6 +469,151 @@ func (a *App) handleProbeThingino(w http.ResponseWriter, r *http.Request) {
 
 func roundTenth(v float64) float64 {
 	return math.Round(v*10) / 10
+}
+
+// handleGetCameraSettings serves the cached live-settings snapshot of one
+// camera (admin-only): the read-only state the /api/status toggles used to
+// show — day/night mode, illuminators, motion, audio — fetched in the
+// background by the heartbeat seed/refresh loop. 404 while no snapshot has
+// been fetched yet (unreachable camera at startup) or when the camera lacks
+// the settings capability.
+func (a *App) handleGetCameraSettings(w http.ResponseWriter, r *http.Request) {
+	if a.requireAdmin(w, r) == nil {
+		return
+	}
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.Settings || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
+		httpError(w, http.StatusNotFound, "camera settings not available")
+		return
+	}
+	a.heartbeatsMu.RLock()
+	hi, ok := a.heartbeats[cam.ID]
+	a.heartbeatsMu.RUnlock()
+	if !ok {
+		httpError(w, http.StatusNotFound, "camera settings state not fetched yet")
+		return
+	}
+	writeJSON(w, http.StatusOK, settingsSnapshot(hi))
+}
+
+// handleSetCameraSettings lets an admin adjust a camera's live settings —
+// motion detection, mic input, speaker output, day/night auto or a fixed
+// day/night mode, and the illuminators (IR cut, IR850, IR940, white light) —
+// through the camera's own control channel. The API shape is
+// backend-agnostic (Capabilities.Settings advertises it); today the only
+// backend is thingino, mapped onto prudynt config fragments
+// (json-prudynt.cgi, the same channel privacy uses) and allowlisted IMP
+// commands (json-imp.cgi — the vocabulary was verified against the
+// firmware's own web UI). Each field present in the body is applied in
+// order; on the first failure the request answers 502 with the failing
+// field, so a partial application is visible in the error. After a
+// successful change the heartbeat cache is refreshed in the background, so
+// /api/status reflects the new state within the heartbeat's ~1s call
+// instead of the next 5-minute loop.
+func (a *App) handleSetCameraSettings(w http.ResponseWriter, r *http.Request) {
+	if a.requireAdmin(w, r) == nil {
+		return
+	}
+	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !ok || !cam.Capabilities.Settings || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
+		httpError(w, http.StatusNotFound, "camera settings not available")
+		return
+	}
+	var req struct {
+		MotionEnabled  *bool   `json:"motion_enabled"`
+		MicEnabled     *bool   `json:"mic_enabled"`
+		SpeakerEnabled *bool   `json:"speaker_enabled"`
+		DaynightAuto   *bool   `json:"daynight_auto"`
+		DaynightMode   *string `json:"daynight_mode"` // "day" | "night" | "manual"
+		IRCut          *bool   `json:"ircut"`
+		IR850          *bool   `json:"ir850"`
+		IR940          *bool   `json:"ir940"`
+		White          *bool   `json:"white"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.DaynightMode != nil && *req.DaynightMode != "day" && *req.DaynightMode != "night" && *req.DaynightMode != "manual" {
+		httpError(w, http.StatusBadRequest, `daynight_mode must be "day", "night" or "manual"`)
+		return
+	}
+
+	type upd struct {
+		label string
+		run   func() error
+	}
+	var upds []upd
+	prudynt := func(label string, fragment map[string]any) {
+		upds = append(upds, upd{label, func() error {
+			_, err := thingino.SetPrudynt(cam.ThinginoURL, cam.ThinginoAPIKey, fragment)
+			return err
+		}})
+	}
+	imp := func(label, cmd string, val any) {
+		upds = append(upds, upd{label, func() error {
+			_, err := thingino.Imp(cam.ThinginoURL, cam.ThinginoAPIKey, cmd, val)
+			return err
+		}})
+	}
+	boolInt := func(b bool) int {
+		if b {
+			return 1
+		}
+		return 0
+	}
+
+	if req.MotionEnabled != nil {
+		prudynt("motion", map[string]any{"motion": map[string]any{"enabled": *req.MotionEnabled}})
+	}
+	if req.MicEnabled != nil {
+		prudynt("mic", map[string]any{"audio": map[string]any{"input_enabled": *req.MicEnabled}})
+	}
+	if req.SpeakerEnabled != nil {
+		prudynt("speaker", map[string]any{"audio": map[string]any{"output_enabled": *req.SpeakerEnabled}})
+	}
+	if req.DaynightAuto != nil {
+		imp("daynight_auto", "auto", boolInt(*req.DaynightAuto))
+	}
+	if req.DaynightMode != nil {
+		imp("daynight_mode", "daynight", *req.DaynightMode)
+	}
+	if req.IRCut != nil {
+		imp("ircut", "ircut", boolInt(*req.IRCut))
+	}
+	if req.IR850 != nil {
+		imp("ir850", "ir850", boolInt(*req.IR850))
+	}
+	if req.IR940 != nil {
+		imp("ir940", "ir940", boolInt(*req.IR940))
+	}
+	if req.White != nil {
+		imp("white", "white", boolInt(*req.White))
+	}
+	if len(upds) == 0 {
+		httpError(w, http.StatusBadRequest, "no fields to update")
+		return
+	}
+
+	for _, u := range upds {
+		if err := u.run(); err != nil {
+			slog.Warn("camera settings update failed", "camera", cam.ID, "field", u.label, "err", err)
+			httpError(w, http.StatusBadGateway, fmt.Sprintf("%s: %v", u.label, err))
+			return
+		}
+		// prudynt applies each config change by restarting the affected
+		// worker; a multi-field request must give the previous one a moment
+		// to land or a rapid second write can be lost (observed live: a
+		// motion toggle-restore pair 300ms apart lost the restore). The
+		// camera's own web UI sends one field per click, so this settle
+		// delay mirrors that pacing.
+		if len(upds) > 1 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	// Refresh the cached heartbeat so the status view shows the change now.
+	a.seedHeartbeatFor(cam)
+	slog.Info("camera settings updated", "camera", cam.ID)
+	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
 // publicCamera renders one camera as the API view GET /api/cameras returns:

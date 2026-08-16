@@ -2599,6 +2599,45 @@ kbd {
   }
 }
 .status-cam-name { font-weight: 500; word-break: break-all; }
+
+/* --- Camera live-settings dialog (topbar sliders button) ---------------- */
+.settings-card { width: 420px; }
+.settings-head { display: flex; flex-direction: column; gap: 2px; }
+.settings-head #settings-modal-sub { font-size: 13px; }
+.settings-modal-body { display: flex; flex-direction: column; gap: 14px; }
+.settings-modal-body > p.muted { margin: 0; }
+
+/* The mode selector matches the .users-form select recipe so form controls
+   look the same across dialogs. */
+.settings-mode { display: flex; flex-direction: column; gap: 5px; }
+.settings-mode > span,
+.settings-section h3 {
+  margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--muted);
+}
+.settings-mode select {
+  background: var(--panel-2); color: var(--fg);
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  padding: 10px 12px; font: inherit; font-size: 13px; width: 100%; cursor: pointer;
+}
+.settings-mode select:disabled { opacity: 0.5; cursor: wait; }
+
+.settings-section { display: flex; flex-direction: column; gap: 8px; }
+.settings-toggle-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* On/off chips: hollow by default, filled with the accent gradient when on.
+   The border stays 1px in both states so toggling never shifts the layout. */
+.settings-toggle {
+  background: transparent; color: var(--fg);
+  border: 1px solid var(--border-hover); border-radius: var(--radius);
+  padding: 8px 14px; font: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer;
+}
+.settings-toggle:hover { border-color: var(--accent); background: var(--accent-soft); }
+.settings-toggle.on {
+  background: var(--accent) var(--accent-grad); border-color: var(--accent); color: #fff;
+}
+.settings-toggle.on:hover { background: var(--accent) var(--accent-grad); }
 .status-dot { display: inline-flex; font-size: 14px; }
 .status-dot-on { color: var(--good); }
 .status-dot-off { color: var(--border-strong); }

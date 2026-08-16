@@ -32,6 +32,12 @@ type Capabilities struct {
 	// raises it when the source-probe finds a backchannel on the camera's own
 	// source URL (see server.backchannelURL).
 	Talk bool `json:"talk"`
+	// Settings is true when an admin can adjust the camera's live settings —
+	// motion detection, audio in/out, day/night mode — through
+	// PUT /api/camera/{id}/settings (admin-only). The capability is
+	// backend-agnostic: today only thingino cameras implement it, but a
+	// future ONVIF backend would advertise the same flag.
+	Settings bool `json:"settings"`
 	// TalkCodecs lists the push-to-talk codecs the camera accepts, discovered by
 	// probing its backchannel SDP at startup: "aac" (MPEG4-GENERIC, wideband) and
 	// "g711" (PCMA/PCMU, telephony). Empty when Talk is false or the probe has not
@@ -263,6 +269,9 @@ func (s Spec) Camera() Camera {
 			Playback:  s.Playback,
 			PTZ:       s.PTZ,
 			Talk:      s.Backchannel != "",
+			// Live settings today come from the thingino slow heartbeat /
+			// json-prudynt.cgi; the capability is generic, the backend isn't.
+			Settings: s.ThinginoURL != "" && s.ThinginoAPIKey != "",
 		},
 		RTSP:           s.Source,
 		Backchannel:    s.Backchannel,
