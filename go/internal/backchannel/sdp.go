@@ -158,10 +158,10 @@ func canonicalCodec(name string) string {
 
 // findBackchannelMedia selects the best send-capable audio track from the SDP
 // for the backchannel, returning the track and the codec to use on it. When
-// forceCodec is "PCMA"/"PCMU"/"AAC" it narrows to tracks advertising that
-// codec; when empty it prefers G.711 (PCMA over PCMU within a track) over AAC.
-// The last fallback is any audio track, with the codec hint left empty for
-// chooseCodec to resolve.
+// forceCodec is "PCMA"/"PCMU"/"AAC"/"OPUS" it narrows to tracks advertising
+// that codec; when empty it prefers G.711 (PCMA over PCMU within a track),
+// then AAC, then Opus. The last fallback is any audio track, with the codec
+// hint left empty for chooseCodec to resolve.
 func findBackchannelMedia(medias []sdpMedia, forceCodec string) (*sdpMedia, string, error) {
 	sendable := func(m sdpMedia) bool {
 		return m.direction == "sendonly" || m.direction == "sendrecv"
@@ -193,6 +193,11 @@ func findBackchannelMedia(medias []sdpMedia, forceCodec string) (*sdpMedia, stri
 		}
 	}
 	for _, m := range medias {
+		if audio(m) && sendable(m) && m.hasCodec("OPUS") {
+			return &m, "OPUS", nil
+		}
+	}
+	for _, m := range medias {
 		if audio(m) {
 			return &m, "", nil
 		}
@@ -202,19 +207,19 @@ func findBackchannelMedia(medias []sdpMedia, forceCodec string) (*sdpMedia, stri
 
 // chooseCodec resolves the concrete codec and payload type for the selected
 // SDP media. want is the codec hint from findBackchannelMedia ("PCMA"/"PCMU"/
-// "AAC"); when empty it prefers PCMA, then PCMU, then AAC. Only payload types
-// with a matching a=rtpmap entry are considered, so a multi-codec track picks
-// the PT that actually belongs to the codec (e.g. thingino's track0). Without
-// any rtpmap the static payload types are inferred (0=PCMU, 8=PCMA) and, as a
-// last resort for unknown tracks, PCMA with the first payload type is returned
-// to preserve the historical behavior.
+// "AAC"/"OPUS"); when empty it prefers PCMA, then PCMU, then AAC, then Opus.
+// Only payload types with a matching a=rtpmap entry are considered, so a
+// multi-codec track picks the PT that actually belongs to the codec (e.g.
+// thingino's track0). Without any rtpmap the static payload types are inferred
+// (0=PCMU, 8=PCMA) and, as a last resort for unknown tracks, PCMA with the
+// first payload type is returned to preserve the historical behavior.
 func chooseCodec(m *sdpMedia, want string) (codec string, pt byte) {
 	pt = 8
 	if len(m.payloads) > 0 {
 		pt = byte(m.payloads[0])
 	}
 
-	prefer := []string{"PCMA", "PCMU", "AAC"}
+	prefer := []string{"PCMA", "PCMU", "AAC", "OPUS"}
 	if want != "" {
 		prefer = []string{want}
 	}

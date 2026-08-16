@@ -22,12 +22,17 @@ const (
 	TargetRate       = 8000
 	FrameSamples     = 160
 	MaxBufferSamples = TargetRate * 400 / 1000 // 3200 samples ≈ 400 ms
+
+	// OpusFrameSamples is the RTP timestamp increment per forwarded Opus
+	// packet: one 20 ms frame at the 48 kHz clock (RFC 7587). Clients must
+	// encode 20 ms Opus frames for the passthrough path.
+	OpusFrameSamples = 960
 )
 
 // Session is a live audio backchannel to one camera. Open one with Dial, push
-// audio with FeedPCM (G.711) or FeedAU (AAC), and release it with Close.
-// It is safe to call FeedPCM, FeedAU, and Close from different goroutines
-// than the one that opened it.
+// audio with FeedPCM (G.711), FeedAU (AAC) or FeedOpus (Opus), and release it
+// with Close. It is safe to call FeedPCM, FeedAU, FeedOpus, and Close from
+// different goroutines than the one that opened it.
 type Session struct {
 	*rtspClient
 	codec         string
@@ -36,6 +41,7 @@ type Session struct {
 	uri           string
 	audioIn       chan []int16 // G.711 path: native-rate PCM to resample + encode
 	auIn          chan []byte  // AAC path: raw access units to forward
+	opusIn        chan []byte  // Opus path: raw 20 ms packets to forward
 	stop          chan struct{}
 	done          chan struct{}
 	keepaliveDone chan struct{}
@@ -91,10 +97,11 @@ func (s *Session) Codec() string { return s.codec }
 
 // Dial opens the RTSP backchannel to rawURL (rtsp://user:pass@host:port/path)
 // and starts the RTP send loop. forceCodec may be "PCMA"/"PCMU" to pin a G.711
-// track, "AAC" to pin an MPEG4-GENERIC track (raw AUs are fed via FeedAU), or ""
-// to auto-select G.711 from the SDP. In the G.711 path the returned Session
-// sends silence until the caller feeds audio; in the AAC path it stays quiet
-// until the first AU arrives.
+// track, "AAC" to pin an MPEG4-GENERIC track (raw AUs are fed via FeedAU),
+// "OPUS" to pin an Opus track (raw packets via FeedOpus), or "" to
+// auto-select G.711 from the SDP. In the G.711 path the returned Session
+// sends silence until the caller feeds audio; in the AAC/Opus paths it stays
+// quiet until the first AU/packet arrives.
 func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 	c, err := dialRTSP(ctx, rawURL)
 	if err != nil {
@@ -216,10 +223,14 @@ func Dial(ctx context.Context, rawURL, forceCodec string) (*Session, error) {
 	s.srDone = make(chan struct{})
 	go s.srLoop(ssrc)
 
-	if codec == "AAC" {
+	switch codec {
+	case "AAC":
 		s.auIn = make(chan []byte, 64)
 		go s.sendLoopAAC(ssrc)
-	} else {
+	case "OPUS":
+		s.opusIn = make(chan []byte, 64)
+		go s.sendLoopOpus(ssrc)
+	default:
 		s.audioIn = make(chan []int16, 64)
 		go s.sendLoop(ssrc)
 	}
@@ -261,10 +272,10 @@ func ProbeCodecs(ctx context.Context, rawURL string) ([]string, error) {
 
 // probeLabels maps the send-capable audio tracks of a parsed SDP to the
 // client-facing codec labels: "aac" for an MPEG4-GENERIC track, "g711" for
-// PCMA/PCMU. One track can yield several labels (thingino advertises a single
-// backchannel track carrying AAC, Opus and G.711 payload types); labels are
-// deduplicated and ordered as they appear in the SDP. Unsupported codecs
-// (e.g. Opus) are skipped.
+// PCMA/PCMU, "opus" for Opus. One track can yield several labels (thingino
+// advertises a single backchannel track carrying AAC, Opus and G.711 payload
+// types); labels are deduplicated and ordered as they appear in the SDP.
+// Unsupported codecs are skipped.
 func probeLabels(medias []sdpMedia) []string {
 	var labels []string
 	seen := map[string]bool{}
@@ -283,6 +294,8 @@ func probeLabels(medias []sdpMedia) []string {
 				label = "aac"
 			case "PCMA", "PCMU":
 				label = "g711"
+			case "OPUS":
+				label = "opus"
 			default:
 				continue
 			}
@@ -402,6 +415,39 @@ func (s *Session) sendLoopAAC(ssrc uint32) {
 	}
 }
 
+// sendLoopOpus forwards client-encoded Opus packets (RFC 7587): each RTP
+// payload is one raw 20 ms packet, the timestamp advances 960 samples (48 kHz
+// clock), and the marker bit is set on the first packet of the stream.
+func (s *Session) sendLoopOpus(ssrc uint32) {
+	defer close(s.done)
+
+	seq := uint16(rand.Intn(65536))
+	ts := uint32(rand.Intn(65536))
+	first := true
+
+	for {
+		select {
+		case <-s.stop:
+			return
+		case pkt := <-s.opusIn:
+			if len(pkt) == 0 {
+				continue
+			}
+			packet := buildRTPPacket(s.pt, seq, ts, ssrc, first, pkt)
+			if err := s.writeInterleaved(0, packet); err != nil {
+				slog.Warn("backchannel Opus send failed", "err", err)
+				return
+			}
+			s.lastRTPTS.Store(ts)
+			s.sentPackets.Add(1)
+			s.sentOctets.Add(uint32(len(packet) - 12))
+			seq++
+			ts += OpusFrameSamples
+			first = false
+		}
+	}
+}
+
 // srLoop emits a periodic RTCP Sender Report (RFC 3550 §6.4.1) every 5 s on
 // the interleaved channel paired with RTP (0-1 negotiation). It exits when
 // the session closes; a send failure means the connection is gone, so it
@@ -425,6 +471,26 @@ func (s *Session) srLoop(ssrc uint32) {
 	}
 }
 
+// enqueueDropOldest queues b onto ch, shedding the OLDEST queued element when
+// the buffer is full — a backlog drops stale audio and keeps the freshest
+// speech, instead of rejecting new audio and letting latency grow. The caller
+// is the sole producer, so once a slot is freed the follow-up send has room.
+func enqueueDropOldest(ch chan []byte, b []byte, fullMsg string) {
+	select {
+	case ch <- b:
+	default:
+		select {
+		case <-ch:
+			slog.Debug(fullMsg)
+		default:
+		}
+		select {
+		case ch <- b:
+		default:
+		}
+	}
+}
+
 // FeedAU queues one raw AAC-LC access unit (optionally ADTS-wrapped) for
 // transmission on the AAC backchannel. It is a no-op on a G.711 session. The AU
 // must match the track's advertised config (AAC-LC, the SDP clock rate, mono);
@@ -435,24 +501,21 @@ func (s *Session) FeedAU(au []byte) {
 	}
 	b := make([]byte, len(au))
 	copy(b, au)
-	select {
-	case s.auIn <- b:
-	default:
-		// Buffer full: shed the OLDEST queued AU and enqueue this one, so a
-		// backlog drops stale audio and keeps the freshest speech (mirroring the
-		// G.711 send loop's latency cap) rather than rejecting new audio and
-		// letting latency grow. FeedAU is the only producer, so once we free a
-		// slot the follow-up send has room.
-		select {
-		case <-s.auIn:
-			slog.Debug("backchannel AAC buffer full, dropping oldest AU")
-		default:
-		}
-		select {
-		case s.auIn <- b:
-		default:
-		}
+	enqueueDropOldest(s.auIn, b, "backchannel AAC buffer full, dropping oldest AU")
+}
+
+// FeedOpus queues one raw Opus packet for transmission on the Opus backchannel
+// (RFC 7587: one packet per RTP payload, no AU framing). It is a no-op on a
+// non-Opus session. The packet must be a single 20 ms frame so the RTP
+// timestamp increments stay aligned; oversized bursts are dropped rather than
+// blocking the caller.
+func (s *Session) FeedOpus(pkt []byte) {
+	if s.opusIn == nil || len(pkt) == 0 {
+		return
 	}
+	b := make([]byte, len(pkt))
+	copy(b, pkt)
+	enqueueDropOldest(s.opusIn, b, "backchannel Opus buffer full, dropping oldest packet")
 }
 
 // Close stops the send loop, tears down the RTSP session and closes the TCP

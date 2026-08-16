@@ -83,11 +83,13 @@ func (a *App) CloseAllTalk() {
 
 // handleTalk streams push-to-talk audio from a client to a camera's ONVIF
 // Profile T backchannel. The client connects a WebSocket, sends a JSON handshake
-// {"sampleRate": N, "codec": "aac"?}, then a stream of binary audio frames. With
-// the default (G.711) codec the client sends S16LE PCM and the server resamples
-// to 8 kHz and encodes G.711; with "aac" the client sends raw AAC-LC access
-// units it encoded itself and the server forwards them to the camera's
-// MPEG4-GENERIC track (see internal/backchannel). At most one session per camera.
+// {"sampleRate": N, "codec": "aac"|"opus"?}, then a stream of binary audio
+// frames. With the default (G.711) codec the client sends S16LE PCM and the
+// server resamples to 8 kHz and encodes G.711; with "aac" the client sends raw
+// AAC-LC access units it encoded itself and the server forwards them to the
+// camera's MPEG4-GENERIC track; with "opus" the client sends raw 20 ms Opus
+// packets forwarded to the camera's Opus track (see internal/backchannel). At
+// most one session per camera.
 //
 // Auth: the access token comes via the Sec-WebSocket-Protocol carrier (or the
 // ?token= query param, or a Bearer header for non-browser clients), validated
@@ -150,10 +152,11 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 
 	// Handshake first: the client's initial JSON message selects the backchannel
 	// codec, so it must be read before dialing the camera. Fields:
-	//   {"sampleRate": N, "codec": "aac"}
+	//   {"sampleRate": N, "codec": "aac" | "opus"}
 	// codec defaults to G.711 (uncompressed PCM uplink, resampled to 8 kHz);
 	// "aac" (or "mpeg4-generic") pins the camera's MPEG4-GENERIC track and
-	// forwards raw AAC-LC access units the client encodes itself.
+	// forwards raw AAC-LC access units the client encodes itself; "opus" pins
+	// the Opus track and forwards raw 20 ms Opus packets (RFC 7587).
 	conn.SetReadDeadline(time.Now().Add(talkPongWait))
 	_, msg, err := conn.ReadMessage()
 	if err != nil {
@@ -171,9 +174,13 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 
 	forceCodec := ""
 	aac := strings.EqualFold(init.Codec, "aac") || strings.EqualFold(init.Codec, "mpeg4-generic")
-	if aac {
+	opus := strings.EqualFold(init.Codec, "opus")
+	switch {
+	case aac:
 		forceCodec = "AAC"
-	} else if init.SampleRate < backchannel.TargetRate {
+	case opus:
+		forceCodec = "OPUS"
+	case init.SampleRate < backchannel.TargetRate:
 		// G.711 path needs a source rate we can resample down to 8 kHz.
 		release()
 		return
@@ -240,9 +247,10 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 	}()
 	defer close(pingDone)
 
-	// Audio: a stream of binary messages — S16LE PCM for G.711, or raw AAC-LC
-	// access units for AAC. Any non-binary message (a stray text frame) is
-	// ignored; pongs and audio both refresh the read deadline.
+	// Audio: a stream of binary messages — S16LE PCM for G.711, raw AAC-LC
+	// access units for AAC, or raw 20 ms Opus packets for Opus. Any non-binary
+	// message (a stray text frame) is ignored; pongs and audio both refresh the
+	// read deadline.
 	for {
 		mt, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -252,9 +260,12 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 		if mt != websocket.BinaryMessage {
 			continue
 		}
-		if aac {
+		switch {
+		case aac:
 			sess.FeedAU(msg)
-		} else {
+		case opus:
+			sess.FeedOpus(msg)
+		default:
 			sess.FeedPCM(msg, init.SampleRate)
 		}
 	}

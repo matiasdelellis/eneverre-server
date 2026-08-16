@@ -420,6 +420,42 @@ func TestFindBackchannelMediaAAC(t *testing.T) {
 	}
 }
 
+// opusOnlySDP advertises a single sendable Opus backchannel track — the
+// multi-codec thingino track0 minus its other payload types.
+const opusOnlySDP = `v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=Backchannel
+m=video 0 RTP/AVP 96
+a=rtpmap:96 H264/90000
+a=control:track1
+m=audio 0 RTP/AVP 102
+a=rtpmap:102 OPUS/48000/2
+a=sendonly
+a=control:track0
+`
+
+func TestFindBackchannelMediaOpus(t *testing.T) {
+	medias := parseSDP([]byte(opusOnlySDP))
+
+	// Auto-select: Opus is picked when no G.711/AAC track exists.
+	m, codec, err := findBackchannelMedia(medias, "")
+	if err != nil {
+		t.Fatalf("auto-select: %v", err)
+	}
+	if codec != "OPUS" || m.control != "track0" {
+		t.Errorf("auto-selected %s/%s, want OPUS/track0", codec, m.control)
+	}
+	got, pt := chooseCodec(m, codec)
+	if got != "OPUS" || pt != 102 {
+		t.Errorf("chooseCodec = %s/%d, want OPUS/102", got, pt)
+	}
+
+	// Forcing Opus works too.
+	if _, codec, err := findBackchannelMedia(medias, "OPUS"); err != nil || codec != "OPUS" {
+		t.Errorf("force OPUS: codec=%s err=%v", codec, err)
+	}
+}
+
 func TestChooseCodec(t *testing.T) {
 	// thingino's real backchannel track: one m= line advertising four payload
 	// types (AAC 97, Opus 102, PCMU 0, PCMA 8).
@@ -449,7 +485,8 @@ func TestChooseCodec(t *testing.T) {
 		{"thingino forced PCMA", thingino, "PCMA", "PCMA", 8},
 		{"thingino forced PCMU", thingino, "PCMU", "PCMU", 0},
 		{"thingino forced AAC", thingino, "AAC", "AAC", 97},
-		{"unsupported falls back", sdpMedia{payloads: []int{99}, formats: map[int]sdpFormat{99: {"OPUS", 48000, ""}}}, "", "PCMA", 99},
+		{"thingino forced OPUS", thingino, "OPUS", "OPUS", 102},
+		{"unsupported falls back", sdpMedia{payloads: []int{99}, formats: map[int]sdpFormat{99: {"G722", 16000, ""}}}, "", "PCMA", 99},
 	}
 	for _, c := range cases {
 		codec, pt := chooseCodec(&c.media, c.want)
@@ -517,6 +554,7 @@ func TestThinginoMultiCodecBackchannel(t *testing.T) {
 		{"PCMA", 8},
 		{"PCMU", 0},
 		{"AAC", 97},
+		{"OPUS", 102},
 	} {
 		m, codec, err := findBackchannelMedia(medias, want.codec)
 		if err != nil {
@@ -537,7 +575,7 @@ func TestProbeLabels(t *testing.T) {
 		want []string
 	}{
 		{"single G.711 track", sampleSDP, []string{"g711"}},
-		{"multi-codec thingino track", thinginoCh0SDP, []string{"aac", "g711"}},
+		{"multi-codec thingino track", thinginoCh0SDP, []string{"aac", "opus", "g711"}},
 		{"separate AAC and G.711 tracks", aacSDP, []string{"aac", "g711"}},
 	}
 	for _, c := range cases {

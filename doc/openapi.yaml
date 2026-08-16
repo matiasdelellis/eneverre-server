@@ -909,7 +909,9 @@ paths:
         and encoded G.711). Adding `"codec": "aac"` to the handshake instead
         streams raw AAC-LC access units that the server forwards untranscoded to
         the camera's AAC (`MPEG4-GENERIC`) backchannel, when the camera exposes
-        one. Once the camera backchannel is live the server sends one text
+        one; `"codec": "opus"` streams raw 20 ms Opus packets (RFC 7587
+        passthrough) to the camera's Opus track. Once the camera backchannel is
+        live the server sends one text
         `{"status":"ready"}`, then the socket is receive-only apart from keepalive
         pings (25s; the session is dropped if no pong or audio arrives within 60s).
       parameters:
@@ -2082,12 +2084,13 @@ components:
           type: array
           items:
             type: string
-            enum: [aac, g711]
+            enum: [aac, g711, opus]
           description: >-
             Push-to-talk codecs the camera accepts, discovered by probing its
             backchannel SDP at startup. Clients send AAC when `aac` is listed,
-            otherwise G.711. Absent/empty when talk is false or the camera was
-            unreachable at probe time (assume G.711).
+            raw Opus packets (RFC 7587) when `opus` is listed, otherwise G.711.
+            Absent/empty when talk is false or the camera was unreachable at
+            probe time (assume G.711).
 
     PTZMetadata:
       type: object

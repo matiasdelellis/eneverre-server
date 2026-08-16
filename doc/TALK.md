@@ -53,6 +53,8 @@ discovered by probing its backchannel SDP at startup. Use it to pick the codec
 instead of guessing:
 
 - If the list contains `"aac"`, send AAC (`{"codec": "aac"}`) for 16 kHz wideband.
+- `"opus"` means the camera takes raw 20 ms Opus packets (`{"codec": "opus"}`, RFC
+  7587 passthrough — the client encodes Opus itself).
 - Otherwise (or if the list is **absent/empty** — the camera was unreachable when
   the server probed it, or the probe hasn't finished), fall back to G.711 (omit
   `codec`). Every backchannel camera supports G.711, so this is always safe.
@@ -105,7 +107,14 @@ Client                                  Server
      `{"sampleRate": 16000, "codec": "aac"}`. Then the binary messages you send
      are **raw AAC-LC access units** (one AU per message), not PCM. The camera
      must expose an AAC backchannel or the socket is closed with an RTSP error.
-     Omit `codec` (or send anything else) for the default G.711/PCM path.
+   - To send Opus, add `"codec": "opus"`:
+     `{"codec": "opus"}` (sampleRate is ignored). Then the binary messages are
+     **raw Opus packets, one 20 ms frame per message** (RFC 7587 passthrough —
+     the server does not transcode; it forwards each packet in one RTP frame).
+     The camera must expose an Opus backchannel or the socket is closed with an
+     RTSP error. Client-side Opus encoding is available on Android (`MediaCodec`)
+     and Chrome/Edge (`WebCodecs AudioEncoder`).
+   - Omit `codec` (or send anything else) for the default G.711/PCM path.
 2. **Ready** — the server sends exactly one **text** message `{"status":"ready"}`
    once the RTSP backchannel is live (the dial takes ~1 s). Use it to switch the
    UI from "connecting" to "talking" so the user does not clip the first second
@@ -147,6 +156,19 @@ Android, configure `MediaCodec` for `audio/mp4a-latm` with
 output buffer (one access unit) as a binary WebSocket message. The `announced`
 `sampleRate` in the handshake is ignored on the AAC path (the AU rate is fixed by
 the encoder), but send it anyway for forward compatibility.
+
+Opus path (`"codec": "opus"`):
+
+| Stage | Format |
+|---|---|
+| Client → server | **raw Opus packets**, mono, one **20 ms frame** per binary message |
+| Server internal | RFC 7587 passthrough only — **no transcoding, no AU framing** |
+| Server → camera | the same Opus packets, one per RTP frame, 48 kHz timestamp clock (+960 per frame) |
+
+The client's encoder must emit 20 ms frames (the RTP timestamp increments assume
+it). On Android, configure `MediaCodec` for `audio/opus` with
+`KEY_CHANNEL_COUNT = 1` and a 20 ms frame duration; on Chrome/Edge, a
+`WebCodecs AudioEncoder` with `codec: "opus"`, 48 kHz mono, 960-sample frames.
 
 ### AAC warm-up (required): stream silence until the user speaks
 
@@ -261,7 +283,9 @@ Request `RECORD_AUDIO` at runtime (API 23+) before starting.
 
 Read `capabilities.talk_codecs` from `GET /api/cameras` (see
 [Capability discovery](#capability-discovery)) and prefer AAC when the camera
-offers it — it gives 16 kHz wideband instead of 8 kHz telephony:
+offers it — it gives 16 kHz wideband instead of 8 kHz telephony. `"opus"` (raw
+20 ms Opus packets, RFC 7587 passthrough) is an option for clients that can
+encode Opus themselves:
 
 ```kotlin
 val useAac = camera.capabilities.talkCodecs?.contains("aac") == true

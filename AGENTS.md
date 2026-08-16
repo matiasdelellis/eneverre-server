@@ -203,9 +203,13 @@ All code lives under `go/` (module `eneverre`).
   `Session.FeedPCM` takes native-rate mono S16LE and does anti-alias LPF →
   linear resample to 8 kHz → G.711 (A-law/µ-law) → 160-sample RTP frames every
   20 ms → RTSP interleaved (`$`-framing, channel 0), with a periodic RTCP
-  Sender Report every 5 s on channel 1. Hand-implemented RTSP/G.711/RTP/RTCP
-  with the stdlib; only new external dep is `gorilla/websocket` (transport
-  used by the handler). Trace via `ENEVERRE_LOG_LEVEL=debug`.
+  Sender Report every 5 s on channel 1. AAC and Opus are **passthrough** (no
+  server-side encode/decode, no cgo): `FeedAU` forwards client-encoded AAC-LC
+  access units (RFC 3640 framing from the track's fmtp) and `FeedOpus`
+  forwards raw 20 ms Opus packets (RFC 7587, one packet per RTP frame, +960
+  per timestamp). Hand-implemented RTSP/G.711/RTP/RTCP with the stdlib; only
+  new external dep is `gorilla/websocket` (transport used by the handler).
+  Trace via `ENEVERRE_LOG_LEVEL=debug`.
 - `go/internal/events` — `Event` model (RFC3339-on-the-wire, unix-internally)
   plus record/list/get/delete. `RecordMotion` extends an overlapping row to
   the union of ranges.
@@ -489,7 +493,8 @@ see request query strings and the more verbose media-engine traces
   RTSP endpoint as the video, so the second URL is almost never needed.
   `Capabilities.Talk` is advertised when the config is explicit **or** the
   probe succeeded; the probe result also populates `Capabilities.TalkCodecs`
-  (`["aac","g711"]`). `App.backchannelURL(c)` resolves the effective URL
+  (e.g. `["aac","opus","g711"]` on a thingino track0 — Opus is passthrough,
+  see above). `App.backchannelURL(c)` resolves the effective URL
   (explicit config wins over probed source); the URL must reach the camera
   directly. Auth (validated **before**
   the upgrade, by `auth.VerifyToken`): the access token rides the
