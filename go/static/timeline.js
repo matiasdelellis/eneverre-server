@@ -200,22 +200,31 @@ export class Timeline {
     }, 500);
   }
 
+  // getNextRecord/getPrevRecord walk a record lane independent of its sort
+  // order (recordings come from the server ascending, events descending), so
+  // a direction swap upstream can't break the j/l navigation again: next is
+  // the first record starting strictly after the cursor, prev is the last
+  // record starting strictly before it.
   getNextRecord(currentMsec, records) {
-    let prevRecord = null;
+    let next = null;
     for (const record of records) {
-      if (prevRecord != null && currentMsec < prevRecord.timestampMsec && currentMsec >= record.timestampMsec) {
-        return prevRecord;
+      if (record.timestampMsec > currentMsec &&
+          (next == null || record.timestampMsec < next.timestampMsec)) {
+        next = record;
       }
-      prevRecord = record;
     }
-    return null;
+    return next;
   }
 
   getPrevRecord(currentMsec, records) {
+    let prev = null;
     for (const record of records) {
-      if (record.timestampMsec < currentMsec) return record;
+      if (record.timestampMsec < currentMsec &&
+          (prev == null || record.timestampMsec > prev.timestampMsec)) {
+        prev = record;
+      }
     }
-    return null;
+    return prev;
   }
 
   getRecord(timestampMsec, records) {

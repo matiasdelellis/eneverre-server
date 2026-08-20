@@ -41,9 +41,18 @@ func (s *splitWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
+// maxPlaylistSpan caps the [from,to] window an HLS playlist may cover. The
+// server handler enforces the same bound before delegating (see
+// server.maxRecordingListSpan), so this is defense in depth for any other
+// caller of HandleHLSPlaylist: without it, an unbounded range builds one
+// playlist line per segment ever recorded.
+const maxPlaylistSpan = 7 * 24 * time.Hour
+
 // HandleHLSPlaylist serves a VOD playlist: GET /hls/playlist.m3u8?path=&from=&to=
 // Each recorded segment becomes an HLS fMP4 (CMAF) segment. Gaps are collapsed
 // into a continuous timeline; EXT-X-PROGRAM-DATE-TIME preserves wall-clock.
+// from/to are required (the playlist URIs this server generates always carry
+// them); an unbounded playlist is refused rather than built.
 func (h *Handler) HandleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	path := q.Get("path")
@@ -53,6 +62,18 @@ func (h *Handler) HandleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	from := parseHLSTime(q.Get("from"))
 	to := parseHLSTime(q.Get("to"))
+	if from == nil || to == nil {
+		http.Error(w, "from and to are required", http.StatusBadRequest)
+		return
+	}
+	if !to.After(*from) {
+		http.Error(w, "to must be after from", http.StatusBadRequest)
+		return
+	}
+	if to.Sub(*from) > maxPlaylistSpan {
+		http.Error(w, fmt.Sprintf("playlist span exceeds %s", maxPlaylistSpan), http.StatusBadRequest)
+		return
+	}
 
 	segs, err := h.Index.Range(path, from, to)
 	if err != nil {

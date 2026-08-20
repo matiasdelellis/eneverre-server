@@ -137,6 +137,13 @@ func (c *rtspClient) writeRequest(method, uri string) error {
 	return err
 }
 
+// maxBodyBytes caps an RTSP response body. The only bodies this client ever
+// reads are DESCRIBE SDP answers (tens of KB), so anything bigger is a broken
+// or hostile camera. The cap also bounds the allocation: without it a bogus
+// Content-Length (e.g. 4 GiB) would make `make([]byte, remaining)` OOM the
+// process before the read deadline even fires.
+const maxBodyBytes = 1 << 20
+
 func (c *rtspClient) readResponse() (int, map[string]string, []byte, error) {
 	c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
@@ -183,6 +190,9 @@ func (c *rtspClient) readResponse() (int, map[string]string, []byte, error) {
 	if contentLenStr := headers["content-length"]; contentLenStr != "" {
 		contentLen, _ := strconv.Atoi(contentLenStr)
 		if contentLen > 0 {
+			if contentLen > maxBodyBytes {
+				return 0, nil, nil, fmt.Errorf("response body of %d bytes exceeds the %d byte cap", contentLen, maxBodyBytes)
+			}
 			if len(parts) > 1 {
 				body = []byte(parts[1])
 			}

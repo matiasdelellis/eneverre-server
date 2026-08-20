@@ -2,7 +2,9 @@ package thingino
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestHeartbeatDecoding pins the tolerant decoding of the slow-heartbeat
@@ -73,5 +75,40 @@ func TestNumUnmarshal(t *testing.T) {
 		if int(n) != c.want {
 			t.Errorf("Num(%s) = %d, want %d", c.in, n, c.want)
 		}
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"http://192.168.1.91/x/ch0.jpg?token=SECRET", "http://192.168.1.91/x/ch0.jpg"},
+		{"http://user:pass@host:8080/x?token=SECRET&d=g", "http://host:8080/x"},
+		{"not a url", "thingino endpoint"},
+	}
+	for _, c := range cases {
+		if got := redactURL(c.in); got != c.want {
+			t.Errorf("redactURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestDoErrorDoesNotLeakToken guards the log-leak fix: transport errors carry
+// the full URL (with ?token=...) inside *url.Error, and the server logs them
+// at WARN — the key must never survive into the error string.
+func TestDoErrorDoesNotLeakToken(t *testing.T) {
+	const secret = "SUPERSECRETKEY"
+	// Port 1 on localhost is refused fast on every platform.
+	_, err := do("GET", "http://127.0.0.1:1/x/json-motor.cgi?token="+secret, secret, nil, 2*time.Second)
+	if err == nil {
+		t.Fatal("do() = nil error, want a connection error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error leaks the API key: %v", err)
+	}
+	// The redacted form still names the endpoint so the log stays useful.
+	if !strings.Contains(err.Error(), "json-motor.cgi") {
+		t.Errorf("error lost the endpoint path: %v", err)
 	}
 }

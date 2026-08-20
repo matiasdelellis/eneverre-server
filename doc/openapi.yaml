@@ -1106,7 +1106,7 @@ paths:
           $ref: '#/components/responses/NotFound'
 
         '422':
-          description: start and end are required
+          description: start and end are required, end is not after start, or the range exceeds the 7-day limit
           content:
             application/json:
               schema:
@@ -1218,18 +1218,20 @@ paths:
       summary: Recording coverage gaps (embedded engine)
       description: |
         Embedded media engine only (404 otherwise). Returns interruptions longer
-        than 1s between consecutive segments, optionally bounded by start/end.
+        than 1s between consecutive segments, bounded by start/end. Both bounds
+        are required and the span is capped at 7 days, so a single request can
+        never scan the whole segment history.
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - name: start
           in: query
-          required: false
+          required: true
           schema:
             type: string
             format: date-time
         - name: end
           in: query
-          required: false
+          required: true
           schema:
             type: string
             format: date-time
@@ -1261,6 +1263,12 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          description: start and end are required, end is not after start, or the range exceeds the 7-day limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/camera/{camera_id}/recordings/hls/playlist.m3u8:
     get:
@@ -1290,6 +1298,12 @@ paths:
               schema: { type: string }
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          description: start and end are required, end is not after start, or the range exceeds the 7-day limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /api/camera/{camera_id}/recordings/hls/init.mp4:
     get:

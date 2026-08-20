@@ -19,21 +19,49 @@ func parseISOTime(ts string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("invalid iso %q", ts)
 }
 
+// maxRecordingListSpan caps the window a recordings list/gaps/HLS-playlist
+// request may cover. Without it an unbounded (or multi-year) range would
+// materialize the camera's whole segment index into memory — with 60s
+// segments a single year is already ~525k rows, repeatable by any logged-in
+// user. The UI pages in 24h chunks and the HLS scrubber loads 1h windows,
+// so 7 days is generous headroom for legitimate clients.
+const maxRecordingListSpan = 7 * 24 * time.Hour
+
+// boundRange parses and validates the start/end window shared by the
+// recordings list, gaps and HLS playlist endpoints. Both bounds are
+// required, end must be after start, and the span is capped. The returned
+// status is 0 on success; otherwise it carries the HTTP status and detail
+// the caller must answer with (missing/span violations are 422, unparseable
+// timestamps keep the historical 400).
+func boundRange(q url.Values) (from, to time.Time, status int, detail string) {
+	start, end := q.Get("start"), q.Get("end")
+	if start == "" || end == "" {
+		return from, to, http.StatusUnprocessableEntity, "start and end are required"
+	}
+	var err1, err2 error
+	from, err1 = parseISOTime(start)
+	to, err2 = parseISOTime(end)
+	if err1 != nil || err2 != nil {
+		return from, to, http.StatusBadRequest, "invalid start/end timestamp"
+	}
+	if !to.After(from) {
+		return from, to, http.StatusUnprocessableEntity, "end must be after start"
+	}
+	if to.Sub(from) > maxRecordingListSpan {
+		return from, to, http.StatusUnprocessableEntity,
+			fmt.Sprintf("time range exceeds the %s limit", maxRecordingListSpan)
+	}
+	return from, to, 0, ""
+}
+
 func (a *App) handlePlaybackList(w http.ResponseWriter, r *http.Request) {
 	cam := a.playbackGate(w, r)
 	if cam == nil {
 		return
 	}
-	q := r.URL.Query()
-	start, end := q.Get("start"), q.Get("end")
-	if start == "" || end == "" {
-		httpError(w, http.StatusUnprocessableEntity, "start and end are required")
-		return
-	}
-	from, err1 := parseISOTime(start)
-	to, err2 := parseISOTime(end)
-	if err1 != nil || err2 != nil {
-		httpError(w, http.StatusBadRequest, "invalid start/end timestamp")
+	from, to, status, detail := boundRange(r.URL.Query())
+	if status != 0 {
+		httpError(w, status, detail)
 		return
 	}
 	segs, err := a.engine.Index().Range(cam.ID, &from, &to)
@@ -96,32 +124,20 @@ func (a *App) handlePlaybackTimeline(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePlaybackGaps reports coverage gaps (interruptions longer than 1s
-// between consecutive segments) for a camera, optionally bounded by start/end.
+// between consecutive segments) for a camera, bounded by start/end (both
+// required — an unbounded scan would walk the whole segment history).
 // Requires the embedded engine.
 func (a *App) handlePlaybackGaps(w http.ResponseWriter, r *http.Request) {
 	cam := a.playbackGate(w, r)
 	if cam == nil {
 		return
 	}
-	q := r.URL.Query()
-	var from, to *time.Time
-	if s := q.Get("start"); s != "" {
-		t, err := parseISOTime(s)
-		if err != nil {
-			httpError(w, http.StatusBadRequest, "invalid start timestamp")
-			return
-		}
-		from = &t
+	from, to, status, detail := boundRange(r.URL.Query())
+	if status != 0 {
+		httpError(w, status, detail)
+		return
 	}
-	if s := q.Get("end"); s != "" {
-		t, err := parseISOTime(s)
-		if err != nil {
-			httpError(w, http.StatusBadRequest, "invalid end timestamp")
-			return
-		}
-		to = &t
-	}
-	gaps, err := a.engine.Index().Gaps(cam.ID, from, to, time.Second)
+	gaps, err := a.engine.Index().Gaps(cam.ID, &from, &to, time.Second)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -176,13 +192,19 @@ func (a *App) delegateHLS(w http.ResponseWriter, r *http.Request, camID string, 
 // handlePlaybackHLSPlaylist serves an HLS VOD playlist (CMAF fMP4) for a camera
 // over [start,end]. Requires the embedded engine. Gaps are collapsed into a
 // continuous timeline; EXT-X-PROGRAM-DATE-TIME carries wall-clock for cursor
-// mapping.
+// mapping. Both bounds are required and capped — the same boundRange gate as
+// list/gaps — so a parameterless request can't build a playlist line for every
+// segment ever recorded.
 func (a *App) handlePlaybackHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	cam := a.playbackGate(w, r)
 	if cam == nil {
 		return
 	}
 	q := r.URL.Query()
+	if _, _, status, detail := boundRange(q); status != 0 {
+		httpError(w, status, detail)
+		return
+	}
 	a.delegateHLS(w, r, cam.ID, map[string]string{"from": q.Get("start"), "to": q.Get("end")}, a.engine.Playback().HandleHLSPlaylist)
 }
 

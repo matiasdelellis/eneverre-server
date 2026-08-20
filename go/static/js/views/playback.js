@@ -157,8 +157,8 @@ async function fetchRecordingStart(camId) {
 }
 
 // fetchEventsRange fetches motion events over an explicit [startMs,endMs]
-// window. Returned newest-first, so getNextRecord/getPrevRecord (which assume a
-// descending list) walk events the same way j/l walk recordings.
+// window. Returned newest-first; getNextRecord/getPrevRecord are sort-order
+// agnostic, so they walk events and (ascending) recordings identically.
 async function fetchEventsRange(camId, startMs, endMs) {
   const params = new URLSearchParams({
     since: new Date(startMs).toISOString(),

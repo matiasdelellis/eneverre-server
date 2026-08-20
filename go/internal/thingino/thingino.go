@@ -21,9 +21,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strconv"
 	"time"
 )
@@ -290,6 +292,21 @@ func doPost(url, apiKey string, body []byte, timeout time.Duration) ([]byte, err
 // the server's generic snapshot cap (8 MiB).
 const maxResponseBytes = 8 << 20
 
+// redactURL returns the URL with its query string (and any userinfo)
+// stripped. The Thingino API key rides the URL as ?token=..., and the
+// callers log the errors `do` returns — so anything derived from the raw
+// URL (url.Error messages, oversize errors) must never carry the query.
+func redactURL(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil || (u.Scheme == "" && u.Host == "") {
+		return "thingino endpoint"
+	}
+	u.RawQuery = ""
+	u.User = nil
+	u.Fragment = ""
+	return u.String()
+}
+
 func do(method, url, apiKey string, payload []byte, timeout time.Duration) ([]byte, error) {
 	var reqBody io.Reader
 	if payload != nil {
@@ -316,6 +333,15 @@ func do(method, url, apiKey string, payload []byte, timeout time.Duration) ([]by
 
 	resp, err := client.Do(req)
 	if err != nil {
+		// *url.Error embeds the full URL (including ?token=...) in its
+		// message, and this error is logged by the server's callers. Rebuild
+		// it with the query stripped while keeping the underlying cause.
+		var ue *neturl.Error
+		if errors.As(err, &ue) {
+			sanitized := *ue
+			sanitized.URL = redactURL(ue.URL)
+			return nil, &sanitized
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -327,7 +353,7 @@ func do(method, url, apiKey string, payload []byte, timeout time.Duration) ([]by
 		return nil, err
 	}
 	if len(body) > maxResponseBytes {
-		return nil, fmt.Errorf("thingino: response from %s exceeds %d bytes", url, maxResponseBytes)
+		return nil, fmt.Errorf("thingino: response from %s exceeds %d bytes", redactURL(url), maxResponseBytes)
 	}
 	if resp.StatusCode >= 400 {
 		return nil, &StatusError{Code: resp.StatusCode}
