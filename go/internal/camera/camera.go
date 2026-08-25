@@ -176,6 +176,17 @@ type Camera struct {
 	// windows. Exposed publicly so the UI can show which program a camera is on.
 	ScheduleID string `json:"schedule_id,omitempty"`
 
+	// Enabled marks whether a camera is in service. Default true. Setting it to
+	// false takes the camera out of service without deleting it: the media
+	// engine never connects to it (no recorder retry loop, no recording, no live
+	// MSE, no RTSP relay) and the interactive endpoints (PTZ, talk, settings,
+	// privacy, thumbnail, event webhook) refuse it. Existing recordings on disk
+	// stay indexed and playable. Runtime-only capabilities are stripped from the
+	// public model while disabled; re-enabling brings the pipeline back with a
+	// fresh session and re-probes the camera, so its real privacy state (a lens
+	// left blacked out) is picked up again instead of assumed off.
+	Enabled bool `json:"enabled"`
+
 	Privacy bool `json:"privacy"`
 	// ScheduleOff is the live "outside the recording schedule" state: true when
 	// the scheduler has paused this camera because the current time falls outside
@@ -227,6 +238,12 @@ type Spec struct {
 
 	// ScheduleID references a recording schedule by id; empty = record 24/7.
 	ScheduleID string `json:"schedule_id"`
+
+	// Enabled marks whether the camera is in service (see the Camera model).
+	// Default true. When false the engine will not connect, record or stream
+	// the camera, but its stored footage stays indexed and playable until it is
+	// enabled again.
+	Enabled bool `json:"enabled"`
 
 	// PTZ calibration: total steps per axis and the angular range those steps
 	// cover. Defaults match the typical thingino gimbal (2130/360 pan,
@@ -294,6 +311,7 @@ func (s Spec) Camera() Camera {
 		PrivacyX:       s.PrivacyX,
 		PrivacyY:       s.PrivacyY,
 		ScheduleID:     s.ScheduleID,
+		Enabled:        s.Enabled,
 		Privacy:        false,
 	}
 	// Build the public PTZ block only when the camera actually has PTZ — the
@@ -525,6 +543,9 @@ func loadSpec(path string) (Spec, bool) {
 	// defaults to the camera's `record` value: a recording camera exposes its
 	// footage unless the operator explicitly sets `playback = false`.
 	playback := cam.Key("playback").MustBool(record)
+	// The INI seed is a one-time bootstrap; the in-service flag (Enabled) is a
+	// DB/API concept managed afterward through the camera wizard, so seeded
+	// cameras always start in service.
 
 	s := Spec{
 		// ID is intentionally left empty; SeedFromINI derives it from the name.
@@ -540,6 +561,7 @@ func loadSpec(path string) (Spec, bool) {
 		Relay:       relay,
 		Privacy:     privacyAllowed,
 		Playback:    playback,
+		Enabled:     true,
 		// ScheduleID is deliberately NOT read from the INI: a seeded camera
 		// always starts recording 24/7. Recording schedules are a DB/API concept
 		// (named programs live only in the DB), so a schedule is assigned through

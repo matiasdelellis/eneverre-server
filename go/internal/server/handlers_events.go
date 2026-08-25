@@ -38,8 +38,17 @@ func (a *App) handleWebhookEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	camID := r.PathValue("cam_id")
-	if _, ok := a.getCamera(camID); !ok {
+	cam, ok := a.getCamera(camID)
+	if !ok {
 		httpError(w, http.StatusNotFound, "Camera not found")
+		return
+	}
+	// A camera out of service records nothing, so its events are dropped too:
+	// the firmware keeps firing (it has no idea it was disabled), and an event
+	// with no footage behind it would only pollute the timeline. Same 409 the
+	// other interactive endpoints answer while disabled.
+	if !cam.Enabled {
+		httpError(w, http.StatusConflict, "camera is disabled")
 		return
 	}
 

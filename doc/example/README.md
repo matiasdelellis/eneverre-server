@@ -539,6 +539,17 @@ from the UI afterwards.
     lens blackout + PTZ privacy position. Set to `false` to mark an always-on
     camera that must never be paused (no privacy button, `capabilities.privacy`
     is false, the endpoint answers 404).
+ * **enabled:** Whether the camera is in service. Default true. Not read from
+    the INI — the seed is a one-time bootstrap, so a seeded camera always starts
+    in service. Toggle it afterward through the API/UI: set to `false` to take
+    the camera out of service without deleting it — the engine never connects,
+    records or streams it (no recorder retry loop, no MSE, no RTSP relay), and
+    the interactive endpoints (PTZ, talk, settings, privacy, thumbnail, event
+    webhook) answer 409 — but its existing recordings stay indexed and playable.
+    Runtime capabilities are withheld from `/api/cameras` while disabled; setting
+    it back to `true` brings the pipeline up with a fresh session and re-probes
+    the camera, so the privacy state it reports on return is the real one (a lens
+    left blacked out while out of service is picked up again, not assumed off).
  * **transport:** Per-camera override of the global
    `[media] transport` for the source RTSP: `auto` (default), `tcp` (reliable,
    recommended for lossy/distant links), or `udp`. Useful to force TCP on a

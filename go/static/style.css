@@ -935,6 +935,20 @@ button.icon-btn {
   z-index: 1;
 }
 .viewer-side.collapsed .viewer-thumb .thumb-privacy { font-size: 16px; }
+/* Disabled: mirror the privacy treatment — the server never reaches the
+   camera, so the stale cached frame must not present as live. */
+.viewer-thumb .thumb-preview.disabled img { visibility: hidden; }
+.viewer-thumb .thumb-disabled {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  background: var(--video-bg);
+  z-index: 1;
+}
+.viewer-side.collapsed .viewer-thumb .thumb-disabled { font-size: 16px; }
 
 @media (max-width: 900px) {
   /* On mobile the camera list lives in a slide-in drawer, not a column.
@@ -1843,6 +1857,21 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 /* Give the location column a bit more room than the users table default. */
 .cameras-row { grid-template-columns: 1.5fr 1fr auto; }
 .cam-caps { display: block; font-size: 11px; font-weight: 400; }
+.cam-disabled-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 3px;
+  color: var(--danger);
+  border: 1px solid currentColor;
+  vertical-align: middle;
+}
+.cameras-row.camera-disabled .users-fullname,
+.cameras-row.camera-disabled .users-actions { opacity: 0.55; }
 
 .cam-wizard-card { width: 460px; }
 /* The wizard form reuses .users-form, whose 360px cap would leave it
@@ -2476,6 +2505,12 @@ kbd {
   background: #f59e0b;
   animation: cam-status-pulse 1.2s ease-in-out infinite;
 }
+/* Out of service: a settled state, not a connection problem and not a retry —
+   steady grey, never pulsing. */
+.cam-status-dot.disabled {
+  background: var(--muted);
+  animation: none;
+}
 @keyframes cam-status-pulse {
   50% { opacity: 0.35; }
 }
@@ -2589,11 +2624,11 @@ kbd {
 .status-badge svg { width: 1em; height: 1em; }
 
 .status-cam-table .status-cam-row {
-  grid-template-columns: 1fr 70px 90px 60px 80px;
+  grid-template-columns: 1fr 70px 90px 60px 80px 80px;
 }
 @media (max-width: 560px) {
   .status-cam-table .status-cam-row {
-    grid-template-columns: 1fr 48px 60px 44px 56px;
+    grid-template-columns: 1fr 48px 60px 44px 56px 56px;
     gap: 6px;
     font-size: 13px;
   }

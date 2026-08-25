@@ -113,11 +113,12 @@ function renderCameras() {
   }
   for (const c of list) {
     const row = document.createElement("div");
-    row.className = "users-row cameras-row";
+    row.className = "users-row cameras-row" + (c.enabled === false ? " camera-disabled" : "");
     row.dataset.id = c.id;
     const caps = capsSummary(c);
+    const badge = c.enabled === false ? `<span class="cam-disabled-badge">${t("cameras.disabled_badge")}</span>` : "";
     row.innerHTML = `
-      <div class="users-fullname" title="${escapeHtml(c.name || "—")}">${escapeHtml(c.name || "—")}${caps ? `<small class="muted cam-caps">${escapeHtml(caps)}</small>` : ""}</div>
+      <div class="users-fullname" title="${escapeHtml(c.name || "—")}">${escapeHtml(c.name || "—")}${badge}${caps ? `<small class="muted cam-caps">${escapeHtml(caps)}</small>` : ""}</div>
       <div title="${escapeHtml(c.location || "—")}">${escapeHtml(c.location || "—")}</div>
       <div class="users-actions">
         <button data-act="edit">${t("cameras.edit")}</button>
@@ -184,6 +185,7 @@ function openWizard(config = null) {
   // disabled, otherwise leave the toggle free. fetchStatus is admin-only and
   // so is the cameras view, so this is always allowed.
   refreshRecordingState();
+  applyDisabledState();
   const modal = document.getElementById("cam-wizard-modal");
   modal.hidden = false;
   // Release a stale trap first: closeOverlayViews (overlay switch / logout)
@@ -223,6 +225,7 @@ function fillForm(c) {
   check("relay", c.relay);
   check("privacy", c.privacy);
   check("playback", c.playback);
+  check("enabled", c.enabled);
   text("width", c.width);
   text("height", c.height);
   text("thingino_url", c.thingino_url);
@@ -265,9 +268,38 @@ async function refreshRecordingState() {
   applyRecordingState();
 }
 
+// enabledChecked reports whether the wizard's "Camera enabled" box is checked.
+// While a camera is disabled (box unchecked) its sink toggles are locked: the
+// server ignores them until the camera is re-enabled, so editing them in the
+// wizard would be misleading.
+function enabledChecked() {
+  const form = document.getElementById("cam-wizard-form");
+  return !!(form && form.elements.enabled && form.elements.enabled.checked);
+}
+
+// applyDisabledState reflects the "Camera enabled" toggle (step 1) on the media
+// options in step 3: when unchecked the hint appears next to the switch, and the
+// sink toggles (MSE, relay, privacy, record, playback) are locked so an operator
+// doesn't tweak values that have no effect until the camera is re-enabled. The
+// stored values are preserved — re-checking "Camera enabled" restores exactly
+// what was there.
+function applyDisabledState() {
+  const form = document.getElementById("cam-wizard-form");
+  if (!form) return;
+  const off = !enabledChecked();
+  const hint = document.getElementById("cam-disabled-hint");
+  if (hint) hint.hidden = !off;
+  for (const name of ["mse", "relay", "privacy", "record", "playback"]) {
+    const el = form.elements[name];
+    if (el) el.disabled = off;
+  }
+  applyRecordingState();
+}
+
 // applyRecordingState inhibits the "Record to disk" toggle when the server
 // has recording disabled globally, and reveals the friendly one-line banner.
-// Otherwise the toggle is interactive and the banner is hidden.
+// Otherwise the toggle is interactive — unless the camera itself is disabled,
+// in which case the sink lock above wins and the toggle stays locked too.
 function applyRecordingState() {
   const form = document.getElementById("cam-wizard-form");
   if (!form) return;
@@ -278,7 +310,7 @@ function applyRecordingState() {
     cb.disabled = true;
     if (banner) banner.hidden = false;
   } else {
-    cb.disabled = false;
+    cb.disabled = !enabledChecked();
     if (banner) banner.hidden = true;
   }
   // Forcing record off has to carry through to playback, or a new camera is
@@ -488,6 +520,7 @@ function collectForm() {
     relay: f.relay.checked,
     privacy: f.privacy.checked,
     playback: f.playback.checked,
+    enabled: f.enabled.checked,
     ptz: f.ptz.checked,
     thingino_url: trim("thingino_url"),
     thingino_api_key: trim("thingino_api_key"),
@@ -511,6 +544,7 @@ function buildReview() {
   const rows = [
     [t("cameras.review_name"), b.name || "—"],
     [t("cameras.review_location"), b.location || "—"],
+    [t("cameras.review_enabled"), b.enabled ? t("cameras.yes") : t("cameras.no")],
     [t("cameras.review_source"), maskSource(b.source)],
     [t("cameras.review_transport"), b.transport || "auto"],
     [t("cameras.review_sinks"), [b.record && "record", b.mse && "MSE", b.relay && "relay"].filter(Boolean).join(", ") || "none"],
@@ -612,6 +646,7 @@ export function initCameras() {
   // and stop mirroring as soon as the operator states a preference.
   wizardForm?.elements.record?.addEventListener("change", syncPlaybackToRecord);
   wizardForm?.elements.playback?.addEventListener("change", () => { playbackTouched = true; });
+  wizardForm?.elements.enabled?.addEventListener("change", applyDisabledState);
   const modal = document.getElementById("cam-wizard-modal");
   if (modal) {
     modal.addEventListener("click", (e) => { if (e.target === modal) closeWizard(); });

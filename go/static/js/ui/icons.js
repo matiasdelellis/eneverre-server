@@ -69,6 +69,10 @@ const PATHS = {
   moon:           '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
   sun:            '<circle cx="12" cy="12" r="4"/><line x1="12" y1="2"  x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.93"  y1="4.93"  x2="6.34"  y2="6.34"/><line x1="17.66" y1="17.66" x2="19.07" y2="19.07"/><line x1="2"  y1="12" x2="4"  y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.93"  y1="19.07" x2="6.34"  y2="17.66"/><line x1="17.66" y1="6.34"  x2="19.07" y2="4.93"/>',
   circle:         '<circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/>',
+  // "Out of service": the power glyph reads as "turned off" and, unlike
+  // camera-off (which marks privacy), is not a crossed-out camera — the two
+  // states sit side by side on the wall and must not look alike.
+  power:          '<path d="M12 3v9"/><path d="M7.05 6.05a7 7 0 1 0 9.9 0"/>',
   home:           '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5"/><path d="M9.5 21v-6h5v6"/>',
 };
 

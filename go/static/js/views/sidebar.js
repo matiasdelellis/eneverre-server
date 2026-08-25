@@ -4,6 +4,7 @@ import { fetchCameras, apiFetch } from "../api.js";
 import { isMobileViewport, closeSidebarDrawer } from "./app-shell.js";
 import { loadJson, saveJson, LOCATION_ORDER_KEY } from "../util/storage.js";
 import { icon } from "../ui/icons.js";
+import { setCamStatus } from "../ui/cam-status.js";
 import { t } from "../i18n.js";
 
 function maybeCloseDrawer() {
@@ -41,7 +42,7 @@ export function publishLiveThumb(camId, dataUrl) {
     // A camera in privacy publishes no live frames (the wall shows the
     // placeholder, not video), but guard anyway so a late frame can't
     // repaint over the lock.
-    if (preview && preview.classList.contains("privacy")) return;
+    if (preview && (preview.classList.contains("privacy") || preview.classList.contains("disabled"))) return;
     const img = tile.querySelector("img");
     const loading = tile.querySelector(".thumb-loading");
     if (img) img.src = dataUrl;
@@ -72,6 +73,31 @@ function applyThumbPrivacy(tile, on) {
     }
   } else if (lock) {
     lock.remove();
+  }
+}
+
+// Show or clear the disabled badge on a sidebar tile. A disabled camera is
+// never reached by the server (no thumbnail, no live frames), so the stale
+// poster must not linger behind a frame that looks live — mirror the wall tile.
+function applyThumbDisabled(tile, on) {
+  const preview = tile.querySelector(".thumb-preview");
+  if (!preview) return;
+  preview.classList.toggle("disabled", on);
+  let badge = preview.querySelector(".thumb-disabled");
+  if (on) {
+    const loading = preview.querySelector(".thumb-loading");
+    if (loading) loading.hidden = true;
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "thumb-disabled";
+      badge.innerHTML = icon("power");
+      badge.title = t("sidebar.disabled");
+      badge.setAttribute("aria-label", t("sidebar.disabled"));
+      const caption = preview.querySelector(".thumb-caption");
+      preview.insertBefore(badge, caption || null);
+    }
+  } else if (badge) {
+    badge.remove();
   }
 }
 
@@ -142,11 +168,16 @@ function renderViewerThumb(cam) {
   // The banner is the static poster shown while the real thumbnail is
   // loading (or fails to load). loadViewerThumb() replaces it with the
   // camera's actual frame when available.
+  // A camera out of service is never connected to: its dot starts (and stays)
+  // in the steady "disabled" state instead of pulsing amber forever — nothing
+  // is retrying behind it.
+  const dotState = cam.enabled === false ? "disabled" : "connecting";
+  const dotLabel = cam.enabled === false ? t("disabled") : t("sidebar.connecting");
   tile.innerHTML = `
     <div class="thumb-preview">
       <img alt="" src="/img/camera-banner.png" />
       <span class="thumb-loading">${t("sidebar.loading")}</span>
-      <span class="cam-status-dot connecting" data-cam="${escapeHtml(cam.id)}" title="${t("sidebar.connecting")}" aria-label="${t("sidebar.connecting")}"></span>
+      <span class="cam-status-dot ${dotState}" data-cam="${escapeHtml(cam.id)}" title="${dotLabel}" aria-label="${dotLabel}"></span>
       <div class="thumb-caption">${escapeHtml(cam.name || cam.id)}</div>
     </div>
   `;
@@ -325,6 +356,16 @@ async function loadViewerThumb(cam, tile, { force = false } = {}) {
     return;
   }
   applyThumbPrivacy(tile, false);
+
+  // A disabled camera is never reached by the server: no thumbnail to pull,
+  // no live frame to publish. Show the disabled badge over the stored poster.
+  if (cam.enabled === false) {
+    applyThumbDisabled(tile, true);
+    setCamStatus(cam.id, "disabled");
+    loading.hidden = true;
+    return;
+  }
+  applyThumbDisabled(tile, false);
 
   if (!force) {
     let dataUrl = THUMB_CACHE.get(cam.id);

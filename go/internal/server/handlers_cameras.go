@@ -46,8 +46,13 @@ type createCameraReq struct {
 	Relay    *bool `json:"relay"`
 	Privacy  *bool `json:"privacy"`
 	Playback *bool `json:"playback"`
-	Width    *int  `json:"width"`
-	Height   *int  `json:"height"`
+	// Enabled marks whether the camera is in service (the default; see the
+	// Camera model). Setting it to false takes the camera out of service without
+	// deleting it: the engine stops connecting/recording/streaming it, but stored
+	// footage stays playable. Omitted = enabled.
+	Enabled *bool `json:"enabled"`
+	Width   *int  `json:"width"`
+	Height  *int  `json:"height"`
 
 	// ScheduleID references a recording schedule by id; "" (or omitted) means
 	// record 24/7. Validated against the schedule store by the handler.
@@ -148,6 +153,7 @@ func (req createCameraReq) spec() (camera.Spec, string) {
 		TiltDegrees:    intOr(req.TiltDegrees, 0),
 		FOVH:           floatOr(req.FOVH, 0),
 		ScheduleID:     strings.TrimSpace(req.ScheduleID),
+		Enabled:        boolOr(req.Enabled, true),
 	}
 	s.ApplyPTZDefaults()
 	return s, ""
@@ -219,6 +225,8 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 		a.engine.AddCamera(cam)
 	}
 	a.addCamera(cam)
+	// Each seed is a no-op for a disabled camera (they check Enabled themselves,
+	// because heartbeatLoop calls them too), so no gate is needed here.
 	a.seedHeartbeatFor(cam)
 	a.seedPTZPositionsFor(cam)
 	a.seedTalkCodecsFor(cam)
@@ -327,6 +335,8 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 	// Reset runtime state and re-probe: the thingino/backchannel config may have
 	// changed, so the old privacy/talk-codec/position state no longer applies.
 	a.dropCameraState(id)
+	// Each seed is a no-op for a disabled camera (they check Enabled themselves,
+	// because heartbeatLoop calls them too), so no gate is needed here.
 	a.seedHeartbeatFor(cam)
 	a.seedPTZPositionsFor(cam)
 	a.seedTalkCodecsFor(cam)
@@ -486,6 +496,10 @@ func (a *App) handleGetCameraSettings(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "camera settings not available")
 		return
 	}
+	if !cam.Enabled {
+		httpError(w, http.StatusConflict, "camera is disabled")
+		return
+	}
 	a.heartbeatsMu.RLock()
 	hi, ok := a.heartbeats[cam.ID]
 	a.heartbeatsMu.RUnlock()
@@ -517,6 +531,10 @@ func (a *App) handleSetCameraSettings(w http.ResponseWriter, r *http.Request) {
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
 	if !ok || !cam.Capabilities.Settings || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
 		httpError(w, http.StatusNotFound, "camera settings not available")
+		return
+	}
+	if !cam.Enabled {
+		httpError(w, http.StatusConflict, "camera is disabled")
 		return
 	}
 	var req struct {
@@ -640,14 +658,34 @@ func (a *App) publicCamera(c camera.Camera, reqHost string) camera.Camera {
 		out.LiveMSE = ""
 		out.RTSP = ""
 	}
-	a.talkCodecsMu.RLock()
-	out.Capabilities.TalkCodecs = a.talkCodecs[c.ID]
-	// Talk capability is advertised when the camera defines a backchannel URL
-	// OR the source probe found a backchannel on the source itself (see
-	// backchannelURL in server.go) — the explicit config is an override, not a
-	// requirement.
-	out.Capabilities.Talk = out.Capabilities.Talk || a.talkCodecs[c.ID] != nil
-	a.talkCodecsMu.RUnlock()
+	if !out.Enabled {
+		// A disabled camera is never engaged by the engine (no recorder, no
+		// live, no relay), so any stream URLs are stale and every runtime
+		// capability that needs a live pipeline is stripped: there is nothing
+		// to pause, move, talk to, configure or snapshot. Playback is kept —
+		// the whole point of disabling over deleting is that the stored
+		// footage stays browsable.
+		out.LiveMSE = ""
+		out.RTSP = ""
+		out.Privacy = false
+		out.ScheduleOff = false
+		out.Capabilities.Privacy = false
+		out.Capabilities.Thumbnail = false
+		out.Capabilities.PTZ = false
+		out.Capabilities.Talk = false
+		out.Capabilities.Settings = false
+		out.Capabilities.TalkCodecs = nil
+		out.PTZ = nil
+	} else {
+		a.talkCodecsMu.RLock()
+		out.Capabilities.TalkCodecs = a.talkCodecs[c.ID]
+		// Talk capability is advertised when the camera defines a backchannel URL
+		// OR the source probe found a backchannel on the source itself (see
+		// backchannelURL in server.go) — the explicit config is an override, not a
+		// requirement.
+		out.Capabilities.Talk = out.Capabilities.Talk || a.talkCodecs[c.ID] != nil
+		a.talkCodecsMu.RUnlock()
+	}
 	// Playback is advertised only when the camera actually has recordings on
 	// disk. The per-camera `playback` flag is an opt-out layered on top (an
 	// admin can hide playback for a camera that does record) — it is not a

@@ -384,6 +384,8 @@
           <label><span data-i18n="wizard.comment">Comment</span>
             <input name="comment" data-i18n-placeholder="wizard.comment_placeholder" placeholder="Optional note" />
           </label>
+          <label class="switch"><input type="checkbox" name="enabled" checked /><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-i18n="wizard.enabled">Camera enabled</span></label>
+          <p class="muted small" id="cam-disabled-hint" data-i18n="wizard.enabled_hint" hidden>Out of service: the camera stays in the list, but the server does not connect to it, record it or stream it. Existing recordings remain playable.</p>
         </div>
 
         <!-- Step 2: camera connections -->

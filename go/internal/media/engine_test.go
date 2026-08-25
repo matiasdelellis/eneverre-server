@@ -168,12 +168,12 @@ func TestAddCameraGating(t *testing.T) {
 	defer e.Close()
 
 	// No Source -> never engaged, even with sinks on.
-	noSource := camera.Camera{ID: "a", Source: "", MSE: true, Relay: true, Record: true}
+	noSource := camera.Camera{ID: "a", Source: "", MSE: true, Relay: true, Record: true, Enabled: true}
 	if _, ok := e.AddCamera(noSource); ok {
 		t.Error("AddCamera with empty Source engaged; want false")
 	}
 	// Source present but all per-camera sinks off -> not engaged.
-	allOff := camera.Camera{ID: "b", Source: "rtsp://x/b", MSE: false, Relay: false, Record: false}
+	allOff := camera.Camera{ID: "b", Source: "rtsp://x/b", MSE: false, Relay: false, Record: false, Enabled: true}
 	if _, ok := e.AddCamera(allOff); ok {
 		t.Error("AddCamera with all sinks off engaged; want false")
 	}

@@ -379,6 +379,40 @@ func TestSeedFromINI(t *testing.T) {
 	}
 }
 
+// TestStoreEnabledRoundTrip pins the `enabled` column: a camera created with
+// Enabled=false comes back disabled through the store, an update toggles it
+// back, and the public model carries the flag in both directions.
+func TestStoreEnabledRoundTrip(t *testing.T) {
+	st := NewStore(testDB(t))
+
+	// The store must persist exactly the flag it was given (the true default
+	// lives in the API/INI layer, not here).
+	s := sampleSpec()
+	s.ID = "enab1"
+	s.Enabled = true
+	if _, err := st.Create(s, 1); err != nil {
+		t.Fatalf("Create enabled: %v", err)
+	}
+	got, ok, err := st.Get("enab1")
+	if err != nil || !ok {
+		t.Fatalf("Get = ok:%v err:%v", ok, err)
+	}
+	if !got.Enabled {
+		t.Error("Enabled = false after creating with true")
+	}
+
+	// Disable via Update.
+	upd := s
+	upd.Enabled = false
+	if err := st.Update(upd); err != nil {
+		t.Fatalf("Update disable: %v", err)
+	}
+	got, _, _ = st.Get("enab1")
+	if got.Enabled {
+		t.Error("Enabled = true after disabling via Update")
+	}
+}
+
 func TestUniqueID(t *testing.T) {
 	db := testDB(t)
 	st := NewStore(db)

@@ -137,6 +137,7 @@ function renderCameras(cams) {
       <div>${dot(c.recording)}</div>
       <div>${dot(c.mse_active)}</div>
       <div>${dot(c.privacy)}</div>
+      <div>${dot(c.enabled)}</div>
     </div>`).join("");
   return `
     <section class="users-card">
@@ -148,6 +149,7 @@ function renderCameras(cams) {
           <div>${escapeHtml(t("status.col_recording"))}</div>
           <div>${escapeHtml(t("status.col_mse"))}</div>
           <div>${escapeHtml(t("status.col_privacy"))}</div>
+          <div>${escapeHtml(t("status.col_enabled"))}</div>
         </div>
         ${rows || `<div class="users-row status-cam-row"><div class="muted">${escapeHtml(t("status.no_cameras"))}</div></div>`}
       </div>
@@ -171,6 +173,7 @@ function render(data) {
         ${tile(t("status.connected"), totals.connected ?? 0)}
         ${tile(t("status.recording"), totals.recording ?? 0)}
         ${tile(t("status.privacy"), totals.privacy ?? 0)}
+        ${tile(t("status.disabled"), totals.disabled ?? 0)}
       </div>
     </section>
     ${renderStorage(data.storage)}

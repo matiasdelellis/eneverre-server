@@ -79,6 +79,9 @@ paths:
                         mse_active: { type: boolean }
                         privacy: { type: boolean }
                         schedule_off: { type: boolean }
+                        enabled:
+                          type: boolean
+                          description: Whether the camera is in service (default true).
                   totals:
                     type: object
                     properties:
@@ -86,6 +89,7 @@ paths:
                       connected: { type: integer }
                       recording: { type: integer }
                       privacy: { type: integer }
+                      disabled: { type: integer }
                   storage:
                     type: object
                     description: >-
@@ -1463,7 +1467,8 @@ paths:
         privacy, I/O, etc. event. Requires `[events] webhook_secret`, sent in
         the `X-Webhook-Secret` header or as `?token=...` (query). Accepts any
         body; if it cannot be parsed as valid JSON, the event is stored with the
-        raw body in `source` and type `motion`.
+        raw body in `source` and type `motion`. A camera that is out of service
+        (`enabled: false`) records nothing, so its events are dropped with 409.
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - name: token
@@ -1500,6 +1505,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: Camera is disabled (out of service); the event is dropped
         '503':
           description: webhook_secret not configured on the server
 
@@ -2182,6 +2189,15 @@ components:
             the camera because the local time is outside its schedule's armed
             windows — recording and transmission are stopped and `live_mse`/`rtsp`
             are withheld, just like `privacy`. Omitted when false.
+        enabled:
+          type: boolean
+          description: >-
+            Whether the camera is in service (default true). When false the camera
+            stays in the list but the media engine never connects, records or
+            streams it, and the interactive endpoints (PTZ, talk, settings,
+            privacy, thumbnail, event webhook) refuse it with 409 — but existing
+            recordings stay indexed and playable. Runtime capabilities and stream
+            URLs are withheld while disabled.
 
     Capabilities:
       type: object
@@ -2328,6 +2344,15 @@ components:
             follows `record` (so true unless recording was opted out). It is an
             opt-out only: a camera with no segments on disk never advertises
             playback regardless of this flag.
+        enabled:
+          type: boolean
+          default: true
+          description: >-
+            Whether the camera is in service. When false the camera stays in the
+            list but the media engine never connects, records or streams it, and
+            the interactive endpoints (PTZ, talk, settings, privacy, thumbnail,
+            event webhook) refuse it with 409; existing recordings stay indexed
+            and playable.
         width:
           type: integer
           default: 16

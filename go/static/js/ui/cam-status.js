@@ -5,10 +5,18 @@
 import { t } from "../i18n.js";
 
 export function setCamStatus(camId, status) {
-  const labels = { online: t("online"), offline: t("offline"), connecting: t("connecting") };
+  const labels = {
+    online: t("online"),
+    offline: t("offline"),
+    connecting: t("connecting"),
+    // "disabled" is not a connection state at all: the camera is out of
+    // service, so the dot must read as a settled fact (steady grey), never as
+    // a retry in progress (pulsing amber) or a fault (red).
+    disabled: t("disabled"),
+  };
   const dots = document.querySelectorAll(`.cam-status-dot[data-cam="${CSS.escape(camId)}"]`);
   for (const d of dots) {
-    d.classList.remove("online", "offline", "connecting");
+    d.classList.remove("online", "offline", "connecting", "disabled");
     d.classList.add(status);
     d.title = labels[status] || "";
     d.setAttribute("aria-label", d.title);

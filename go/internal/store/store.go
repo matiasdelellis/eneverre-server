@@ -104,7 +104,8 @@ var schema = []string{
 		fov_h REAL NOT NULL DEFAULT 113.0,
 		sort_order INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL DEFAULT 0,
-		schedule_id TEXT NOT NULL DEFAULT ''
+		schedule_id TEXT NOT NULL DEFAULT '',
+		enabled INTEGER NOT NULL DEFAULT 1
 	)`,
 	// Recording schedules (named programs). A camera references one by its
 	// schedule_id; the server pauses the camera's pipeline outside the schedule's
@@ -128,6 +129,9 @@ var migrations = []string{
 	// schedule_id was added after the cameras table shipped; existing DBs need
 	// it backfilled to the same default the CREATE TABLE uses.
 	`ALTER TABLE cameras ADD COLUMN schedule_id TEXT NOT NULL DEFAULT ''`,
+	// enabled was added after the cameras table shipped; existing DBs need
+	// it backfilled to the same default the CREATE TABLE uses (enabled).
+	`ALTER TABLE cameras ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
 }
 
 // Open opens the SQLite database at path (creating its directory), enabling WAL

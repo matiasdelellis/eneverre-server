@@ -68,6 +68,7 @@ func ptzCamera() camera.Camera {
 	return camera.Camera{
 		ID:             "cam1",
 		Name:           "PTZ",
+		Enabled:        true,
 		Capabilities:   camera.Capabilities{PTZ: true, Privacy: true},
 		ThinginoURL:    "", // filled in by ptzTestApp from the test server
 		ThinginoAPIKey: "secret",

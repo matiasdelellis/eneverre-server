@@ -175,9 +175,14 @@ function renderWallTile(cam) {
   tile.className = "wall-tile";
   tile.dataset.id = cam.id;
   tile.dataset.mode = "live";
+  // A camera that is out of service is never connected to, so its dot starts
+  // (and stays) in the steady "disabled" state — it must not flash the amber
+  // "connecting" pulse on render.
+  const dotState = cam.enabled === false ? "disabled" : "connecting";
+  const dotLabel = cam.enabled === false ? t("disabled") : t("connecting");
   tile.innerHTML = `
     <video autoplay playsinline muted poster="/img/camera-banner.png"></video>
-    <span class="cam-status-dot connecting" data-cam="${escapeHtml(cam.id)}" title="${t("connecting")}" aria-label="${t("connecting")}"></span>
+    <span class="cam-status-dot ${dotState}" data-cam="${escapeHtml(cam.id)}" title="${dotLabel}" aria-label="${dotLabel}"></span>
     <div class="wall-overlay">
       <div class="wall-bottom">
         <div class="wall-name">${escapeHtml(cam.name || cam.id)}</div>
@@ -335,7 +340,16 @@ export function setTileMode(tile, cam, mode, _opts = {}) {
   }
   const video = tile.querySelector("video");
   if (mode === "live") {
-    if (cam.privacy === true) {
+    if (cam.enabled === false) {
+      // Camera is disabled: the engine never connects to it, so there is no
+      // live feed (and no point hammering a dead endpoint). Show a placeholder.
+      setCamStatus(cam.id, "disabled");
+      if (video) {
+        const p = makeMsg("");
+        p.innerHTML = `${icon("power")} ${t("wall.disabled")}`;
+        video.replaceWith(p);
+      }
+    } else if (cam.privacy === true) {
       // Camera is in privacy: the engine has stopped recording and streaming,
       // so there is no live feed to attach. Show a placeholder instead of
       // hammering a dead MSE endpoint.

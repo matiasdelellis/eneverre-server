@@ -123,6 +123,10 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "Two-way audio not available")
 		return
 	}
+	if !cam.Enabled {
+		httpError(w, http.StatusConflict, "camera is disabled")
+		return
+	}
 
 	// Reserve the single talk slot for this camera before the (relatively slow)
 	// RTSP setup, so two concurrent clients can never both open a backchannel to

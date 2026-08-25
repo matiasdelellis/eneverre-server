@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"eneverre/internal/camera"
+	"eneverre/internal/config"
 	"eneverre/internal/media"
 	"eneverre/internal/thingino"
 )
@@ -85,7 +86,7 @@ func TestHandleStatus(t *testing.T) {
 	a.version = "test-1.2.3"
 	insertUser(t, a.db, "admin", "adminpw", "admin")
 	insertUser(t, a.db, "bob", "bobpw", "user")
-	a.cameras = []camera.Camera{{ID: "front", Name: "Front"}, {ID: "back", Name: "Back"}}
+	a.cameras = []camera.Camera{{ID: "front", Name: "Front", Enabled: true}, {ID: "back", Name: "Back", Enabled: true}}
 	a.privacy = map[string]bool{"back": true}
 
 	t.Run("non-admin is forbidden", func(t *testing.T) {
@@ -144,7 +145,7 @@ func TestHandleSetCameraSettings(t *testing.T) {
 	insertUser(t, a.db, "admin", "adminpw", "admin")
 	insertUser(t, a.db, "bob", "bobpw", "user")
 	// No thingino credentials → Capabilities.Settings is false.
-	a.cameras = []camera.Camera{{ID: "plain", Name: "Plain"}}
+	a.cameras = []camera.Camera{{ID: "plain", Name: "Plain", Enabled: true}}
 
 	t.Run("non-admin is forbidden", func(t *testing.T) {
 		w := httptest.NewRecorder()
@@ -166,7 +167,7 @@ func TestHandleSetCameraSettings(t *testing.T) {
 		// A camera with thingino credentials advertises the capability; the
 		// empty-body validation must fire before any network call. Route
 		// through the mux so the {cam_id} wildcard resolves.
-		a.cameras = []camera.Camera{{ID: "t", Name: "T", ThinginoURL: "http://cam", ThinginoAPIKey: "k"}}
+		a.cameras = []camera.Camera{{ID: "t", Name: "T", ThinginoURL: "http://cam", ThinginoAPIKey: "k", Enabled: true}}
 		// Capabilities.Settings is derived from the spec, not the public model —
 		// rebuild it so the gate matches what production computes.
 		a.cameras[0].Capabilities.Settings = true
@@ -183,7 +184,7 @@ func TestHandleGetCameraSettings(t *testing.T) {
 	a := withUsersApp(t)
 	insertUser(t, a.db, "admin", "adminpw", "admin")
 	insertUser(t, a.db, "bob", "bobpw", "user")
-	a.cameras = []camera.Camera{{ID: "t", Name: "T", ThinginoURL: "http://cam", ThinginoAPIKey: "k"}}
+	a.cameras = []camera.Camera{{ID: "t", Name: "T", ThinginoURL: "http://cam", ThinginoAPIKey: "k", Enabled: true}}
 	a.cameras[0].Capabilities.Settings = true
 
 	t.Run("non-admin is forbidden", func(t *testing.T) {
@@ -231,4 +232,39 @@ func TestHandleGetCameraSettings(t *testing.T) {
 			t.Errorf("updated_at = %d, want 12345", resp.UpdatedAt)
 		}
 	})
+}
+
+// TestWebhookRejectsDisabledCamera pins that a camera out of service records no
+// events: the firmware keeps posting (it has no idea it was disabled), and the
+// webhook must drop those with 409 instead of writing motion rows that have no
+// footage behind them.
+func TestWebhookRejectsDisabledCamera(t *testing.T) {
+	a := withUsersApp(t)
+	a.cfg.Events = config.Section{"webhook_secret": "s3cret"}
+	a.cameras = []camera.Camera{
+		{ID: "on", Name: "On", Enabled: true},
+		{ID: "off", Name: "Off", Enabled: false},
+	}
+
+	post := func(camID string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/api/camera/"+camID+"/events", bytes.NewReader([]byte(`{"event":"motion"}`)))
+		r.Header.Set("X-Webhook-Secret", "s3cret")
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, r)
+		return w
+	}
+
+	if w := post("off"); w.Code != http.StatusConflict {
+		t.Errorf("webhook on disabled camera = %d, want 409 (body: %s)", w.Code, w.Body.String())
+	}
+	if n := countEvents(t, a); n != 0 {
+		t.Errorf("disabled camera stored %d event(s); want 0", n)
+	}
+	// The in-service camera on the same server still records normally.
+	if w := post("on"); w.Code != http.StatusCreated {
+		t.Fatalf("webhook on enabled camera = %d, want 201 (body: %s)", w.Code, w.Body.String())
+	}
+	if n := countEvents(t, a); n != 1 {
+		t.Errorf("enabled camera stored %d event(s); want 1", n)
+	}
 }

@@ -492,6 +492,9 @@ func (a *App) backchannelURL(c camera.Camera) string {
 // probed — on thingino the ONVIF backchannel lives on the same RTSP endpoint —
 // and a successful probe turns talk on for the camera (backchannelURL above).
 func (a *App) seedTalkCodecsFor(c camera.Camera) {
+	if !c.Enabled {
+		return
+	}
 	url := c.Backchannel
 	if url == "" {
 		url = c.Source
@@ -531,7 +534,7 @@ func (a *App) seedHeartbeats() {
 // state map (which also re-pauses a camera that booted in privacy) and the
 // heartbeat cache served by /api/status.
 func (a *App) seedHeartbeatFor(c camera.Camera) {
-	if c.ThinginoURL == "" || c.ThinginoAPIKey == "" {
+	if !c.Enabled || c.ThinginoURL == "" || c.ThinginoAPIKey == "" {
 		return
 	}
 	go func() {
@@ -593,7 +596,7 @@ func (a *App) seedPTZPositions() {
 // A concurrent move writing the cache is a benign last-write-wins race — the
 // cache itself is guarded by ptzPosMu.
 func (a *App) seedPTZPositionsFor(c camera.Camera) {
-	if !c.Capabilities.PTZ || c.ThinginoURL == "" || c.ThinginoAPIKey == "" {
+	if !c.Enabled || !c.Capabilities.PTZ || c.ThinginoURL == "" || c.ThinginoAPIKey == "" {
 		return
 	}
 	go func() {
@@ -915,6 +918,7 @@ type statusCamera struct {
 	MSEActive   bool   `json:"mse_active"`
 	Privacy     bool   `json:"privacy"`
 	ScheduleOff bool   `json:"schedule_off"`
+	Enabled     bool   `json:"enabled"`
 }
 
 // cameraSettings is the per-camera live-settings snapshot served by
@@ -1003,9 +1007,9 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	a.privacyMu.RLock()
 	out := make([]statusCamera, 0, len(cams))
-	var connected, recording, privacyOn int
+	var connected, recording, privacyOn, disabled int
 	for _, c := range cams {
-		sc := statusCamera{ID: c.ID, Name: c.Name, Privacy: a.privacy[c.ID], ScheduleOff: a.schedOff[c.ID]}
+		sc := statusCamera{ID: c.ID, Name: c.Name, Privacy: a.privacy[c.ID], ScheduleOff: a.schedOff[c.ID], Enabled: c.Enabled}
 		if st, ok := byID[c.ID]; ok {
 			sc.Connected = st.Connected
 			sc.Recording = st.Recording
@@ -1019,6 +1023,9 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		if sc.Privacy {
 			privacyOn++
+		}
+		if !sc.Enabled {
+			disabled++
 		}
 		out = append(out, sc)
 	}
@@ -1035,6 +1042,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"connected": connected,
 			"recording": recording,
 			"privacy":   privacyOn,
+			"disabled":  disabled,
 		},
 	}
 
@@ -1099,6 +1107,10 @@ func (a *App) ptzGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
 	if !ok || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
 		httpError(w, http.StatusNotFound, "PTZ not available")
+		return nil
+	}
+	if !cam.Enabled {
+		httpError(w, http.StatusConflict, "camera is disabled")
 		return nil
 	}
 	return &cam
@@ -1268,6 +1280,10 @@ func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "Privacy not available")
 		return
 	}
+	if !cam.Enabled {
+		httpError(w, http.StatusConflict, "camera is disabled")
+		return
+	}
 	enable, err := strconv.ParseBool(r.URL.Query().Get("enable"))
 	if err != nil {
 		httpError(w, http.StatusUnprocessableEntity, "Missing or invalid 'enable' query param")
@@ -1346,6 +1362,10 @@ func (a *App) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
 	if !ok {
 		httpError(w, http.StatusNotFound, "Camera not found")
+		return
+	}
+	if !cam.Enabled {
+		httpError(w, http.StatusConflict, "camera is disabled")
 		return
 	}
 	switch {

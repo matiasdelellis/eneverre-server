@@ -82,6 +82,12 @@ func (a *App) reevaluateSchedules() {
 // one whose schedule was deleted) is always armed, so it never gets paused by
 // the scheduler.
 func (a *App) evaluateCamera(cam camera.Camera, byID map[string]schedule.Schedule, now time.Time) {
+	// A disabled camera is not supervised by the engine, so scheduling it
+	// (tracking schedOff, pausing/resuming) has nothing to act on and would
+	// only leave stale off-hours state behind.
+	if !cam.Enabled {
+		return
+	}
 	armed := true
 	if cam.ScheduleID != "" {
 		if s, ok := byID[cam.ScheduleID]; ok {

@@ -538,6 +538,14 @@ type DiskState struct {
 // bring a freshly added camera online without a restart.
 func (e *Engine) AddCamera(cam camera.Camera) (camera.Features, bool) {
 	f := cam.ResolveFeatures(e.opts.MSEEnabled, e.opts.RelayEnabled, e.opts.RecordEnabled)
+	// A disabled (Enabled=false) camera is deliberately never engaged: no
+	// recorder retry loop (so no continuous reconnects), no live MSE
+	// broadcaster, no RTSP relay source and no recording. Its already-recorded
+	// segments stay in the index and remain playable; re-enabling it via an
+	// update brings the pipeline back.
+	if !cam.Enabled {
+		return f, false
+	}
 	// Engage the camera if any sink is on. Recording counts on its own so a
 	// record-only camera (MSE + relay off) still connects and writes to disk.
 	if cam.Source == "" || (!f.MSE && !f.Relay && !f.Record) {
