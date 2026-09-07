@@ -85,3 +85,6 @@ That covers a minimal, no-config install. Everything below goes further.
 - 🎙️ [`TALK.md`](TALK.md) — the push-to-talk (two-way audio) client protocol.
 - 🚀 [`UPDATES.md`](UPDATES.md) — the Android OTA auto-update protocol.
 - 🪟 [`WINDOWS.md`](WINDOWS.md) — installing and running as a Windows service.
+- 📈 [`example/zabbix/README.md`](example/zabbix/README.md) — a Zabbix template
+  that monitors the server over `/api/status` (host, user and password are
+  macros, cameras are discovered), plus a Grafana dashboard on top of it.

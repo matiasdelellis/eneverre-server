@@ -1,5 +1,10 @@
 # Talk backchannel — fill the known gaps locally
 
+Status: **superseded.** The gaps below were closed by swapping the
+hand-rolled client for `gortsplib.Client` instead — see
+[`TALK-BACKCHANNEL-GORTSPLIB-CLIENT.md`](TALK-BACKCHANNEL-GORTSPLIB-CLIENT.md).
+This document is kept for the analysis of each gap.
+
 Status: **implemented.** The push-to-talk backchannel in
 `go/internal/backchannel` works against thingino/prudynt today (hand-rolled RTSP
 client, SDP parser, RTP send loop). All four gaps below are closed: per-PT codec

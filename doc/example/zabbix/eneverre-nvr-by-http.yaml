@@ -1,0 +1,726 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: a571c0d144b14fd4a87a9d9b2aa9fcd6
+      name: Templates/Applications
+  templates:
+    - uuid: 1d62de79ac294097a1311573fc1dedc9
+      template: 'Eneverre NVR by HTTP'
+      name: 'Eneverre NVR by HTTP'
+      description: |
+        Monitors an Eneverre NVR through its admin snapshot endpoint
+        GET /api/status (HTTP Basic).
+
+        One HTTP agent master item polls /api/status; everything else is a
+        dependent item, so a whole host costs a single request per interval.
+        Cameras are discovered from the `cameras` array by low-level discovery.
+
+        Setup:
+          1. Link this template to the host running Eneverre.
+          2. Set {$ENEVERRE.USER} / {$ENEVERRE.PASSWORD} to an *admin* account
+             (/api/status answers 403 for a non-admin user).
+          3. Adjust {$ENEVERRE.SCHEME} / {$ENEVERRE.HOST} / {$ENEVERRE.PORT} if
+             Eneverre is not reachable at http://{HOST.CONN}:8080 (behind a
+             reverse proxy this is usually https / 443).
+
+        Storage items stay empty while recording is disabled or the volume
+        cannot be queried: /api/status omits the `storage` block, and the
+        JSONPath step discards the value instead of erroring.
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: b945011a166a4c08ac77a07ecf035b2d
+          name: 'Eneverre: Get status'
+          type: HTTP_AGENT
+          key: eneverre.get_status
+          delay: '{$ENEVERRE.STATUS.INTERVAL}'
+          history: '0'
+          trends: '0'
+          value_type: TEXT
+          authtype: BASIC
+          username: '{$ENEVERRE.USER}'
+          password: '{$ENEVERRE.PASSWORD}'
+          url: '{$ENEVERRE.SCHEME}://{$ENEVERRE.HOST}:{$ENEVERRE.PORT}/api/status'
+          status_codes: '200'
+          timeout: '{$ENEVERRE.STATUS.TIMEOUT}'
+          description: |
+            Raw JSON snapshot from GET /api/status. Master item for every other
+            item in this template; history is off because the dependents keep
+            what matters.
+
+            403 here means the account in {$ENEVERRE.USER} is not an admin.
+          tags:
+            - tag: component
+              value: raw
+        - uuid: 805486c3145041eb91dd019aec67d771
+          name: 'Eneverre: Version'
+          type: DEPENDENT
+          key: eneverre.version
+          delay: '0'
+          history: 7d
+          trends: '0'
+          value_type: CHAR
+          description: 'Build version reported by the API (empty on a dev build).'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.version'
+            - type: DISCARD_UNCHANGED_HEARTBEAT
+              parameters:
+                - 1d
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: system
+        - uuid: cb2ec680bee240d69c5a46145dffe34b
+          name: 'Eneverre: Uptime'
+          type: DEPENDENT
+          key: eneverre.uptime
+          delay: '0'
+          history: 7d
+          units: uptime
+          description: 'Seconds since the API process started.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.uptime_seconds'
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: system
+        - uuid: 7efb8b6cc2db41f09bbe05166c456f38
+          name: 'Eneverre: Recording enabled'
+          type: DEPENDENT
+          key: eneverre.recording_enabled
+          delay: '0'
+          history: 7d
+          description: 'Global recording toggle of the media engine.'
+          valuemap:
+            name: 'Enabled state'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.recording_enabled'
+            - type: BOOL_TO_DECIMAL
+              parameters:
+                - ''
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: recording
+        - uuid: 00f2b5689f634f63a88de0f099b2594b
+          name: 'Eneverre: Cameras total'
+          type: DEPENDENT
+          key: eneverre.cameras.total
+          delay: '0'
+          history: 7d
+          description: 'Cameras configured, enabled or not.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.totals.cameras'
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: cameras
+        - uuid: 5e84b3b0cac34d5c9c81c369ce92171d
+          name: 'Eneverre: Cameras connected'
+          type: DEPENDENT
+          key: eneverre.cameras.connected
+          delay: '0'
+          history: 7d
+          description: 'Cameras the engine currently holds an RTSP session with.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.totals.connected'
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: cameras
+        - uuid: 902b46496f0c45da9f57bf489a2cfd46
+          name: 'Eneverre: Cameras recording'
+          type: DEPENDENT
+          key: eneverre.cameras.recording
+          delay: '0'
+          history: 7d
+          description: 'Cameras writing segments right now.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.totals.recording'
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: recording
+        - uuid: 5ba28894553344ac9d2264b7a082f7a8
+          name: 'Eneverre: Cameras in privacy mode'
+          type: DEPENDENT
+          key: eneverre.cameras.privacy
+          delay: '0'
+          history: 7d
+          description: 'Cameras an operator has paused with the privacy toggle.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.totals.privacy'
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: cameras
+        - uuid: 018b1ce6272e4c3fb6310c7ba3b52462
+          name: 'Eneverre: Cameras disabled'
+          type: DEPENDENT
+          key: eneverre.cameras.disabled
+          delay: '0'
+          history: 7d
+          description: 'Cameras taken out of service (enabled = false).'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.totals.disabled'
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: cameras
+        - uuid: 166b9608e2a34a04a0ec224e2ca2d320
+          name: 'Eneverre: Cameras in service but offline'
+          type: DEPENDENT
+          key: eneverre.cameras.offline
+          delay: '0'
+          history: 7d
+          description: |
+            Cameras that are in service yet not connected. A camera paused by
+            privacy or by a schedule is not counted here, so this is the number
+            the operator actually has to act on.
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var s = JSON.parse(value), n = 0;
+                  (s.cameras || []).forEach(function (c) {
+                      if (c.enabled && !c.connected && !c.privacy && !c.schedule_off) {
+                          n++;
+                      }
+                  });
+                  return n;
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: cameras
+        - uuid: 2e66d8c32dba41e7b1dffbec69190be5
+          name: 'Eneverre: Recording directory'
+          type: DEPENDENT
+          key: eneverre.storage.record_dir
+          delay: '0'
+          history: 7d
+          trends: '0'
+          value_type: CHAR
+          description: 'Volume the engine writes segments to (empty while recording is off).'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.storage.record_dir'
+              error_handler: DISCARD_VALUE
+            - type: DISCARD_UNCHANGED_HEARTBEAT
+              parameters:
+                - 1d
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: storage
+        - uuid: 6fb4349e4b124f409718e8d501b8b693
+          name: 'Eneverre: Storage total'
+          type: DEPENDENT
+          key: eneverre.storage.total
+          delay: '0'
+          history: 7d
+          units: B
+          description: 'Size of the recording volume.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.storage.total_bytes'
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: storage
+        - uuid: 386ea07ad5724982a6361ff8b7bccac9
+          name: 'Eneverre: Storage free'
+          type: DEPENDENT
+          key: eneverre.storage.free
+          delay: '0'
+          history: 7d
+          units: B
+          description: 'Free bytes on the recording volume.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.storage.free_bytes'
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: storage
+        - uuid: 7387179b497c43f282eecc9481f9260b
+          name: 'Eneverre: Storage used'
+          type: DEPENDENT
+          key: eneverre.storage.used
+          delay: '0'
+          history: 7d
+          units: B
+          description: 'Used bytes on the recording volume.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.storage.used_bytes'
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: storage
+        - uuid: 098a9030a8434a759a6d07bab874fcf0
+          name: 'Eneverre: Storage low-disk threshold'
+          type: DEPENDENT
+          key: eneverre.storage.min_free
+          delay: '0'
+          history: 7d
+          units: B
+          description: |
+            [media] min_free_bytes — the level at which the engine starts
+            force-purging the oldest segments. 0 means the watcher is off.
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.storage.min_free_bytes'
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: storage
+        - uuid: 406e4ae84431450ebe392f020462f22b
+          name: 'Eneverre: Storage low-space alert'
+          type: DEPENDENT
+          key: eneverre.storage.low_space
+          delay: '0'
+          history: 7d
+          description: 'Set by the engine disk watcher once free space drops below min_free_bytes.'
+          valuemap:
+            name: 'Yes/No'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.storage.low_space'
+              error_handler: DISCARD_VALUE
+            - type: BOOL_TO_DECIMAL
+              parameters:
+                - ''
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: storage
+        - uuid: a044ab38b46649a1b0fa346d01ccbda4
+          name: 'Eneverre: Storage free, %'
+          type: DEPENDENT
+          key: eneverre.storage.pfree
+          delay: '0'
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: |
+            Free space on the recording volume as a percentage. The JSONPath
+            step runs first so that a snapshot with no `storage` block discards
+            the value instead of leaving the item unsupported.
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.storage'
+              error_handler: DISCARD_VALUE
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var s = JSON.parse(value);
+                  return 100 * s.free_bytes / s.total_bytes;
+          master_item:
+            key: eneverre.get_status
+          tags:
+            - tag: component
+              value: storage
+      discovery_rules:
+        - uuid: 98b93ac657b04495bd4aa7e0d1e54f6b
+          name: 'Camera discovery'
+          type: DEPENDENT
+          key: eneverre.cameras.discovery
+          delay: '0'
+          filter:
+            evaltype: AND
+            conditions:
+              - macro: '{#CAMERA.NAME}'
+                value: '{$ENEVERRE.CAMERA.NAME.MATCHES}'
+                formulaid: A
+              - macro: '{#CAMERA.NAME}'
+                value: '{$ENEVERRE.CAMERA.NAME.NOT_MATCHES}'
+                operator: NOT_MATCHES_REGEX
+                formulaid: B
+          description: 'One set of items per camera in the /api/status `cameras` array.'
+          item_prototypes:
+            - uuid: f53fe901c0d345068b325acaea3289fc
+              name: 'Camera [{#CAMERA.NAME}]: Connected'
+              type: DEPENDENT
+              key: 'eneverre.camera.connected[{#CAMERA.ID}]'
+              delay: '0'
+              history: 7d
+              description: 'The engine holds a live RTSP session with this camera.'
+              valuemap:
+                name: 'Connection state'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.cameras[?(@.id=="{#CAMERA.ID}")].connected.first()'
+                - type: BOOL_TO_DECIMAL
+                  parameters:
+                    - ''
+              master_item:
+                key: eneverre.get_status
+              tags:
+                - tag: camera
+                  value: '{#CAMERA.NAME}'
+                - tag: component
+                  value: cameras
+            - uuid: 93d90165d3b447338c47ae7ca04d6034
+              name: 'Camera [{#CAMERA.NAME}]: Recording'
+              type: DEPENDENT
+              key: 'eneverre.camera.recording[{#CAMERA.ID}]'
+              delay: '0'
+              history: 7d
+              description: 'Segments are being written for this camera right now.'
+              valuemap:
+                name: 'Recording state'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.cameras[?(@.id=="{#CAMERA.ID}")].recording.first()'
+                - type: BOOL_TO_DECIMAL
+                  parameters:
+                    - ''
+              master_item:
+                key: eneverre.get_status
+              tags:
+                - tag: camera
+                  value: '{#CAMERA.NAME}'
+                - tag: component
+                  value: recording
+            - uuid: f4422a9a77d84702ba4620bb1fe5d915
+              name: 'Camera [{#CAMERA.NAME}]: Live viewers'
+              type: DEPENDENT
+              key: 'eneverre.camera.mse_active[{#CAMERA.ID}]'
+              delay: '0'
+              history: 7d
+              description: 'At least one client is pulling the embedded MSE live stream.'
+              valuemap:
+                name: 'Yes/No'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.cameras[?(@.id=="{#CAMERA.ID}")].mse_active.first()'
+                - type: BOOL_TO_DECIMAL
+                  parameters:
+                    - ''
+              master_item:
+                key: eneverre.get_status
+              tags:
+                - tag: camera
+                  value: '{#CAMERA.NAME}'
+                - tag: component
+                  value: live
+            - uuid: 3a9992bb159246d7a6d5b44c816f305e
+              name: 'Camera [{#CAMERA.NAME}]: Privacy mode'
+              type: DEPENDENT
+              key: 'eneverre.camera.privacy[{#CAMERA.ID}]'
+              delay: '0'
+              history: 7d
+              description: 'An operator paused this camera with the privacy toggle.'
+              valuemap:
+                name: 'Yes/No'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.cameras[?(@.id=="{#CAMERA.ID}")].privacy.first()'
+                - type: BOOL_TO_DECIMAL
+                  parameters:
+                    - ''
+              master_item:
+                key: eneverre.get_status
+              tags:
+                - tag: camera
+                  value: '{#CAMERA.NAME}'
+                - tag: component
+                  value: cameras
+            - uuid: a2cf416f44a14d989ea2884a927e5599
+              name: 'Camera [{#CAMERA.NAME}]: Off-hours'
+              type: DEPENDENT
+              key: 'eneverre.camera.schedule_off[{#CAMERA.ID}]'
+              delay: '0'
+              history: 7d
+              description: 'The camera schedule has this camera stopped right now.'
+              valuemap:
+                name: 'Yes/No'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.cameras[?(@.id=="{#CAMERA.ID}")].schedule_off.first()'
+                - type: BOOL_TO_DECIMAL
+                  parameters:
+                    - ''
+              master_item:
+                key: eneverre.get_status
+              tags:
+                - tag: camera
+                  value: '{#CAMERA.NAME}'
+                - tag: component
+                  value: cameras
+            - uuid: 4ea13499a2c14af68007e48f1ec42afb
+              name: 'Camera [{#CAMERA.NAME}]: In service'
+              type: DEPENDENT
+              key: 'eneverre.camera.enabled[{#CAMERA.ID}]'
+              delay: '0'
+              history: 7d
+              description: 'The camera is in service (not administratively disabled).'
+              valuemap:
+                name: 'Enabled state'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.cameras[?(@.id=="{#CAMERA.ID}")].enabled.first()'
+                - type: BOOL_TO_DECIMAL
+                  parameters:
+                    - ''
+              master_item:
+                key: eneverre.get_status
+              tags:
+                - tag: camera
+                  value: '{#CAMERA.NAME}'
+                - tag: component
+                  value: cameras
+          trigger_prototypes:
+            - uuid: c5c35a12a9504fbaa6cc9b43fcfbf1b9
+              expression: >-
+                min(/Eneverre NVR by HTTP/eneverre.camera.connected[{#CAMERA.ID}],{$ENEVERRE.CAMERA.OFFLINE.TIME})=0
+                and last(/Eneverre NVR by HTTP/eneverre.camera.enabled[{#CAMERA.ID}])=1
+                and last(/Eneverre NVR by HTTP/eneverre.camera.privacy[{#CAMERA.ID}])=0
+                and last(/Eneverre NVR by HTTP/eneverre.camera.schedule_off[{#CAMERA.ID}])=0
+              name: 'Camera [{#CAMERA.NAME}]: disconnected'
+              priority: AVERAGE
+              description: |
+                In service, not paused by privacy or by a schedule, and still
+                not connected for {$ENEVERRE.CAMERA.OFFLINE.TIME}.
+              tags:
+                - tag: camera
+                  value: '{#CAMERA.NAME}'
+                - tag: scope
+                  value: availability
+            - uuid: e682eac179374798af37101c1549f3c2
+              expression: >-
+                min(/Eneverre NVR by HTTP/eneverre.camera.recording[{#CAMERA.ID}],{$ENEVERRE.CAMERA.OFFLINE.TIME})=0
+                and last(/Eneverre NVR by HTTP/eneverre.camera.connected[{#CAMERA.ID}])=1
+                and last(/Eneverre NVR by HTTP/eneverre.camera.enabled[{#CAMERA.ID}])=1
+                and last(/Eneverre NVR by HTTP/eneverre.camera.privacy[{#CAMERA.ID}])=0
+                and last(/Eneverre NVR by HTTP/eneverre.camera.schedule_off[{#CAMERA.ID}])=0
+                and last(/Eneverre NVR by HTTP/eneverre.recording_enabled)=1
+              name: 'Camera [{#CAMERA.NAME}]: not recording'
+              priority: WARNING
+              description: |
+                Recording is on globally and the camera is connected and in
+                service, yet nothing has been written for
+                {$ENEVERRE.CAMERA.OFFLINE.TIME}.
+              dependencies:
+                - name: 'Camera [{#CAMERA.NAME}]: disconnected'
+                  expression: >-
+                    min(/Eneverre NVR by HTTP/eneverre.camera.connected[{#CAMERA.ID}],{$ENEVERRE.CAMERA.OFFLINE.TIME})=0
+                    and last(/Eneverre NVR by HTTP/eneverre.camera.enabled[{#CAMERA.ID}])=1
+                    and last(/Eneverre NVR by HTTP/eneverre.camera.privacy[{#CAMERA.ID}])=0
+                    and last(/Eneverre NVR by HTTP/eneverre.camera.schedule_off[{#CAMERA.ID}])=0
+              tags:
+                - tag: camera
+                  value: '{#CAMERA.NAME}'
+                - tag: scope
+                  value: recording
+          master_item:
+            key: eneverre.get_status
+          lld_macro_paths:
+            - lld_macro: '{#CAMERA.ID}'
+              path: '$.id'
+            - lld_macro: '{#CAMERA.NAME}'
+              path: '$.name'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.cameras'
+      macros:
+        - macro: '{$ENEVERRE.SCHEME}'
+          value: http
+          description: 'http or https. Use https when Eneverre sits behind a TLS reverse proxy.'
+        - macro: '{$ENEVERRE.HOST}'
+          value: '{HOST.CONN}'
+          description: 'Host or IP serving the API. Defaults to the Zabbix host interface.'
+        - macro: '{$ENEVERRE.PORT}'
+          value: '8080'
+          description: 'API port. 8080 is the Eneverre default; use 443 behind a proxy.'
+        - macro: '{$ENEVERRE.USER}'
+          value: admin
+          description: 'Username for HTTP Basic. Must be an admin — /api/status is admin-only.'
+        - macro: '{$ENEVERRE.PASSWORD}'
+          value: ''
+          description: 'Password for HTTP Basic. Override it on the host, as Secret text.'
+        - macro: '{$ENEVERRE.STATUS.INTERVAL}'
+          value: 1m
+          description: 'How often /api/status is polled.'
+        - macro: '{$ENEVERRE.STATUS.TIMEOUT}'
+          value: 10s
+          description: 'HTTP timeout for the /api/status request.'
+        - macro: '{$ENEVERRE.NODATA.TIMEOUT}'
+          value: 5m
+          description: 'How long without a snapshot before the API is declared down.'
+        - macro: '{$ENEVERRE.UPTIME.MIN}'
+          value: 10m
+          description: 'Uptime below this raises the restart trigger.'
+        - macro: '{$ENEVERRE.CAMERA.OFFLINE.TIME}'
+          value: 5m
+          description: 'How long a camera must stay disconnected / not recording before it alerts.'
+        - macro: '{$ENEVERRE.STORAGE.PFREE.WARN}'
+          value: '10'
+          description: 'Warning threshold for free space on the recording volume, in percent.'
+        - macro: '{$ENEVERRE.STORAGE.PFREE.CRIT}'
+          value: '5'
+          description: 'Critical threshold for free space on the recording volume, in percent.'
+        - macro: '{$ENEVERRE.CAMERA.NAME.MATCHES}'
+          value: '.*'
+          description: 'Only cameras whose name matches this regex are discovered.'
+        - macro: '{$ENEVERRE.CAMERA.NAME.NOT_MATCHES}'
+          value: 'CHANGE_IF_NEEDED'
+          description: 'Cameras whose name matches this regex are not discovered.'
+      valuemaps:
+        - uuid: 1482282354244617b643e413416796dc
+          name: 'Enabled state'
+          mappings:
+            - value: '0'
+              newvalue: Disabled
+            - value: '1'
+              newvalue: Enabled
+        - uuid: 8f8c2c8b85474a50b6fde5e31617d260
+          name: 'Connection state'
+          mappings:
+            - value: '0'
+              newvalue: Disconnected
+            - value: '1'
+              newvalue: Connected
+        - uuid: 865a4ddec00d4395adaea054fa732d79
+          name: 'Recording state'
+          mappings:
+            - value: '0'
+              newvalue: 'Not recording'
+            - value: '1'
+              newvalue: Recording
+        - uuid: a6fd09a263254891a8cdc831a003a18c
+          name: 'Yes/No'
+          mappings:
+            - value: '0'
+              newvalue: 'No'
+            - value: '1'
+              newvalue: 'Yes'
+  triggers:
+    - uuid: a4a413c8752c4f338e85c1ef6ac6d587
+      expression: 'nodata(/Eneverre NVR by HTTP/eneverre.uptime,{$ENEVERRE.NODATA.TIMEOUT})=1'
+      name: 'Eneverre: API not answering /api/status'
+      priority: HIGH
+      description: |
+        No snapshot for {$ENEVERRE.NODATA.TIMEOUT}. Either the service is
+        down / unreachable, or the request is being rejected — check the
+        master item error: 401 means wrong credentials, 403 means the
+        account in {$ENEVERRE.USER} is not an admin.
+      tags:
+        - tag: scope
+          value: availability
+    - uuid: fafdd2d6f4314327a960c716ef20cc9e
+      expression: 'last(/Eneverre NVR by HTTP/eneverre.uptime)<{$ENEVERRE.UPTIME.MIN}'
+      name: 'Eneverre: service restarted'
+      priority: INFO
+      manual_close: 'YES'
+      description: 'Uptime is below {$ENEVERRE.UPTIME.MIN} — the API process was restarted.'
+      dependencies:
+        - name: 'Eneverre: API not answering /api/status'
+          expression: 'nodata(/Eneverre NVR by HTTP/eneverre.uptime,{$ENEVERRE.NODATA.TIMEOUT})=1'
+      tags:
+        - tag: scope
+          value: availability
+    - uuid: e09354e787984907a3eadc9d2790527c
+      expression: >-
+        last(/Eneverre NVR by HTTP/eneverre.version,#1)<>last(/Eneverre NVR by HTTP/eneverre.version,#2)
+        and length(last(/Eneverre NVR by HTTP/eneverre.version))>0
+      name: 'Eneverre: version changed'
+      priority: INFO
+      manual_close: 'YES'
+      description: 'The reported build version changed — expected after an upgrade.'
+      tags:
+        - tag: scope
+          value: notice
+    - uuid: 6b0f647bc1214fce8396266dc70832be
+      expression: 'last(/Eneverre NVR by HTTP/eneverre.recording_enabled)=0'
+      name: 'Eneverre: recording is disabled'
+      priority: WARNING
+      description: |
+        The engine global recording toggle is off, so nothing is being
+        written for any camera. Expected on a live-only install — disable
+        this trigger there.
+      dependencies:
+        - name: 'Eneverre: API not answering /api/status'
+          expression: 'nodata(/Eneverre NVR by HTTP/eneverre.uptime,{$ENEVERRE.NODATA.TIMEOUT})=1'
+      tags:
+        - tag: scope
+          value: recording
+    - uuid: aac9f8d1a7894b3db0131bfbcc7bd5c8
+      expression: 'last(/Eneverre NVR by HTTP/eneverre.storage.low_space)=1'
+      name: 'Eneverre: low disk space on the recording volume'
+      priority: HIGH
+      description: |
+        The engine disk watcher crossed below [media] min_free_bytes and is
+        force-purging the oldest segments to stay above it, which shortens
+        retention. See doc/MEDIA.md - Low-disk safety.
+      tags:
+        - tag: scope
+          value: capacity
+    - uuid: c1aeb22b565c4170bba6e964ed4fa7fa
+      expression: 'max(/Eneverre NVR by HTTP/eneverre.storage.pfree,5m)<{$ENEVERRE.STORAGE.PFREE.WARN}'
+      name: 'Eneverre: storage free space is low (<{$ENEVERRE.STORAGE.PFREE.WARN}%)'
+      priority: WARNING
+      description: 'Free space on the recording volume is below {$ENEVERRE.STORAGE.PFREE.WARN}%.'
+      dependencies:
+        - name: 'Eneverre: storage free space is critically low (<{$ENEVERRE.STORAGE.PFREE.CRIT}%)'
+          expression: 'max(/Eneverre NVR by HTTP/eneverre.storage.pfree,5m)<{$ENEVERRE.STORAGE.PFREE.CRIT}'
+      tags:
+        - tag: scope
+          value: capacity
+    - uuid: c230ba5129ae47e68f21b819fced793f
+      expression: 'max(/Eneverre NVR by HTTP/eneverre.storage.pfree,5m)<{$ENEVERRE.STORAGE.PFREE.CRIT}'
+      name: 'Eneverre: storage free space is critically low (<{$ENEVERRE.STORAGE.PFREE.CRIT}%)'
+      priority: AVERAGE
+      description: 'Free space on the recording volume is below {$ENEVERRE.STORAGE.PFREE.CRIT}%.'
+      tags:
+        - tag: scope
+          value: capacity

@@ -1,14 +1,69 @@
 # Talk backchannel — swap hand-rolled client for `gortsplib.Client`
 
-Status: **planned, not implemented.** Replace the hand-rolled RTSP client
-in `go/internal/backchannel` with `github.com/bluenviron/gortsplib/v5`'s
-`gortsplib.Client`, keeping the public API (`Dial`/`FeedPCM`/`FeedAU`/
-`Session.Close`) stable so `handlers_talk.go` and `doc/TALK.md` do not
-change.
+Status: **implemented.** The hand-rolled RTSP client in
+`go/internal/backchannel` was replaced by `github.com/bluenviron/gortsplib/v5`'s
+`gortsplib.Client`. The public API (`Dial`/`FeedPCM`/`FeedAU`/`FeedOpus`/
+`Session.Close`/`ProbeCodecs`) is unchanged, so `handlers_talk.go` and
+`doc/TALK.md` did not change.
 
-This is the **debt-reduction** plan. For the alternative — closing the
-same gaps by extending the hand-rolled code — see
-[`TALK-BACKCHANNEL-LOCAL-GAPS.md`](TALK-BACKCHANNEL-LOCAL-GAPS.md).
+`rtsp.go`, `rtp.go`, `rtcp.go` and `rtsp_test.go` are gone; `aac.go` kept only
+the ADTS helpers and the frame-length table; `sdp.go` was rewritten on top of
+`description.Session`. Net: **-1141 lines** (753 added, 1894 removed),
+against the ~540 this plan estimated — the estimate predated the Opus path,
+the RTCP sender reports and the AAC framing code, all of which gortsplib
+absorbed too.
+
+The alternative plan — closing the same gaps by extending the hand-rolled
+code — is [`TALK-BACKCHANNEL-LOCAL-GAPS.md`](TALK-BACKCHANNEL-LOCAL-GAPS.md),
+now superseded.
+
+## What shipped differently from this plan
+
+Three things came out of a standalone spike against real cameras (a thingino
+prudynt and a TP-Link) before the rewrite:
+
+1. **SETUP covers the back channel alone, not `SetupAll`.** This plan (and the
+   "End state on the wire" section below) called for setting up every media.
+   That is *not* what the hand-rolled client did — it set up the backchannel
+   track alone — and doing it would pull a second copy of the camera's video
+   down every push-to-talk, on top of the recorder's own session.
+
+   The hand-rolled selector had one more step this rewrite deliberately drops:
+   when no track was advertised send-capable it talked to any audio track at
+   all. A TP-Link exercised exactly that path, and the spike showed what it
+   costs: with only its audio track set up the camera drops the connection
+   ~1.2 s in, and with `SetupAll` it holds the session and silently discards
+   the audio. The fallback bought a session that looks like it works and plays
+   nothing, so a camera that never advertises `a=sendonly`/`a=sendrecv` now
+   reports no talk codecs and `Dial` fails with a clear message.
+
+2. **`IsBackChannel` is forced, not trusted.** gortsplib decides "is this a
+   back channel?" from the `a=sendonly` attribute alone, and additionally
+   unmarks *every* back channel in an SDP that contains nothing else
+   (`pkg/description/session.go`). Both are stricter than the hand-rolled
+   selector, which also accepted `sendrecv` and fell back to any audio track.
+   `IsBackChannel` is a plain public field and gortsplib reads it at SETUP
+   time to send the `Require` header and build an RTP *sender*, so the local
+   selection survives by setting it on the chosen media. No upstream patch
+   was needed. `Media.Formats` is narrowed to the chosen format at the same
+   time, because `WritePacketRTP` panics on a payload type it cannot resolve.
+
+3. **A payload type with no `a=rtpmap`** parses into `format.Generic`, which
+   has no encoder. On a track the camera *did* advertise as send-capable,
+   `assumeG711` synthesizes a `format.G711` on that payload type and
+   substitutes it, preserving the hand-rolled parser's "assume PCMA" behavior.
+   This is the one place where gortsplib's typed API is genuinely less
+   tolerant than a string parser.
+
+Also worth recording: the encoders return timestamps numbered from zero on
+**every** `Encode` call, and none of them raise the RFC 3550 marker bit for
+the start of a talkspurt. Both are the caller's job — see
+`Session.writePackets`.
+
+The spike itself lives outside this repo (`gortsplib-backchannel-poc`): a
+standalone client plus a `fakecam` RTSP server that reports sequence
+continuity, timestamp steps, marker bits, sender reports and G.711 audio
+level.
 
 ## Why do this
 

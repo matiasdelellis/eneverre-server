@@ -46,14 +46,12 @@ adds `gortsplib` (RTSP client) + `mediacommon` (fMP4) + `pion/*` (RTP/SDP).
   silence warm-up + no server settle, AAC drop-oldest) and what's deferred
   (stateful resampling, AAC `a=fmtp` parsing, `AudioWorklet` capture).
 - [`doc/PLANS/TALK-BACKCHANNEL-LOCAL-GAPS.md`](doc/PLANS/TALK-BACKCHANNEL-LOCAL-GAPS.md) —
-  additive plan to close the known backchannel gaps (RTCP SR, AAC `a=fmtp`
-  parsing, Digest `qop=auth`, typed codec selection) in the existing
-  hand-rolled code. ~1-2 days, low risk, no API change.
+  superseded: the additive plan to close the backchannel gaps inside the
+  hand-rolled client. The gortsplib swap below was done instead.
 - [`doc/PLANS/TALK-BACKCHANNEL-GORTSPLIB-CLIENT.md`](doc/PLANS/TALK-BACKCHANNEL-GORTSPLIB-CLIENT.md) —
-  alternative: replace the hand-rolled RTSP client in
-  `internal/backchannel` with `gortsplib.Client` (already a dependency via
-  the recorder). ~4-6.5 days, deletes ~540 lines, medium risk. Same end state
-  on the wire.
+  **implemented.** The hand-rolled RTSP client in `internal/backchannel` was
+  replaced by `gortsplib.Client`; the doc records what shipped and where it
+  diverged from the plan (SETUP scope, forcing `IsBackChannel`).
 - [`doc/PLANS/WEBRTC.md`](doc/PLANS/WEBRTC.md) — evaluation of browser
   live (and the browser leg of talk) over WebRTC: why there is no WebRTC
   today (an omission, not a rejection — three commits on 2026-07-07),
@@ -212,21 +210,28 @@ All code lives under `go/` (module `eneverre`).
   the setters stay on the CGIs until the fleet migrates; the full route map
   is documented in `thingino.go`'s package comment.
 - `go/internal/backchannel` — two-way-audio (push-to-talk) to a camera's ONVIF
-  Profile T backchannel, a library port of the standalone `web2rtsp` PoC.
-  `Dial` opens the RTSP session (OPTIONS/DESCRIBE/SETUP/PLAY, Basic+Digest
-  auth incl. `qop=auth` with nonce counter), parses the SDP into a per-PT
-  codec table (multi-codec thingino tracks select the right payload type) and
-  the AAC `a=fmtp` framing (fails closed on missing `config=`), then
+  Profile T backchannel, built on `gortsplib.Client` (the same RTSP client the
+  recorder uses). `Dial` runs DESCRIBE/SETUP/PLAY with the ONVIF `Require`
+  header; gortsplib owns auth, TCP interleaved framing, keepalives and the
+  periodic RTCP sender reports. What stays local is the part cameras disagree
+  on: `sdp.go` picks the track and codec, re-deriving send-capability from the
+  raw SDP directions because gortsplib keys `IsBackChannel` on `a=sendonly`
+  alone (and unmarks every back channel in an SDP that has nothing else). The
+  pick is then force-marked `IsBackChannel` and narrowed to one format, which
+  is what makes the tolerant selection survive the stricter parse. Only tracks
+  the SDP advertises as send-capable are considered — a camera with plain audio
+  and no direction has no back channel; a send-capable track with no usable
+  `a=rtpmap` is assumed to be G.711. SETUP covers the back channel alone, never
+  every media: the recorder already holds a session for the video.
   `Session.FeedPCM` takes native-rate mono S16LE and does anti-alias LPF →
   linear resample to 8 kHz → G.711 (A-law/µ-law) → 160-sample RTP frames every
-  20 ms → RTSP interleaved (`$`-framing, channel 0), with a periodic RTCP
-  Sender Report every 5 s on channel 1. AAC and Opus are **passthrough** (no
+  20 ms, packetized by `rtplpcm`. AAC and Opus are **passthrough** (no
   server-side encode/decode, no cgo): `FeedAU` forwards client-encoded AAC-LC
-  access units (RFC 3640 framing from the track's fmtp) and `FeedOpus`
-  forwards raw 20 ms Opus packets (RFC 7587, one packet per RTP frame, +960
-  per timestamp). Hand-implemented RTSP/G.711/RTP/RTCP with the stdlib; only
-  new external dep is `gorilla/websocket` (transport used by the handler).
-  Trace via `ENEVERRE_LOG_LEVEL=debug`.
+  access units (`rtpmpeg4audio` applies the RFC 3640 AU-headers from the
+  track's fmtp) and `FeedOpus` forwards raw 20 ms Opus packets (RFC 7587, one
+  packet per RTP frame, +960 per timestamp). The encoders number timestamps
+  from zero per call, so the running value and the talkspurt marker bit are the
+  session's job (`writePackets`). Trace via `ENEVERRE_LOG_LEVEL=debug`.
 - `go/internal/events` — `Event` model (RFC3339-on-the-wire, unix-internally)
   plus record/list/get/delete. `RecordMotion` extends an overlapping row to
   the union of ranges.
