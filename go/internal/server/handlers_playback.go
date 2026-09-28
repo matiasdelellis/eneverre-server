@@ -249,7 +249,11 @@ func (a *App) playbackGetEngine(w http.ResponseWriter, r *http.Request, cam *cam
 		httpError(w, http.StatusBadRequest, "Invalid start timestamp: '"+start+"'")
 		return
 	}
-	dur := parseClipSeconds(duration)
+	dur, ok := parseClipSeconds(duration)
+	if !ok {
+		httpError(w, http.StatusUnprocessableEntity, "duration must be a positive number of seconds")
+		return
+	}
 	if dur > maxClipDuration {
 		httpError(w, http.StatusUnprocessableEntity,
 			fmt.Sprintf("duration exceeds the %s export limit", maxClipDuration))
@@ -274,9 +278,12 @@ func (a *App) playbackGetEngine(w http.ResponseWriter, r *http.Request, cam *cam
 	// the fMP4 clip (Content-Type video/mp4) straight to w.
 	rq := r.Clone(r.Context())
 	vals := url.Values{
-		"path":     {cam.ID},
-		"start":    {t.UTC().Format(time.RFC3339Nano)},
-		"duration": {duration},
+		"path":  {cam.ID},
+		"start": {t.UTC().Format(time.RFC3339Nano)},
+		// Forward the value that was checked against the cap, never the raw
+		// string: the playback handler also accepts Go durations ("1000h"),
+		// which would otherwise slip past the limit above.
+		"duration": {strconv.FormatFloat(dur.Seconds(), 'f', -1, 64)},
 		"format":   {"fmp4"},
 	}
 	// Forward the gap-fill toggle (default on) so clients can opt out.
@@ -314,9 +321,15 @@ const maxClipDuration = 4 * time.Hour
 
 // parseClipSeconds parses the client's duration param (seconds, e.g. "5" or
 // "5.0"); anything unparseable falls back to 5s, matching PB_CLIP_SECONDS.
-func parseClipSeconds(s string) time.Duration {
-	if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && f > 0 {
-		return time.Duration(f * float64(time.Second))
+func parseClipSeconds(s string) (time.Duration, bool) {
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || !(f > 0) { // !(f > 0) also rejects NaN
+		return 0, false
 	}
-	return 5 * time.Second
+	// Clamp before converting: a huge or infinite float overflows Duration
+	// (int64 ns) and wraps negative, which would slip past the caller's cap.
+	if f > maxClipDuration.Seconds() {
+		return maxClipDuration + time.Second, true
+	}
+	return time.Duration(f * float64(time.Second)), true
 }

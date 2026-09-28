@@ -57,7 +57,10 @@ type App struct {
 	// playback). Always attached in normal operation (main builds and starts
 	// it unconditionally); the [media] section only tunes it. May be nil in
 	// tests that construct App directly without SetMediaEngine.
-	engine    *media.Engine
+	engine *media.Engine
+	// engineMu guards the engine assignment against the heartbeat goroutines
+	// New starts before SetMediaEngine (see heartbeatEngine).
+	engineMu  sync.RWMutex
 	staticDir string
 	assets    map[string]staticAsset // precomputed embedded UI (etag + gzip), nil if none
 	// staticCacheControl is the Cache-Control header value sent for embedded
@@ -99,6 +102,21 @@ type App struct {
 	// since handlers run concurrently and /api/cameras reads it.
 	privacyMu sync.RWMutex
 	privacy   map[string]bool
+	// privacyGen counts manual privacy writes per camera (handlePrivacy, and
+	// the carry-over on camera update). A heartbeat snapshots it before its
+	// ~1s firmware fetch and drops its reading if it moved meanwhile, so a
+	// state read before a toggle can't overwrite the toggle. Guarded by
+	// privacyMu; nil-safe (tests build App without New).
+	privacyGen map[string]uint64
+
+	// cfgGen counts, per camera, how many times its runtime caches were
+	// dropped (dropCameraState: every update and delete). The background
+	// seeds (heartbeat, talk-codec probe) snapshot it before their slow
+	// network call and discard the result if it moved, so a probe of the old
+	// config can't land after an edit — or resurrect a deleted camera's
+	// entries. Guarded by cfgGenMu; nil-safe.
+	cfgGenMu sync.Mutex
+	cfgGen   map[string]uint64
 
 	// schedOff tracks, per camera id, whether the recording scheduler has paused
 	// it because the current time falls outside its schedule's armed windows.
@@ -121,6 +139,10 @@ type App struct {
 	// camMutateMu) because each thingino call can take up to 10s and must not
 	// block admin mutations or other cameras' toggles. Guarded by privacyOpsMu;
 	// entries live for the camera's lifetime (bounded by the camera count).
+	// deviceCreateLimit caps unauthenticated pairing-code creation per
+	// client IP (GET /api/auth/device).
+	deviceCreateLimit *windowLimiter
+
 	privacyOpsMu sync.Mutex
 	privacyOps   map[string]*sync.Mutex
 
@@ -236,6 +258,7 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		cleanupGrace:       int64(cfg.AuthCleanupGraceHours()) * 3600,
 		secLog:             newSecLogger(cfg.AuthSecurityLog()),
 		authThrottle:       newAuthThrottle(),
+		deviceCreateLimit:  newWindowLimiter(deviceCreatesPerWindow, 5*time.Minute),
 		proxyTrust:         newProxyTrust(cfg.TrustedProxies()),
 		privacy:            make(map[string]bool),
 		heartbeats:         make(map[string]heartbeatInfo),
@@ -370,7 +393,9 @@ func (a *App) PrivacyState(id string) bool {
 // engine means the [media] section is not configured; the playback endpoints
 // answer 404 in that case.
 func (a *App) SetMediaEngine(e *media.Engine) {
+	a.engineMu.Lock()
 	a.engine = e
+	a.engineMu.Unlock()
 	// Re-apply any privacy state already seeded (thingino cameras that booted in
 	// privacy) so a boot-time privacy state also pauses recording + transmission,
 	// regardless of whether the heartbeat seed ran before or after the engine attached.
@@ -502,6 +527,7 @@ func (a *App) seedTalkCodecsFor(c camera.Camera) {
 	if url == "" {
 		return
 	}
+	gen := a.camConfigGen(c.ID)
 	go func() {
 		codecs, err := backchannel.ProbeCodecs(context.Background(), url)
 		if err != nil || len(codecs) == 0 {
@@ -511,6 +537,10 @@ func (a *App) seedTalkCodecsFor(c camera.Camera) {
 			return
 		}
 		a.talkCodecsMu.Lock()
+		if a.camConfigGen(c.ID) != gen { // camera edited/deleted meanwhile
+			a.talkCodecsMu.Unlock()
+			return
+		}
 		a.talkCodecs[c.ID] = codecs
 		a.talkCodecsMu.Unlock()
 		slog.Info("talk codecs discovered", "camera", c.ID, "codecs", codecs)
@@ -537,28 +567,76 @@ func (a *App) seedHeartbeatFor(c camera.Camera) {
 	if !c.Enabled || c.ThinginoURL == "" || c.ThinginoAPIKey == "" {
 		return
 	}
+	cfgGen := a.camConfigGen(c.ID)
 	go func() {
+		a.privacyMu.RLock()
+		gen := a.privacyGen[c.ID]
+		a.privacyMu.RUnlock()
 		hb, err := thingino.State(c.ThinginoURL, c.ThinginoAPIKey)
 		if err != nil {
 			slog.Warn("heartbeat seed failed", "camera", c.ID, "err", err)
 			return
 		}
 		a.heartbeatsMu.Lock()
+		if a.camConfigGen(c.ID) != cfgGen { // camera edited/deleted meanwhile
+			a.heartbeatsMu.Unlock()
+			return
+		}
 		a.heartbeats[c.ID] = heartbeatInfo{HB: hb, At: time.Now()}
 		a.heartbeatsMu.Unlock()
 
 		if !c.Capabilities.Privacy {
 			return
 		}
+		// Under the privacy op lock so this can't interleave with a manual
+		// toggle, and only if no toggle landed while the fetch was in flight
+		// (the reading would predate it). The firmware state is applied both
+		// ways — a camera that booted in privacy is paused, one whose privacy
+		// was turned off on the camera itself is resumed — and always combined
+		// with off-hours, so the engine never disagrees with the state map.
+		mu := a.privacyOp(c.ID)
+		mu.Lock()
+		defer mu.Unlock()
 		a.privacyMu.Lock()
-		a.privacy[c.ID] = bool(hb.PrivacyEnabled)
+		if a.privacyGen[c.ID] != gen || a.camConfigGen(c.ID) != cfgGen {
+			a.privacyMu.Unlock()
+			return
+		}
+		on := bool(hb.PrivacyEnabled)
+		a.privacy[c.ID] = on
+		off := a.schedOff[c.ID]
 		a.privacyMu.Unlock()
-		// A camera that booted in privacy must also be paused (stop
-		// recording + transmission), not just reflected in the state map.
-		if hb.PrivacyEnabled && a.engine != nil {
-			a.engine.SetPrivacy(c.ID, true)
+		if e := a.heartbeatEngine(); e != nil {
+			e.SetPrivacy(c.ID, on || off)
 		}
 	}()
+}
+
+// camConfigGen returns the camera's config generation (see cfgGen).
+func (a *App) camConfigGen(id string) uint64 {
+	a.cfgGenMu.Lock()
+	defer a.cfgGenMu.Unlock()
+	return a.cfgGen[id]
+}
+
+// bumpCamConfigGen invalidates in-flight seeds for the camera.
+func (a *App) bumpCamConfigGen(id string) {
+	a.cfgGenMu.Lock()
+	defer a.cfgGenMu.Unlock()
+	if a.cfgGen == nil {
+		a.cfgGen = make(map[string]uint64)
+	}
+	a.cfgGen[id]++
+}
+
+// heartbeatEngine reads a.engine for the heartbeat goroutines. New starts
+// them before main calls SetMediaEngine, so they are the one reader that can
+// race the assignment; every handler runs after it (the server starts
+// serving later) and reads a.engine directly.
+func (a *App) heartbeatEngine() *media.Engine {
+	a.engineMu.RLock()
+	defer a.engineMu.RUnlock()
+	return a.engine
 }
 
 // heartbeatLoop refreshes the cached thingino heartbeats on a slow cadence so
@@ -766,8 +844,8 @@ func (a *App) Handler() http.Handler {
 	}
 
 	// accessLog is outermost so every request (including CORS preflight) is
-	// logged; cors handles OPTIONS before the mux. The Origin allowlist is empty
-	// by default (permissive), or locked down via [server] cors_origins.
+	// logged; cors handles OPTIONS before the mux. [server] cors_origins picks
+	// which Origins get credentials (none by default) — see cors.
 	return accessLog(cors(mux, a.cfg.CORSOrigins()), a.proxyTrust)
 }
 
@@ -812,9 +890,8 @@ func (a *App) unauthorized(w http.ResponseWriter) {
 // requireUser enforces Basic-or-Bearer auth, writing 401 (or 429 when the
 // caller is throttled) and returning nil on failure.
 func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentUser {
-	u, throttled := a.currentUser(r)
+	u, wait, throttled := a.currentUser(r)
 	if throttled {
-		_, wait := a.authThrottle.blocked(remoteIP(r), basicUsername(r))
 		throttleExceeded(w, wait)
 		return nil
 	}
@@ -834,29 +911,21 @@ func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentU
 // deliberate probe. Missing credentials and merely-expired Bearer tokens are
 // normal and get neither strikes nor log lines (they would ban legitimate
 // users whose sessions lapsed).
-func (a *App) currentUser(r *http.Request) (u *auth.CurrentUser, throttled bool) {
+func (a *App) currentUser(r *http.Request) (u *auth.CurrentUser, wait time.Duration, throttled bool) {
 	user, _, hasBasic := r.BasicAuth()
-	if hasBasic {
-		if blocked, _ := a.authThrottle.blocked(remoteIP(r), user); blocked {
-			return nil, true
-		}
+	if !hasBasic {
+		return auth.Current(a.db, r), 0, false
+	}
+	release, wait, ok := a.authThrottle.begin(a.proxyTrust.clientIP(r), user)
+	if !ok {
+		return nil, wait, true
 	}
 	u = auth.Current(a.db, r)
-	if hasBasic {
-		if u == nil {
-			a.authThrottle.fail(remoteIP(r), user)
-			a.logAuthFailure(r, user, "basic_auth_failed")
-		} else {
-			a.authThrottle.success(user)
-		}
+	release(u == nil)
+	if u == nil {
+		a.logAuthFailure(r, user, "basic_auth_failed")
 	}
-	return u, false
-}
-
-// basicUsername is the username from r's Basic credentials, or "".
-func basicUsername(r *http.Request) string {
-	user, _, _ := r.BasicAuth()
-	return user
+	return u, 0, false
 }
 
 // gateMetrics wraps a metrics handler so it is reachable without credentials
@@ -1250,6 +1319,17 @@ func (a *App) handlePTZRecalibrate(w http.ResponseWriter, r *http.Request) {
 	a.writePTZPosition(w, *cam)
 }
 
+// setManualPrivacyLocked records an operator-driven privacy state and bumps the
+// camera's privacy generation so an in-flight heartbeat drops its older
+// reading. Caller holds privacyMu (write).
+func (a *App) setManualPrivacyLocked(id string, on bool) {
+	a.privacy[id] = on
+	if a.privacyGen == nil {
+		a.privacyGen = make(map[string]uint64)
+	}
+	a.privacyGen[id]++
+}
+
 // privacyOp returns (creating if needed) the per-camera privacy-toggle mutex.
 func (a *App) privacyOp(camID string) *sync.Mutex {
 	a.privacyOpsMu.Lock()
@@ -1331,7 +1411,7 @@ func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 	// vice-versa. We already hold this camera's privacy op lock (above), which
 	// also serializes against the scheduler's reconcilePause.
 	a.privacyMu.Lock()
-	a.privacy[cam.ID] = enable
+	a.setManualPrivacyLocked(cam.ID, enable)
 	off := a.schedOff[cam.ID]
 	a.privacyMu.Unlock()
 	if a.engine != nil {

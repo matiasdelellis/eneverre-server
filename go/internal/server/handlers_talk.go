@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -33,13 +35,49 @@ const (
 // held by a connect attempt before other clients stop seeing 409s.
 const talkDialTimeout = 15 * time.Second
 
-// talkUpgrader upgrades the push-to-talk WebSocket. Origin is not restricted
-// here: auth is enforced by the access token before the upgrade, and the token
-// is unforgeable so there is no CSRF vector. Advertising talkSubprotocol makes
-// gorilla echo it back (and only it, never the token) in the handshake.
+// urlUserinfo matches the user:pass@ part of a URL inside an error message.
+var urlUserinfo = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/@\s]*@`)
+
+// talkCloseReason is the WebSocket close reason for a failed backchannel
+// dial: the RTSP error helps diagnose (no AAC track, 401, …), but any camera
+// credentials an error echoes from the URL are stripped — any logged-in user
+// can open a talk socket — and the text is cut to the 123 bytes a close frame
+// can carry.
+func talkCloseReason(err error) string {
+	msg := "RTSP error: " + urlUserinfo.ReplaceAllString(err.Error(), "$1")
+	if len(msg) > 123 {
+		msg = strings.ToValidUTF8(msg[:123], "")
+	}
+	return msg
+}
+
+// talkMaxMessageBytes caps one push-to-talk WebSocket message.
+const talkMaxMessageBytes = 1 << 20
+
+// talkUpgrader upgrades the push-to-talk WebSocket. Advertising
+// talkSubprotocol makes gorilla echo it back (and only it, never the token) in
+// the handshake. Origin is checked by talkCheckOrigin.
 var talkUpgrader = websocket.Upgrader{
 	Subprotocols: []string{talkSubprotocol},
-	CheckOrigin:  func(r *http.Request) bool { return true },
+	CheckOrigin:  talkCheckOrigin,
+}
+
+// talkCheckOrigin admits any origin when the request carries an access token
+// (the token can't be forged, and a page that holds one could use it
+// anyway), but requires same-origin when it doesn't — that is the HTTP Basic
+// fallback, where a browser attaches cached credentials on its own and a
+// foreign page could otherwise open a talk session to the camera speaker.
+// Requests without an Origin header are not from a browser and pass.
+func talkCheckOrigin(r *http.Request) bool {
+	if talkToken(r) != "" || auth.BearerToken(r) != "" {
+		return true
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	return err == nil && strings.EqualFold(u.Host, r.Host)
 }
 
 // talkToken extracts the access token, preferring the Sec-WebSocket-Protocol
@@ -101,10 +139,10 @@ func (a *App) CloseAllTalk() {
 func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 	u := auth.VerifyToken(a.db, talkToken(r))
 	if u == nil {
+		var wait time.Duration
 		var throttled bool
-		u, throttled = a.currentUser(r) // Basic fallback goes through the throttle
+		u, wait, throttled = a.currentUser(r) // Basic fallback goes through the throttle
 		if throttled {
-			_, wait := a.authThrottle.blocked(remoteIP(r), basicUsername(r))
 			throttleExceeded(w, wait)
 			return
 		}
@@ -153,6 +191,12 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	// gorilla reads each message fully into memory with no default cap, so an
+	// authenticated client could send one multi-GB frame and OOM the NVR. A
+	// second of 48 kHz S16LE PCM is 96 KiB; 1 MiB leaves ample room for any
+	// client's chunking while bounding the damage. Oversized frames close the
+	// socket (1009).
+	conn.SetReadLimit(talkMaxMessageBytes)
 
 	// Handshake first: the client's initial JSON message selects the backchannel
 	// codec, so it must be read before dialing the camera. Fields:
@@ -201,7 +245,7 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("talk backchannel dial failed", "camera", cam.ID, "err", err)
 		conn.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "RTSP error: "+err.Error()))
+			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, talkCloseReason(err)))
 		release()
 		return
 	}
@@ -244,6 +288,17 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					return
 				}
+			case <-sess.Done():
+				// The backchannel died on its own (the camera dropped the RTSP
+				// session): tell the client instead of letting it keep talking
+				// into a session that discards everything, and close the socket
+				// so the read loop below ends and the slot is released.
+				slog.Warn("talk backchannel ended", "camera", cam.ID)
+				conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+				_ = conn.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "backchannel closed by camera"))
+				conn.Close()
+				return
 			case <-pingDone:
 				return
 			}

@@ -204,7 +204,9 @@ func (a *App) handleListEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
-	if a.requireUser(w, r) == nil {
+	// Admin-only: motion events are evidence alongside the footage, so a
+	// regular user must not be able to erase them.
+	if a.requireAdmin(w, r) == nil {
 		return
 	}
 	camID := r.PathValue("cam_id")

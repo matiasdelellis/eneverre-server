@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -73,16 +74,45 @@ func accessLog(next http.Handler, trust *proxyTrust) http.Handler {
 
 		attrs := []any{
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", logPath(r.URL.Path),
 			"status", rec.status,
 			"dur_ms", dur.Milliseconds(),
 			"ip", trust.clientIP(r),
 		}
 		if slog.Default().Enabled(r.Context(), slog.LevelDebug) {
-			attrs = append(attrs, "query", r.URL.RawQuery, "bytes", rec.bytes)
+			attrs = append(attrs, "query", logQuery(r.URL.Query()), "bytes", rec.bytes)
 		}
 		slog.Info("request", attrs...)
 	})
+}
+
+// devicePollPrefix is the device-login poll route; the path segment after it
+// is the device code, which works as a bearer credential until the pairing
+// completes (whoever polls it first after approval gets the session token).
+const devicePollPrefix = "/api/auth/device/"
+
+// logPath returns the request path with credentials in it masked.
+func logPath(p string) string {
+	if code, ok := strings.CutPrefix(p, devicePollPrefix); ok && code != "" && code != "verify" {
+		return devicePollPrefix + "{device_code}"
+	}
+	return p
+}
+
+// secretQueryParams are query parameters that carry credentials: the talk
+// WebSocket's ?token= (an access token) and the webhook's ?token= (the shared
+// secret) among them.
+var secretQueryParams = map[string]bool{"token": true, "refresh_token": true, "password": true, "secret": true, "api_key": true}
+
+// logQuery renders the query string for the DEBUG access log with credential
+// values replaced.
+func logQuery(q url.Values) string {
+	for k := range q {
+		if secretQueryParams[strings.ToLower(k)] {
+			q[k] = []string{"REDACTED"}
+		}
+	}
+	return q.Encode()
 }
 
 // proxyTrust resolves the client IP for logging: X-Forwarded-For / X-Real-IP
@@ -129,11 +159,11 @@ func newProxyTrust(entries []string) *proxyTrust {
 // trusts reports whether the socket peer of r is a trusted proxy. Nil-safe
 // (tests build App without one): a nil resolver trusts the loopback default.
 func (t *proxyTrust) trusts(r *http.Request) bool {
-	host := r.RemoteAddr
-	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		host = h
-	}
-	ip := net.ParseIP(host)
+	return t.trustsIP(net.ParseIP(peerHost(r)))
+}
+
+// trustsIP reports whether ip belongs to a trusted proxy (nil ip: no).
+func (t *proxyTrust) trustsIP(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
@@ -148,22 +178,46 @@ func (t *proxyTrust) trusts(r *http.Request) bool {
 	return false
 }
 
-// clientIP returns the client IP for r: the first X-Forwarded-For hop (or
-// X-Real-IP) when the peer is a trusted proxy, else the socket peer itself.
-func (t *proxyTrust) clientIP(r *http.Request) string {
-	if t.trusts(r) {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.IndexByte(xff, ','); i >= 0 {
-				return strings.TrimSpace(xff[:i])
-			}
-			return strings.TrimSpace(xff)
-		}
-		if xr := r.Header.Get("X-Real-IP"); xr != "" {
-			return xr
-		}
-	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
+// peerHost is the socket peer address of r without the port.
+func peerHost(r *http.Request) string {
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return h
 	}
 	return r.RemoteAddr
+}
+
+// clientIP returns the client IP for r. Only a trusted proxy's forwarding
+// headers are honored, and X-Forwarded-For is read from the RIGHT: each
+// proxy appends the peer it saw, so the entries a trusted proxy added are at
+// the end while everything to their left may have been sent by the client
+// itself (nginx's $proxy_add_x_forwarded_for passes a client's header
+// along). The client is therefore the rightmost hop that is not itself a
+// trusted proxy — taking the leftmost would let any client pick the address
+// the throttle and fail2ban act on. An unparseable hop ends the walk: it was
+// not written by a proxy we trust, so the last trusted hop is the answer.
+func (t *proxyTrust) clientIP(r *http.Request) string {
+	peer := peerHost(r)
+	if !t.trusts(r) {
+		return peer
+	}
+	if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
+		hops := strings.Split(strings.Join(xff, ","), ",")
+		last := peer
+		for i := len(hops) - 1; i >= 0; i-- {
+			hop := strings.TrimSpace(hops[i])
+			ip := net.ParseIP(hop)
+			if ip == nil {
+				return last
+			}
+			if !t.trustsIP(ip) {
+				return hop
+			}
+			last = hop
+		}
+		return last // every hop is a trusted proxy: the innermost one
+	}
+	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(xr) != nil {
+		return xr
+	}
+	return peer
 }

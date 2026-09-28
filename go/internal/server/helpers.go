@@ -3,42 +3,59 @@ package server
 import (
 	"encoding/json"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// cors handles CORS and preflight OPTIONS. `allowed` is the Origin allowlist:
-// when empty it preserves the default permissive behavior (reflect any
-// Origin with credentials); when non-empty
-// only those Origins get CORS headers, so a hostile page can't ride a browser
-// session against the API. A request with no Origin (same-origin, curl, the
-// native apps) is unaffected either way.
+// cors handles CORS and preflight OPTIONS. `allowed` is the Origin allowlist
+// ([server] cors_origins):
+//
+//   - empty (default): any Origin may read responses, but WITHOUT credentials.
+//     A cross-origin front-end that authenticates with a Bearer header keeps
+//     working, while a hostile page can no longer ride the browser's cached
+//     HTTP Basic credentials: without Access-Control-Allow-Credentials the
+//     browser won't let it read a credentialed response (and a credentialed
+//     preflight fails).
+//   - listed Origins: reflected with credentials; others get no CORS headers.
+//   - a "*" entry: any Origin, with credentials — the old permissive default,
+//     now an explicit opt-in.
+//
+// A request with no Origin (same-origin, curl, the native apps) is unaffected.
 func cors(h http.Handler, allowed []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		allow := ""
+		allow, creds := "", false
 		switch {
 		case len(allowed) == 0:
-			// No allowlist: reflect the Origin, or "*" when absent (unchanged).
 			if origin != "" {
 				allow = origin
 			} else {
 				allow = "*"
 			}
 		case origin != "" && originAllowed(origin, allowed):
-			allow = origin
+			allow, creds = origin, true
 		}
 		if allow != "" {
 			w.Header().Set("Access-Control-Allow-Origin", allow)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			if creds {
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
 			w.Header().Add("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
 			if allow != "" {
-				w.Header().Set("Access-Control-Allow-Methods", "*")
-				w.Header().Set("Access-Control-Allow-Headers", "*")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+				// Echo the requested headers: a "*" wildcard never covers
+				// Authorization, which is the one header a Bearer client needs.
+				hdrs := r.Header.Get("Access-Control-Request-Headers")
+				if hdrs == "" {
+					hdrs = "Authorization, Content-Type"
+				}
+				w.Header().Set("Access-Control-Allow-Headers", hdrs)
+				w.Header().Add("Vary", "Access-Control-Request-Headers")
 			}
 			w.WriteHeader(http.StatusOK)
 			return
@@ -58,14 +75,17 @@ func originAllowed(origin string, allowed []string) bool {
 	return false
 }
 
-// queryFloat reads a float query param, falling back to def when missing/invalid.
+// queryFloat reads a float query param, falling back to def when missing or
+// invalid. NaN and ±Inf count as invalid: ParseFloat accepts "NaN"/"Inf", and
+// NaN slips through every clamp (all comparisons are false), so it would
+// reach the camera firmware as x=NaN.
 func queryFloat(r *http.Request, key string, def float64) float64 {
 	v := r.URL.Query().Get(key)
 	if v == "" {
 		return def
 	}
 	n, err := strconv.ParseFloat(v, 64)
-	if err != nil {
+	if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 		return def
 	}
 	return n

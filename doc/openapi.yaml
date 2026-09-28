@@ -636,9 +636,11 @@ paths:
       summary: Delete a camera (admin)
       description: >-
         Removes a camera: the DB row is deleted and the camera is detached from
-        the media engine and the in-memory set. Recorded segments already on disk
-        are left for retention to prune. Requires an admin token (403 for a
-        non-admin).
+        the media engine and the in-memory set, and its recordings (indexed
+        segments plus any unindexed files left in its directory) and motion
+        events are deleted — the recordings in the background, after the
+        response. To keep the footage, disable the camera (`enabled: false`)
+        instead. Requires an admin token (403 for a non-admin).
       parameters:
         - $ref: '#/components/parameters/camera_id'
       responses:
@@ -1392,7 +1394,8 @@ paths:
 
   /api/camera/{camera_id}/events/{event_id}:
     delete:
-      summary: Delete an event
+      summary: Delete an event (admin)
+      description: Requires an admin token (403 for a non-admin).
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - name: event_id
@@ -1408,6 +1411,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 

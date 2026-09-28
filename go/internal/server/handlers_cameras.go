@@ -7,12 +7,15 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"eneverre/internal/backchannel"
 	"eneverre/internal/camera"
+	"eneverre/internal/events"
 	"eneverre/internal/media"
 	"eneverre/internal/thingino"
 )
@@ -98,6 +101,27 @@ func floatOr(p *float64, def float64) float64 {
 	return def
 }
 
+// checkCameraURL reports why raw is not a usable camera URL with one of the
+// given schemes, or "" when it is. The message never includes raw.
+func checkCameraURL(raw string, schemes []string) string {
+	for _, c := range raw {
+		if c <= ' ' || c == 0x7f {
+			return "must not contain spaces or control characters"
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "is not a valid URL"
+	}
+	if !slices.Contains(schemes, strings.ToLower(u.Scheme)) {
+		return "must start with " + strings.Join(schemes, ":// or ") + "://"
+	}
+	if u.Hostname() == "" {
+		return "must include a host"
+	}
+	return ""
+}
+
 // spec validates the request and converts it to a camera.Spec. It returns a
 // non-empty message describing the first validation failure (for a 422), in
 // which case the returned Spec is unusable.
@@ -116,6 +140,28 @@ func (req createCameraReq) spec() (camera.Spec, string) {
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
 		return camera.Spec{}, "source (the camera's RTSP URL) is required"
+	}
+	// Validate every camera URL up front. They carry credentials (RTSP
+	// user:pass, the thingino ?token=), and a malformed one would otherwise
+	// only fail later inside url.Parse, whose error quotes the whole URL
+	// into logs and into 502 bodies non-admin users see. The messages here
+	// name the field, never echo the value.
+	for _, f := range []struct {
+		name, value string
+		schemes     []string
+		required    bool
+	}{
+		{"source", source, []string{"rtsp", "rtsps"}, true},
+		{"backchannel", strings.TrimSpace(req.Backchannel), []string{"rtsp", "rtsps"}, false},
+		{"snapshot_url", strings.TrimSpace(req.SnapshotURL), []string{"http", "https"}, false},
+		{"thingino_url", strings.TrimSpace(req.ThinginoURL), []string{"http", "https"}, false},
+	} {
+		if f.value == "" && !f.required {
+			continue
+		}
+		if msg := checkCameraURL(f.value, f.schemes); msg != "" {
+			return camera.Spec{}, f.name + " " + msg
+		}
 	}
 	transport := strings.ToLower(strings.TrimSpace(req.Transport))
 	switch transport {
@@ -177,6 +223,12 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
+	// Serialize the DB + engine + in-memory mutation against other camera
+	// create/update/delete so they can't interleave.
+	a.camMutateMu.Lock()
+	defer a.camMutateMu.Unlock()
+	// The schedule check runs under the lock too: schedule deletion takes it
+	// as well, so a schedule can't vanish between this check and the write.
 	if ok, err := a.scheduleExists(s.ScheduleID); err != nil {
 		slog.Error("schedule lookup failed", "id", s.ScheduleID, "err", err)
 		httpError(w, http.StatusInternalServerError, "could not validate schedule")
@@ -185,11 +237,6 @@ func (a *App) handleCreateCamera(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "schedule_id references an unknown schedule")
 		return
 	}
-
-	// Serialize the DB + engine + in-memory mutation against other camera
-	// create/update/delete so they can't interleave.
-	a.camMutateMu.Lock()
-	defer a.camMutateMu.Unlock()
 
 	// The id is always derived from the name: slug it, then disambiguate against
 	// existing cameras. Done under the lock so the uniqueness probe (UniqueID)
@@ -263,8 +310,13 @@ func (a *App) handleGetCameraConfig(w http.ResponseWriter, r *http.Request) {
 // dropCameraState clears every per-camera runtime cache (privacy, heartbeat,
 // talk codecs, PTZ position). Called when a camera is updated (the config the
 // caches were derived from may have changed) or deleted, so a new per-camera
-// cache only needs a line here to be handled by both.
+// cache only needs a line here to be handled by both. An update restores the
+// manual privacy flag itself afterwards (see handleUpdateCamera).
 func (a *App) dropCameraState(id string) {
+	// First: a background seed that checks the generation after this bump
+	// discards its result, and one that checked before has already written —
+	// the deletes below then remove it.
+	a.bumpCamConfigGen(id)
 	a.privacyMu.Lock()
 	delete(a.privacy, id)
 	delete(a.schedOff, id)
@@ -300,6 +352,12 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ID = id // the id is fixed by the URL path; it is never in the body
+	// Serialize the DB + engine reconfigure (RemoveCamera+AddCamera) + in-memory
+	// update so a concurrent update/delete of the same camera can't interleave.
+	a.camMutateMu.Lock()
+	defer a.camMutateMu.Unlock()
+	// The schedule check runs under the lock too: schedule deletion takes it
+	// as well, so a schedule can't vanish between this check and the write.
 	if ok, err := a.scheduleExists(s.ScheduleID); err != nil {
 		slog.Error("schedule lookup failed", "id", s.ScheduleID, "err", err)
 		httpError(w, http.StatusInternalServerError, "could not validate schedule")
@@ -308,11 +366,6 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "schedule_id references an unknown schedule")
 		return
 	}
-
-	// Serialize the DB + engine reconfigure (RemoveCamera+AddCamera) + in-memory
-	// update so a concurrent update/delete of the same camera can't interleave.
-	a.camMutateMu.Lock()
-	defer a.camMutateMu.Unlock()
 
 	switch err := a.camStore.Update(s); {
 	case errors.Is(err, camera.ErrNotFound):
@@ -325,6 +378,13 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cam := s.Camera()
+	// Hold the privacy op lock across the reconfigure so a concurrent toggle
+	// can't land between reading the old state and restoring it below.
+	pmu := a.privacyOp(id)
+	pmu.Lock()
+	a.privacyMu.RLock()
+	wasPrivate := a.privacy[id]
+	a.privacyMu.RUnlock()
 	// Apply live: the engine has no in-place update, so tear the old pipeline
 	// down (finalizing its segment) and start fresh with the new config.
 	if a.engine != nil {
@@ -333,8 +393,22 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 	}
 	a.updateCamera(cam)
 	// Reset runtime state and re-probe: the thingino/backchannel config may have
-	// changed, so the old privacy/talk-codec/position state no longer applies.
+	// changed, so the old talk-codec/position/heartbeat state no longer applies.
 	a.dropCameraState(id)
+	// Manual privacy is the operator's intent, not derived config: carry it
+	// over, or editing a paused camera (even just its name) would resume
+	// recording and transmission. The fresh pipeline starts unpaused, so
+	// re-pause it; its connect aborts at the recorder's ShouldStop check
+	// before PLAY. Off-hours is re-derived by reevaluateSchedules below.
+	if wasPrivate && cam.Enabled && cam.Capabilities.Privacy {
+		a.privacyMu.Lock()
+		a.setManualPrivacyLocked(id, true)
+		a.privacyMu.Unlock()
+		if a.engine != nil {
+			a.engine.SetPrivacy(id, true)
+		}
+	}
+	pmu.Unlock()
 	// Each seed is a no-op for a disabled camera (they check Enabled themselves,
 	// because heartbeatLoop calls them too), so no gate is needed here.
 	a.seedHeartbeatFor(cam)
@@ -350,8 +424,9 @@ func (a *App) handleUpdateCamera(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteCamera removes a camera (admin only): it deletes the DB row
 // (source of truth) first, then detaches the camera from the media engine and
-// the in-memory set and clears its runtime state. Recorded segments on disk are
-// left for retention to prune.
+// the in-memory set and clears its runtime state. Its recordings and motion
+// events are deleted too (the recordings in the background); disabling a
+// camera is the way to keep them.
 func (a *App) handleDeleteCamera(w http.ResponseWriter, r *http.Request) {
 	if a.requireAdmin(w, r) == nil {
 		return
@@ -372,6 +447,16 @@ func (a *App) handleDeleteCamera(w http.ResponseWriter, r *http.Request) {
 
 	if a.engine != nil {
 		a.engine.RemoveCamera(id)
+		// Deleting a camera deletes its footage (disable it to keep it):
+		// otherwise it would linger until retention — forever with no
+		// [media] retain — and a new camera given the same id would inherit
+		// it. Runs in the background; the camera is gone either way.
+		a.engine.PurgeCameraRecordings(id)
+	}
+	if n, err := events.DeleteCamera(a.db, id); err != nil {
+		slog.Warn("delete camera: events cleanup failed", "id", id, "err", err)
+	} else if n > 0 {
+		slog.Info("delete camera: events removed", "id", id, "count", n)
 	}
 	a.removeCamera(id)
 	a.dropCameraState(id)
@@ -398,6 +483,12 @@ func (a *App) handleProbeCamera(w http.ResponseWriter, r *http.Request) {
 		Transport string `json:"transport"`
 	}
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// Same URL check as create/update, so a malformed URL is reported without
+	// the parse error quoting it (credentials included) back to the wizard.
+	if msg := checkCameraURL(strings.TrimSpace(req.Source), []string{"rtsp", "rtsps"}); msg != "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "source " + msg})
 		return
 	}
 	res, err := media.ProbeSource(req.Source, req.Transport, 8*time.Second)
@@ -449,6 +540,10 @@ func (a *App) handleProbeThingino(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(req.ThinginoAPIKey)
 	if host == "" || key == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "URL and API key are required"})
+		return
+	}
+	if msg := checkCameraURL(host, []string{"http", "https"}); msg != "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "thingino_url " + msg})
 		return
 	}
 	if _, err := thingino.State(host, key); err != nil {

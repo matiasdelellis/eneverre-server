@@ -46,6 +46,12 @@ func (a *App) startScheduler() {
 // directly so a panic there surfaces as a 500 via net/http's per-request
 // recovery instead of being swallowed.
 func (a *App) safeReevaluate() {
+	// Hold camMutateMu like the camera handlers do around their own
+	// reevaluation: a tick working from a camera list read just before an
+	// update/delete would otherwise write schedOff for the old config (or for
+	// a camera that no longer exists) after the mutation cleared it.
+	a.camMutateMu.Lock()
+	defer a.camMutateMu.Unlock()
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("scheduler: reevaluate panicked, skipping this tick", "panic", r)
@@ -55,7 +61,7 @@ func (a *App) safeReevaluate() {
 }
 
 // reevaluateSchedules recomputes the off-hours state of every camera and applies
-// the resulting pause. Cheap enough to call on every minute tick and after any
+// the resulting pause. Callers hold camMutateMu. Cheap enough to call on every minute tick and after any
 // camera/schedule mutation (few cameras, one indexed schedule query). No-op when
 // the engine or schedule store is absent.
 func (a *App) reevaluateSchedules() {
@@ -249,7 +255,9 @@ func (a *App) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "could not update schedule")
 		return
 	}
+	a.camMutateMu.Lock()
 	a.reevaluateSchedules()
+	a.camMutateMu.Unlock()
 	s, _, _ := a.schedStore.Get(id)
 	slog.Info("schedule updated", "id", id, "name", s.Name)
 	writeJSON(w, http.StatusOK, s)
@@ -267,7 +275,20 @@ func (a *App) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if users := a.camerasUsingSchedule(id); len(users) > 0 {
+	// Under camMutateMu, which camera create/update also hold across their
+	// schedule_id check and write: otherwise a camera could be assigned this
+	// schedule between the usage check and the delete, and would silently
+	// fall back to recording 24/7.
+	a.camMutateMu.Lock()
+	defer a.camMutateMu.Unlock()
+	users, err := a.camerasUsingSchedule(id)
+	if err != nil {
+		// Fail closed: an unknown usage must not be read as "unused".
+		slog.Error("schedule usage check failed", "id", id, "err", err)
+		httpError(w, http.StatusInternalServerError, "could not check schedule usage")
+		return
+	}
+	if len(users) > 0 {
 		httpError(w, http.StatusConflict, "schedule in use by "+strings.Join(users, ", ")+"; reassign those cameras first")
 		return
 	}
@@ -287,11 +308,10 @@ func (a *App) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 // camerasUsingSchedule returns the ids of cameras that reference the given
 // schedule. Reads the store (source of truth) rather than the in-memory snapshot
 // so it can't miss a just-created camera.
-func (a *App) camerasUsingSchedule(id string) []string {
+func (a *App) camerasUsingSchedule(id string) ([]string, error) {
 	specs, err := a.camStore.ListSpecs()
 	if err != nil {
-		slog.Warn("schedule usage check failed", "id", id, "err", err)
-		return nil
+		return nil, err
 	}
 	var users []string
 	for _, s := range specs {
@@ -299,5 +319,5 @@ func (a *App) camerasUsingSchedule(id string) []string {
 			users = append(users, s.ID)
 		}
 	}
-	return users
+	return users, nil
 }

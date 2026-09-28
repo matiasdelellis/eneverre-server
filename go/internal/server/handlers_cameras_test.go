@@ -377,3 +377,73 @@ func TestUpdateCameraReseedsRuntimeState(t *testing.T) {
 		}
 	})
 }
+
+// TestUpdateCameraKeepsManualPrivacy pins that editing a camera doesn't lift
+// the operator's privacy: the update wipes the derived runtime caches, but
+// manual privacy is intent, and dropping it would resume recording and
+// transmission on a camera the operator had paused (a non-thingino camera has
+// no heartbeat to restore it).
+func TestUpdateCameraKeepsManualPrivacy(t *testing.T) {
+	a := withUsersApp(t)
+	insertUser(t, a.db, "admin", "adminpw", "admin")
+	creds, err := streamauth.NewStore(a.db)
+	if err != nil {
+		t.Fatalf("streamauth.NewStore: %v", err)
+	}
+	a.creds = creds
+	a.camStore = camera.NewStore(a.db)
+	a.privacy = map[string]bool{"cam1": true}
+	a.schedOff = map[string]bool{}
+	a.talkCodecs = map[string][]string{}
+	a.ptzPos = map[string]ptzPos{}
+	a.heartbeats = map[string]heartbeatInfo{}
+	spec := camera.Spec{ID: "cam1", Name: "Cam", Source: "rtsp://x/y", Enabled: true, Privacy: true}
+	spec.ApplyPTZDefaults()
+	if _, err := a.camStore.Create(spec, 1); err != nil {
+		t.Fatalf("camStore.Create: %v", err)
+	}
+	a.cameras = []camera.Camera{spec.Camera()}
+
+	body := `{"name":"Renamed","source":"rtsp://x/y","privacy":true,"enabled":true}`
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, adminRequest(t, http.MethodPut, "/api/camera/cam1", "admin", "adminpw", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("update = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+	a.privacyMu.RLock()
+	on := a.privacy["cam1"]
+	a.privacyMu.RUnlock()
+	if !on {
+		t.Error("manual privacy was cleared by a camera update")
+	}
+}
+
+// A malformed camera URL is refused at the API with a message that names the
+// field but never echoes the value — it carries the camera's credentials, and
+// url.Parse's own error would quote it whole.
+func TestCameraSpecRejectsBadURLs(t *testing.T) {
+	const secret = "s3cr3t"
+	for _, tc := range []struct {
+		name  string
+		req   createCameraReq
+		field string
+	}{
+		{"space in source", createCameraReq{Name: "c", Source: "rtsp://u:" + secret + "@cam host/x"}, "source"},
+		{"http source", createCameraReq{Name: "c", Source: "http://u:" + secret + "@cam/x"}, "source"},
+		{"no host", createCameraReq{Name: "c", Source: "rtsp:///x"}, "source"},
+		{"bad backchannel", createCameraReq{Name: "c", Source: "rtsp://cam/x", Backchannel: "rtsp://u:" + secret + "@\x00"}, "backchannel"},
+		{"bad thingino", createCameraReq{Name: "c", Source: "rtsp://cam/x", ThinginoURL: "http://cam host/?token=" + secret}, "thingino_url"},
+		{"ftp snapshot", createCameraReq{Name: "c", Source: "rtsp://cam/x", SnapshotURL: "ftp://cam/snap.jpg"}, "snapshot_url"},
+	} {
+		_, msg := tc.req.spec()
+		if !strings.HasPrefix(msg, tc.field+" ") {
+			t.Errorf("%s: msg = %q, want a %s error", tc.name, msg, tc.field)
+		}
+		if strings.Contains(msg, secret) {
+			t.Errorf("%s: error message leaks the credential: %q", tc.name, msg)
+		}
+	}
+	if _, msg := (createCameraReq{Name: "c", Source: "rtsps://u:p@cam:322/x", ThinginoURL: "https://cam"}).spec(); msg != "" {
+		t.Errorf("valid URLs rejected: %s", msg)
+	}
+}

@@ -20,13 +20,34 @@ func TestCORS(t *testing.T) {
 		return w
 	}
 
-	t.Run("empty allowlist reflects any origin", func(t *testing.T) {
+	t.Run("empty allowlist reflects any origin without credentials", func(t *testing.T) {
 		w := call(nil, http.MethodGet, "https://evil.example")
 		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://evil.example" {
 			t.Errorf("ACAO = %q, want the reflected origin", got)
 		}
+		// Credentials would let a foreign page read responses authenticated
+		// by the browser's cached Basic credentials.
+		if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Errorf("default must not allow credentials, got %q", got)
+		}
+	})
+
+	t.Run("listed origin gets credentials", func(t *testing.T) {
+		w := call([]string{"https://app.example"}, http.MethodGet, "https://app.example")
 		if w.Header().Get("Access-Control-Allow-Credentials") != "true" {
-			t.Error("credentials header not set on permissive default")
+			t.Error("an allowlisted origin should get credentials")
+		}
+	})
+
+	t.Run("preflight allows the Authorization header", func(t *testing.T) {
+		h := cors(next, nil)
+		r := httptest.NewRequest(http.MethodOptions, "/api/cameras", nil)
+		r.Header.Set("Origin", "https://front.example")
+		r.Header.Set("Access-Control-Request-Headers", "authorization")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if got := w.Header().Get("Access-Control-Allow-Headers"); got != "authorization" {
+			t.Errorf("Allow-Headers = %q, want the requested header echoed", got)
 		}
 	})
 

@@ -47,7 +47,7 @@ port = 8080
 ; log_level = info        ; debug | info (default) | warn | error
 ; read_timeout = 5m       ; HTTP request-body read timeout (time.ParseDuration)
 ; metrics = true          ; expose /api/metrics + /api/metrics/json
-; cors_origins =          ; comma-separated Origin allowlist; empty = permissive
+; cors_origins =          ; comma-separated Origin allowlist; empty = any Origin, no credentials
 ; trusted_proxies =       ; peers whose X-Forwarded-For is honored; empty = loopback
 ```
 
@@ -62,14 +62,19 @@ port = 8080
  * **metrics:** Prometheus metrics at `/api/metrics` (+ `/api/metrics/json`). On
    by default; open to a loopback scraper and authenticated from anywhere else.
    Set `false` to drop the endpoints entirely. See [`doc/MEDIA.md`](../MEDIA.md#metrics).
- * **cors_origins:** Comma-separated browser CORS allowlist. Empty (default) is
-   permissive — any Origin is reflected, which is safe with same-origin UI +
-   Bearer-token auth. Set it to lock the browser surface to known front-ends; a
-   single `*` entry keeps the permissive behavior explicitly.
+ * **cors_origins:** Comma-separated browser CORS allowlist. Empty (default)
+   lets any Origin read API responses **without credentials**: a front-end on
+   another origin that sends a Bearer token works, but a foreign page can't use
+   HTTP Basic credentials the browser has cached. Listed Origins also get
+   credentials (`Access-Control-Allow-Credentials`); a single `*` entry grants
+   them to every Origin (the pre-2026-09 default — only if you need it).
  * **trusted_proxies:** Comma-separated IPs or CIDRs of reverse proxies whose
    `X-Forwarded-For` / `X-Real-IP` headers are honored when resolving the
-   client IP for the access log and the [security log](../security-logging.md)
-   (the IP fail2ban bans). Empty (default) trusts **loopback only**, which
+   client IP for the access log, the failed-login throttle and the
+   [security log](../security-logging.md) (the IP fail2ban bans). The client
+   is the rightmost `X-Forwarded-For` hop that is not itself a trusted proxy,
+   so a client can't choose it by sending its own header through a proxy that
+   appends to it. Empty (default) trusts **loopback only**, which
    covers the same-host Caddy setup from this guide. A proxy on another host
    must be listed explicitly (e.g. `192.168.1.10` or `10.0.0.0/24`); use
    `none` when eneverre is exposed directly with no proxy at all. Peers not

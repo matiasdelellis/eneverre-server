@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"eneverre/internal/camera"
@@ -232,6 +233,15 @@ func main() {
 	// recordings land under the record_dir resolved from cfg.DataDir.
 	mopts := media.OptionsFromSection(cfg.Media, cfg.DataDir)
 	mopts.RelayCredsFn = creds.Pairs // rotation-aware relay auth (current + grace)
+	// The engine starts before the App exists, so relay auth failures reach
+	// the security log through a pointer filled in once the App is built;
+	// the (rare) failures before that only lack the log line.
+	var secApp atomic.Pointer[server.App]
+	mopts.RelayAuthFailure = func(ip, user, path string) {
+		if app := secApp.Load(); app != nil {
+			app.LogRelayAuthFailure(ip, user, path)
+		}
+	}
 	var engine *media.Engine
 	engine, err = media.New(mopts)
 	if err != nil {
@@ -246,6 +256,7 @@ func main() {
 	app := server.New(cfg, db, creds, camStore, schedStore, cams, uiFS, opts.staticCacheControl,
 		int64(accessHours)*3600, int64(refreshDays)*86400, updatesRegistry)
 	app.SetMediaEngine(engine)
+	secApp.Store(app)
 	app.SetVersion(version)
 
 	// Metrics (Prometheus + JSON). On by default; set [server] metrics = false

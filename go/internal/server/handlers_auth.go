@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,10 +69,14 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Throttle check before the DB hit and (crucially) before any PBKDF2 pass.
-	if blocked, wait := a.authThrottle.blocked(remoteIP(r), req.Username); blocked {
+	// The reservation is released with the outcome on every return below.
+	release, wait, ok := a.authThrottle.begin(a.proxyTrust.clientIP(r), req.Username)
+	if !ok {
 		throttleExceeded(w, wait)
 		return
 	}
+	failed := true
+	defer func() { release(failed) }()
 	var stored, role string
 	var firstName, lastName sql.NullString
 	var mustChange bool
@@ -85,19 +90,17 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// wrong-password path) keeps both branches at exactly one PBKDF2 pass —
 		// otherwise "valid user, wrong password" would run two hashes and take
 		// ~2x as long, leaking which usernames exist.
-		auth.CheckPasswordHash("pbkdf2:sha256:600000$dummy$"+strings.Repeat("0", 64), req.Password)
-		a.authThrottle.fail(remoteIP(r), req.Username)
+		auth.BurnPasswordCheck(req.Password)
 		a.logAuthFailure(r, req.Username, "invalid_credentials")
 		httpError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
 	if !auth.CheckPasswordHash(stored, req.Password) {
-		a.authThrottle.fail(remoteIP(r), req.Username)
 		a.logAuthFailure(r, req.Username, "invalid_credentials")
 		httpError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
-	a.authThrottle.success(req.Username)
+	failed = false
 	token := auth.TokenURLSafe(32)
 	refresh := auth.TokenURLSafe(32)
 	now := time.Now().Unix()
@@ -232,13 +235,28 @@ func (a *App) cleanupExpiredDevices() {
 }
 
 func (a *App) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
+	// Unauthenticated and one row per call, so cap it per client: without a
+	// limit a script could grow device_login without bound (rows live 300s).
+	if ok, wait := a.deviceCreateLimit.allow(a.proxyTrust.clientIP(r)); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		httpError(w, http.StatusTooManyRequests, "Too many pairing codes requested; try again later")
+		return
+	}
 	a.cleanupExpiredDevices()
 	deviceCode := auth.TokenURLSafe(16)
 	// 4 bytes = 8 hex chars = 32 bits of entropy. The verify path is
 	// authenticated and codes expire in 300s, but 3 bytes (24 bits) was thin for
 	// a user-facing pairing code; 4 keeps it short to compare while removing any
-	// realistic guessing margin.
+	// realistic guessing margin. Re-draw on the (unlikely) collision with a
+	// live code, so a verify can never match two devices.
 	userCode := strings.ToUpper(auth.TokenHex(4))
+	for i := 0; i < 5; i++ {
+		var n int
+		if err := a.db.QueryRow("SELECT COUNT(*) FROM device_login WHERE user_code = ?", userCode).Scan(&n); err != nil || n == 0 {
+			break
+		}
+		userCode = strings.ToUpper(auth.TokenHex(4))
+	}
 	expiresAt := time.Now().Unix() + 300
 	name := cleanDeviceName(r.URL.Query().Get("device_name"))
 	if _, err := a.db.Exec(
@@ -287,6 +305,19 @@ func (a *App) handleCheckDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if status == "approved" {
+		// Claim the approval atomically before minting anything: two polls
+		// racing on an approved code used to both INSERT a token (the claim
+		// was an unconditional UPDATE after the insert), handing out a second
+		// session nobody sees in the pairing flow.
+		res, err := a.db.Exec("UPDATE device_login SET status='expired' WHERE device_code = ? AND status='approved'", deviceCode)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "Lookup failed")
+			return
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "expired", "device_name": name})
+			return
+		}
 		token := auth.TokenURLSafe(16)
 		// Device (TV) sessions get an access token with a fixed life and no
 		// refresh_token, so they cannot be extended — the device re-pairs.
@@ -294,15 +325,15 @@ func (a *App) handleCheckDevice(w http.ResponseWriter, r *http.Request) {
 		// A failed INSERT must not consume the device code: the client would
 		// receive a token that doesn't exist and be "logged in" with a dead
 		// session, with re-pairing as the only (undiagnosed) way out. Report
-		// 500 and leave the code approved so the next poll can retry.
+		// 500 and put the code back to approved so the next poll can retry.
 		if _, err := a.db.Exec(
 			"INSERT INTO tokens (token, username, expires_at, created_at, device_name) VALUES (?, ?, ?, ?, ?)",
 			token, username, tokenExpiresAt, now, deviceName,
 		); err != nil {
+			_, _ = a.db.Exec("UPDATE device_login SET status='approved' WHERE device_code = ? AND status='expired'", deviceCode)
 			httpError(w, http.StatusInternalServerError, "Could not create session")
 			return
 		}
-		_, _ = a.db.Exec("UPDATE device_login SET status='expired' WHERE device_code = ?", deviceCode)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":      "approved",
 			"token":       token,
@@ -353,10 +384,21 @@ func (a *App) handleVerifyDevice(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "expired", "device_name": name})
 		return
 	}
-	_, _ = a.db.Exec(
-		"UPDATE device_login SET status='approved', username = ? WHERE user_code = ?",
-		user.Username, req.UserCode,
+	// Approve only a live pending row: the unconditional UPDATE this replaced
+	// also approved any other row sharing the code (and re-approved one a
+	// concurrent verify had already approved or expired).
+	res, err := a.db.Exec(
+		"UPDATE device_login SET status='approved', username = ? WHERE user_code = ? AND status = 'pending' AND expires_at >= ?",
+		user.Username, req.UserCode, time.Now().Unix(),
 	)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "Could not approve device")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "expired", "device_name": name})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "approved", "device_name": name})
 }
 

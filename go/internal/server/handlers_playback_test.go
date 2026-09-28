@@ -173,3 +173,42 @@ func TestHandlePlaybackHLSPlaylistBounds(t *testing.T) {
 		}
 	})
 }
+
+// parseClipSeconds is what the 4h export cap is checked against, and its
+// result (not the raw string) is what reaches the playback muxer — so it must
+// reject every spelling it can't bound, and clamp values that would overflow
+// time.Duration into a negative that slips under the cap.
+func TestParseClipSeconds(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want time.Duration
+		ok   bool
+		over bool // expect a value above the cap (-> 422)
+	}{
+		{in: "60", want: time.Minute, ok: true},
+		{in: " 1.5 ", want: 1500 * time.Millisecond, ok: true},
+		{in: "1000h", ok: false}, // Go duration syntax: the muxer accepts it, so it must not pass here
+		{in: "0", ok: false},
+		{in: "-5", ok: false},
+		{in: "NaN", ok: false},
+		{in: "", ok: false},
+		{in: "1e300", ok: true, over: true},
+		{in: "+Inf", ok: true, over: true},
+		{in: "14401", ok: true, over: true},
+	} {
+		got, ok := parseClipSeconds(tc.in)
+		if ok != tc.ok {
+			t.Errorf("parseClipSeconds(%q) ok = %v, want %v", tc.in, ok, tc.ok)
+			continue
+		}
+		if tc.over {
+			if got <= maxClipDuration {
+				t.Errorf("parseClipSeconds(%q) = %s, want above the %s cap", tc.in, got, maxClipDuration)
+			}
+			continue
+		}
+		if ok && got != tc.want {
+			t.Errorf("parseClipSeconds(%q) = %s, want %s", tc.in, got, tc.want)
+		}
+	}
+}

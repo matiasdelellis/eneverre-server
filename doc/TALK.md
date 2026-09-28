@@ -121,7 +121,8 @@ Client                                  Server
    of speech. (Audio sent before `ready` is buffered, not lost, but the camera
    isn't playing it yet.)
 3. **Audio** — send **binary** messages of raw mono **S16LE** PCM at the sample
-   rate you announced. Any chunk size; the server frames it into 20 ms packets.
+   rate you announced. Any chunk size up to 1 MiB per message (larger frames close
+   the socket with 1009); the server frames it into 20 ms packets.
 4. **Keepalive** — the server pings every 25 s and drops the session if no pong
    or audio arrives within 60 s (reclaims the camera slot from dead clients).
    OkHttp answers pings with pongs automatically — nothing to do.
@@ -234,7 +235,9 @@ Before the upgrade (HTTP status; surfaces in OkHttp's `onFailure` with the
 
 If the camera backchannel fails to come up, the server accepts the upgrade and
 then closes the socket with a close reason `RTSP error: ...` (surfaces in
-`onClosing`/`onClosed`).
+`onClosing`/`onClosed`; any credentials in the camera URL are stripped). If the
+camera drops the RTSP session mid-talk, the socket is closed with code 1011 and
+the reason `backchannel closed by camera` — reconnect to start a new session.
 
 ### Deployment gotcha: WebSocket over HTTP/3
 

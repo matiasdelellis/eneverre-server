@@ -240,7 +240,9 @@ All code lives under `go/` (module `eneverre`).
   `phone`, `tablet`, …) — there is no fixed list; a `Registry` lazily creates
   and caches one `Store` per name so concurrent publishes to the same track
   serialize through one mutex. Each track holds a `manifest.json` + the current
-  APKs + an in-flight `pending.json`. Supports single- and multi-POST
+  APKs + an in-flight `pending.json` (whose build files are staged under
+  `pending/` and renamed into place at commit, so a reused filename never
+  changes the bytes behind the current manifest). Supports single- and multi-POST
   publishes (the publish handler can stream one APK per POST and finalize with
   `finalize=true`); at commit, APKs that aren't in the new release are
   deleted (rotation is bounded to the current release's APKs). The wire
@@ -351,7 +353,9 @@ All code lives under `go/` (module `eneverre`).
   (access log + client-IP resolution honoring `[server] trusted_proxies`),
   `seclog.go` (the auth-failure security log fail2ban tails —
   `doc/security-logging.md`), `ratelimit.go` (failed-auth throttle keyed per
-  peer socket IP *and* per attempted username; only failures count) and
+  client IP — resolved by `proxyTrust.clientIP`, the same rightmost-untrusted
+  `X-Forwarded-For` walk the logs use — *and* per attempted username; only
+  failures count) and
   `static.go` (embedded-UI serving: content-hash `ETag`, gzip,
   `Cache-Control`).
 
@@ -573,8 +577,9 @@ two-way-audio backchannel and with which codecs, prefilling the backchannel
 field under an "Advanced" collapsible), media options, and the optional
 Thingino section, then creates the camera live via `POST /api/cameras` — no
 restart. Delete is a button on the same screen
-(`DELETE /api/camera/{id}`), which stops the pipeline and removes the row;
-recorded footage on disk is left for retention to prune.
+(`DELETE /api/camera/{id}`), which stops the pipeline, removes the row and
+deletes the camera's recordings (in the background, including unindexed crash
+leftovers) and motion events. To keep the footage, disable the camera instead.
 
 The INI files are now only the **initial seed** (imported once into the DB when
 the `cameras` table is empty), so hand-editing them is a first-run/bootstrap

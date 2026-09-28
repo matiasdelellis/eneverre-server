@@ -3,6 +3,7 @@ package server
 import (
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -16,11 +17,11 @@ import (
 // Line format (fields are space-separated, values that may contain spaces are
 // quoted):
 //
-//	2006-01-02T15:04:05Z07:00 eneverre <event> ip=<client-ip> user="<username>" path=<path> reason=<reason>
+//	2006-01-02T15:04:05Z07:00 eneverre <event> ip=<client-ip> user="<username>" path="<path>" reason=<reason>
 //
 // Example:
 //
-//	2026-07-10T14:23:01-03:00 eneverre authentication_failure ip=203.0.113.5 user="admin" path=/api/login reason=invalid_credentials
+//	2026-07-10T14:23:01-03:00 eneverre authentication_failure ip=203.0.113.5 user="admin" path="/api/login" reason=invalid_credentials
 //
 // The leading RFC3339 timestamp and the `ip=<HOST>` token are what the
 // fail2ban filter keys off. See doc/security-logging.md for ready-to-use
@@ -55,18 +56,23 @@ func (s *secLogger) event(ip, event, user, path, reason string) {
 	if s == nil || s.w == nil {
 		return
 	}
-	// Quote the username (attacker-controlled, may contain spaces/newlines);
-	// %q also escapes control characters so a crafted username cannot forge
-	// extra log lines. The other fields are server-controlled tokens.
+	// fail2ban parses this file, so no attacker-controlled field may contain
+	// a newline (a forged extra line) or a space (a forged
+	// "eneverre authentication_failure ip=<victim>" run inside the line,
+	// which the greedy failregex would pick up and ban). The username and the
+	// path (ServeMux hands it over percent-decoded, %0A included) both come
+	// from the client, so both go through quoteField. ip is validated by the
+	// caller; event and reason are server-controlled tokens.
 	line := time.Now().Format(time.RFC3339) + " eneverre " + event +
-		" ip=" + ip + " user=" + quoteField(user) + " path=" + path + " reason=" + reason + "\n"
+		" ip=" + ip + " user=" + quoteField(user) + " path=" + quoteField(path) + " reason=" + reason + "\n"
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, _ = io.WriteString(s.w, line)
 }
 
 // quoteField renders v as a double-quoted, escaped token so untrusted input
-// cannot inject newlines or break field parsing.
+// cannot inject newlines, spaces or break field parsing: the result is always
+// a single space-free token.
 func quoteField(v string) string {
 	// strconv.Quote via fmt would pull escaping semantics we want; do it
 	// directly to keep the dependency surface tiny and the output predictable.
@@ -84,7 +90,7 @@ func quoteField(v string) string {
 			buf = append(buf, '\\', 'r')
 		case c == '\t':
 			buf = append(buf, '\\', 't')
-		case c < 0x20 || c == 0x7f:
+		case c <= 0x20 || c == 0x7f: // controls and space
 			buf = append(buf, '\\', 'x', hex[c>>4], hex[c&0xf])
 		default:
 			buf = append(buf, c)
@@ -98,5 +104,30 @@ func quoteField(v string) string {
 // attempted username (may be empty when unknown); reason is a short machine
 // token (invalid_credentials, basic_auth_failed, …).
 func (a *App) logAuthFailure(r *http.Request, user, reason string) {
-	a.secLog.event(a.proxyTrust.clientIP(r), "authentication_failure", user, r.URL.Path, reason)
+	a.secLog.event(secLogIP(a.proxyTrust.clientIP(r), r), "authentication_failure", user, r.URL.Path, reason)
+}
+
+// secLogIP returns ip when it parses as an address, else the socket peer. The
+// forwarded headers are copied through verbatim by clientIP, so a proxy that
+// passes a client's own X-Forwarded-For along would otherwise let arbitrary
+// text into the ip= field fail2ban bans on.
+func secLogIP(ip string, r *http.Request) string {
+	if net.ParseIP(ip) != nil {
+		return ip
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && net.ParseIP(host) != nil {
+		return host
+	}
+	return "invalid"
+}
+
+// LogRelayAuthFailure records a failed RTSP relay authentication (a reader
+// presenting credentials that match no current or grace pair). The relay
+// has no HTTP request, so the peer IP comes from the RTSP connection; path is
+// the camera id, logged as rtsp:<id> so it can't be confused with an API path.
+func (a *App) LogRelayAuthFailure(ip, user, path string) {
+	if net.ParseIP(ip) == nil {
+		ip = "invalid"
+	}
+	a.secLog.event(ip, "authentication_failure", user, "rtsp:"+path, "rtsp_auth_failed")
 }

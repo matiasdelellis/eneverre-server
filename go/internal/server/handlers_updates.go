@@ -170,6 +170,13 @@ func (a *App) handleAppUpdatesPublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.UpdatesMaxBuildSize())
+	// net/http arms the 30s WriteTimeout once the headers are read, so an
+	// upload that takes longer than that (a big APK on a slow CI link) would
+	// have its response dropped after the release was already committed —
+	// CI sees a reset and retries or fails. The body stays bounded by
+	// [server] read_timeout and max_build_size, and only a publish-token
+	// holder gets this far.
+	clearWriteDeadline(w, "publish")
 
 	mr, err := r.MultipartReader()
 	if err != nil {
@@ -305,15 +312,12 @@ func (a *App) handleAppUpdatesPublish(w http.ResponseWriter, r *http.Request) {
 	// request — equivalent to the old single-shot Publish path but
 	// with the active state persisted in pending.json (useful for
 	// debugging and crash recovery).
-	active, _ := store.GetActive()
-	if active == nil || active.VersionCode != versionCode {
-		if _, err := store.StartActive(meta); err != nil {
-			for _, f := range openFiles {
-				f.Close()
-			}
-			httpError(w, http.StatusInternalServerError, "Failed to start active release: "+err.Error())
-			return
+	if _, err := store.EnsureActive(meta); err != nil {
+		for _, f := range openFiles {
+			f.Close()
 		}
+		httpError(w, http.StatusInternalServerError, "Failed to start active release: "+err.Error())
+		return
 	}
 	var lastErr error
 	var appended []string

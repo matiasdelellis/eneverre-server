@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,11 +38,32 @@ func TestProxyTrustClientIP(t *testing.T) {
 	t.Run("explicit CIDR trusts a remote proxy", func(t *testing.T) {
 		tr := newProxyTrust([]string{"192.168.1.0/24"})
 		if got := tr.clientIP(req("192.168.1.10:1234", "203.0.113.5, 192.168.1.10")); got != "203.0.113.5" {
-			t.Errorf("clientIP = %q, want the first forwarded hop", got)
+			t.Errorf("clientIP = %q, want the client hop", got)
 		}
 		// The explicit list replaces the loopback default.
 		if got := tr.clientIP(req("127.0.0.1:1234", "203.0.113.5")); got != "127.0.0.1" {
 			t.Errorf("clientIP = %q, want loopback (no longer trusted)", got)
+		}
+	})
+
+	t.Run("client-supplied XFF prefix is ignored", func(t *testing.T) {
+		// A proxy that appends to an incoming header (nginx
+		// $proxy_add_x_forwarded_for) forwards whatever the client sent on the
+		// left; the real client is the hop the trusted proxy appended.
+		tr := newProxyTrust(nil)
+		if got := tr.clientIP(req("127.0.0.1:1234", "10.9.9.9, 203.0.113.5")); got != "203.0.113.5" {
+			t.Errorf("clientIP = %q, want the hop the proxy appended", got)
+		}
+		// Garbage in the header ends the walk at the last trusted hop.
+		if got := tr.clientIP(req("127.0.0.1:1234", "203.0.113.5 user=x")); got != "127.0.0.1" {
+			t.Errorf("clientIP = %q, want the proxy for an unparseable hop", got)
+		}
+	})
+
+	t.Run("chained trusted proxies are skipped", func(t *testing.T) {
+		tr := newProxyTrust([]string{"127.0.0.1", "192.168.1.0/24"})
+		if got := tr.clientIP(req("127.0.0.1:1234", "6.6.6.6, 203.0.113.5, 192.168.1.10")); got != "203.0.113.5" {
+			t.Errorf("clientIP = %q, want the first untrusted hop from the right", got)
 		}
 	})
 
@@ -92,5 +115,27 @@ func TestStatusRecorderUnwrapForDeadline(t *testing.T) {
 	}
 	if !base.setCalled {
 		t.Error("SetWriteDeadline did not reach the underlying writer (statusRecorder.Unwrap missing?)")
+	}
+}
+
+// The access log must not carry credentials: the device code in the poll
+// path, or the talk/webhook ?token= at DEBUG.
+func TestAccessLogRedaction(t *testing.T) {
+	if got := logPath("/api/auth/device/abc123"); got != "/api/auth/device/{device_code}" {
+		t.Errorf("logPath(poll) = %q", got)
+	}
+	if got := logPath("/api/auth/device/verify"); got != "/api/auth/device/verify" {
+		t.Errorf("logPath(verify) = %q", got)
+	}
+	if got := logPath("/api/cameras"); got != "/api/cameras" {
+		t.Errorf("logPath(other) = %q", got)
+	}
+	q, _ := url.ParseQuery("token=s3cret&start=10&Refresh_Token=x")
+	got := logQuery(q)
+	if strings.Contains(got, "s3cret") || strings.Contains(got, "=x") {
+		t.Errorf("logQuery leaks a credential: %q", got)
+	}
+	if !strings.Contains(got, "start=10") {
+		t.Errorf("logQuery dropped a harmless param: %q", got)
 	}
 }

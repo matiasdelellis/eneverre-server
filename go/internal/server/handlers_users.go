@@ -145,15 +145,26 @@ func (a *App) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "new_password is required")
 		return
 	}
-	if passwordTooLong(w, req.NewPassword) {
+	if passwordTooLong(w, req.NewPassword) || passwordTooLong(w, req.CurrentPassword) {
+		return
+	}
+	// The current-password check is a password oracle for whoever holds the
+	// token (a stolen one included), so it goes through the same failed-auth
+	// throttle as login.
+	release, wait, ok := a.authThrottle.begin(a.proxyTrust.clientIP(r), me.Username)
+	if !ok {
+		throttleExceeded(w, wait)
 		return
 	}
 	var stored string
 	err := a.db.QueryRow("SELECT password FROM users WHERE username = ?", me.Username).Scan(&stored)
 	if err != nil || !auth.CheckPasswordHash(stored, req.CurrentPassword) {
+		release(true)
+		a.logAuthFailure(r, me.Username, "invalid_current_password")
 		httpError(w, http.StatusBadRequest, "Current password is incorrect")
 		return
 	}
+	release(false)
 	// Changing your own password satisfies any pending force-change flag.
 	if _, err := a.db.Exec("UPDATE users SET password = ?, must_change_password = 0 WHERE username = ?",
 		auth.GeneratePasswordHash(req.NewPassword), me.Username); err != nil {
@@ -292,6 +303,16 @@ func (a *App) isLastAdmin(username string) bool {
 	return admins <= 1
 }
 
+// notLastAdminSQL is true while more than one admin exists; it guards the
+// demote/delete statements so the last-admin rule holds under concurrency.
+const notLastAdminSQL = "(SELECT COUNT(*) FROM users WHERE role = 'admin') > 1"
+
+// userExists reports whether username has a row (errors count as absent).
+func (a *App) userExists(username string) bool {
+	var one int
+	return a.db.QueryRow("SELECT 1 FROM users WHERE username = ?", username).Scan(&one) == nil
+}
+
 type updateRoleRequest struct {
 	Role string `json:"role"`
 }
@@ -312,12 +333,23 @@ func (a *App) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "Cannot demote the last admin")
 		return
 	}
-	res, err := a.db.Exec("UPDATE users SET role = ? WHERE username = ?", req.Role, r.PathValue("username"))
+	// The guard repeats inside the statement: two concurrent demotions of the
+	// last two admins would each pass isLastAdmin above, then leave none. A
+	// single SQLite statement is atomic, so this check can't be raced.
+	username := r.PathValue("username")
+	res, err := a.db.Exec(
+		"UPDATE users SET role = ? WHERE username = ? AND (? = 'admin' OR role != 'admin' OR "+notLastAdminSQL+")",
+		req.Role, username, req.Role,
+	)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "Could not update role")
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		if a.userExists(username) {
+			httpError(w, http.StatusBadRequest, "Cannot demote the last admin")
+			return
+		}
 		httpError(w, http.StatusNotFound, "User not found")
 		return
 	}
@@ -401,12 +433,17 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "Cannot delete the last admin")
 		return
 	}
-	res, err := a.db.Exec("DELETE FROM users WHERE username = ?", username)
+	// Guarded in-statement too (see handleUpdateRole).
+	res, err := a.db.Exec("DELETE FROM users WHERE username = ? AND (role != 'admin' OR "+notLastAdminSQL+")", username)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "Could not delete user")
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		if a.userExists(username) {
+			httpError(w, http.StatusBadRequest, "Cannot delete the last admin")
+			return
+		}
 		httpError(w, http.StatusNotFound, "User not found")
 		return
 	}

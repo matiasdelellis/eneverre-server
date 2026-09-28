@@ -31,13 +31,13 @@ One line per event, fields space-separated, quoted where a value may contain
 spaces:
 
 ```
-<RFC3339 timestamp> eneverre <event> ip=<client-ip> user="<username>" path=<path> reason=<reason>
+<RFC3339 timestamp> eneverre <event> ip=<client-ip> user="<username>" path="<path>" reason=<reason>
 ```
 
 Example:
 
 ```
-2026-07-10T14:23:01-03:00 eneverre authentication_failure ip=203.0.113.5 user="admin" path=/api/login reason=invalid_credentials
+2026-07-10T14:23:01-03:00 eneverre authentication_failure ip=203.0.113.5 user="admin" path="/api/login" reason=invalid_credentials
 ```
 
 The client IP honors `X-Forwarded-For` / `X-Real-IP` **only when the request
@@ -55,6 +55,8 @@ setup; a proxy on another host must be listed in `[server] trusted_proxies`
 |--------------------------|-----------------------|-------------------------------------------------------------|
 | `authentication_failure` | `invalid_credentials` | wrong username/password at `POST /api/login`                |
 | `authentication_failure` | `basic_auth_failed`   | a wrong HTTP Basic password on any protected API endpoint   |
+| `authentication_failure` | `invalid_current_password` | a wrong current password at `PUT /api/users/me/password` (an authenticated session guessing its own password) |
+| `authentication_failure` | `rtsp_auth_failed` | an RTSP relay reader presenting credentials that match neither the current nor the grace pair (`path="rtsp:<camera-id>"`; the credential-less first request of the RTSP challenge is not logged) |
 
 Expired Bearer tokens and requests with no credentials are **not** logged: they
 are normal (a lapsed browser session) and banning on them would lock out
