@@ -30,7 +30,14 @@ import (
 	"time"
 )
 
-var client = &http.Client{}
+var client = &http.Client{
+	// Never follow redirects: the API key rides in the X-API-Key header (and
+	// ?token=), and net/http only strips a fixed set of auth headers when a
+	// redirect changes host, so a redirecting camera (or anything answering
+	// on its address) could collect the key. A camera API has no reason to
+	// redirect; the 3xx surfaces as an error instead.
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
 
 // StatusError is returned when the camera is reached but responds with an HTTP
 // error status. It lets callers tell an auth failure (401/403 — usually a stale
@@ -314,7 +321,10 @@ func do(method, url, apiKey string, payload []byte, timeout time.Duration) ([]by
 	}
 	req, err := http.NewRequest(method, url, reqBody)
 	if err != nil {
-		return nil, err
+		// A parse error quotes the whole URL, ?token= included, and callers
+		// both log it and put it in the 502 body users see. Keep only the
+		// fact that the configured endpoint is malformed.
+		return nil, fmt.Errorf("thingino: invalid endpoint URL %s", redactURL(url))
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -355,7 +365,9 @@ func do(method, url, apiKey string, payload []byte, timeout time.Duration) ([]by
 	if len(body) > maxResponseBytes {
 		return nil, fmt.Errorf("thingino: response from %s exceeds %d bytes", redactURL(url), maxResponseBytes)
 	}
-	if resp.StatusCode >= 400 {
+	// >= 300, not >= 400: redirects are not followed (see client), so a 3xx
+	// arrives here and must not be mistaken for a successful reply.
+	if resp.StatusCode >= 300 {
 		return nil, &StatusError{Code: resp.StatusCode}
 	}
 	return body, nil

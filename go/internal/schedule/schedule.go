@@ -178,9 +178,17 @@ func Validate(days map[string][]string) string {
 // input already passed Validate. This keeps what is stored and echoed back
 // stable regardless of how the client formatted its input.
 func Normalize(days map[string][]string) map[string][]string {
+	// Validate accepts day keys in any case ("Mon"), so fold them here too —
+	// looking up only the lowercase keys would silently drop those days and
+	// store a schedule that never records.
+	byDay := make(map[string][]string, len(days))
+	for key, windows := range days {
+		k := strings.ToLower(key)
+		byDay[k] = append(byDay[k], windows...)
+	}
 	out := make(map[string][]string, len(days))
 	for _, key := range DayKeys {
-		windows := days[key]
+		windows := byDay[key]
 		if len(windows) == 0 {
 			continue
 		}

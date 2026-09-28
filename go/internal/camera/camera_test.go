@@ -444,3 +444,12 @@ func TestSlugify(t *testing.T) {
 		}
 	}
 }
+
+// The public rtsp field must never carry the camera's own (credentialed)
+// source URL; only WithEngineURLs sets it, to the relay.
+func TestSpecCameraDoesNotExposeSource(t *testing.T) {
+	c := Spec{ID: "c", Name: "C", Source: "rtsp://admin:secret@10.0.0.5/ch0"}.Camera()
+	if c.RTSP != "" {
+		t.Errorf("Camera().RTSP = %q, want empty until WithEngineURLs", c.RTSP)
+	}
+}

@@ -79,6 +79,12 @@ type Session struct {
 // "OPUS".
 func (s *Session) Codec() string { return s.codec }
 
+// Done is closed when the send loop has exited — on Close, or on its own when
+// an RTP write fails (the camera dropped the RTSP connection). After that the
+// Feed* methods silently discard audio, so the owner should watch Done and end
+// the session instead of leaving a client talking into nothing.
+func (s *Session) Done() <-chan struct{} { return s.done }
+
 // Dial opens the RTSP backchannel to rawURL (rtsp://user:pass@host:port/path)
 // and starts the RTP send loop. forceCodec may be "PCMA"/"PCMU" to pin a G.711
 // track, "AAC" to pin an MPEG4-GENERIC track (raw AUs are fed via FeedAU),

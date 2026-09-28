@@ -345,12 +345,71 @@ func TestActive_StartAndAppend(t *testing.T) {
 	if ar == nil || len(ar.Builds) != 2 {
 		t.Fatalf("expected 2 builds, got %+v", ar)
 	}
-	// On-disk: both build files present.
-	if _, err := os.Stat(filepath.Join(s.dir, "eneverre-tv-arm64-2.0.0.apk")); err != nil {
-		t.Errorf("arm64 build file missing: %v", err)
+	// On-disk: both build files staged in the pending dir, not yet served.
+	for _, fn := range []string{"eneverre-tv-arm64-2.0.0.apk", "eneverre-tv-universal-2.0.0.apk"} {
+		if _, err := os.Stat(s.pendingPath(fn)); err != nil {
+			t.Errorf("%s not staged: %v", fn, err)
+		}
+		if _, err := os.Stat(filepath.Join(s.dir, fn)); !os.IsNotExist(err) {
+			t.Errorf("%s served before commit (stat err=%v)", fn, err)
+		}
 	}
-	if _, err := os.Stat(filepath.Join(s.dir, "eneverre-tv-universal-2.0.0.apk")); err != nil {
-		t.Errorf("universal build file missing: %v", err)
+}
+
+// A CI that reuses one filename across releases must not change the bytes
+// behind the current manifest before the new release is committed: clients
+// would download a file whose size/sha256 don't match what they were told.
+func TestActive_SameFilenameKeepsServedBuildUntilCommit(t *testing.T) {
+	s := newTestStore(t)
+	v1 := Manifest{VersionName: "1.0.0", VersionCode: 1}
+	if _, err := s.Publish([]BuildInput{{Variant: "universal", Filename: "app.apk", Reader: bytes.NewReader([]byte("v1"))}}, v1); err != nil {
+		t.Fatal(err)
+	}
+	served := func() string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(s.dir, "app.apk"))
+		if err != nil {
+			t.Fatalf("read served build: %v", err)
+		}
+		return string(b)
+	}
+
+	v2 := Manifest{VersionName: "2.0.0", VersionCode: 2}
+	if _, err := s.StartActive(v2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendBuild(v2, "universal", "app.apk", "", bytes.NewReader([]byte("v2"))); err != nil {
+		t.Fatal(err)
+	}
+	if got := served(); got != "v1" {
+		t.Fatalf("served build = %q while v2 is pending, want v1", got)
+	}
+	// Abandoning the pending release must not delete the served file either.
+	if err := s.DiscardActive(); err != nil {
+		t.Fatal(err)
+	}
+	if got := served(); got != "v1" {
+		t.Fatalf("served build = %q after discarding v2, want v1", got)
+	}
+
+	if _, err := s.StartActive(v2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendBuild(v2, "universal", "app.apk", "", bytes.NewReader([]byte("v2"))); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.CommitActive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := served(); got != "v2" {
+		t.Fatalf("served build = %q after commit, want v2", got)
+	}
+	if m.Builds[0].Size != 2 {
+		t.Errorf("manifest size = %d, want 2", m.Builds[0].Size)
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, pendingDirname)); !os.IsNotExist(err) {
+		t.Errorf("pending dir left behind after commit (stat err=%v)", err)
 	}
 }
 
@@ -651,5 +710,29 @@ func TestRotation_PreservesSidecarsButDeletesStrayFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.dir, "stale.txt")); !os.IsNotExist(err) {
 		t.Errorf("unreferenced stale.txt should have been deleted, got: %v", err)
+	}
+}
+
+// EnsureActive continues a matching in-progress release (keeping its builds)
+// and only starts over for a different versionCode.
+func TestEnsureActiveKeepsMatchingRelease(t *testing.T) {
+	s := newTestStore(t)
+	v1 := Manifest{VersionName: "1.0.0", VersionCode: 1}
+	if _, err := s.EnsureActive(v1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendBuild(v1, "arm64", "a.apk", "", bytes.NewReader([]byte("a"))); err != nil {
+		t.Fatal(err)
+	}
+	ar, err := s.EnsureActive(v1)
+	if err != nil || len(ar.Builds) != 1 {
+		t.Fatalf("EnsureActive(same version) = %+v, %v; want the build kept", ar, err)
+	}
+	ar, err = s.EnsureActive(Manifest{VersionName: "2.0.0", VersionCode: 2})
+	if err != nil || ar.VersionCode != 2 || len(ar.Builds) != 0 {
+		t.Fatalf("EnsureActive(new version) = %+v, %v; want a fresh release", ar, err)
+	}
+	if _, err := os.Stat(s.pendingPath("a.apk")); !os.IsNotExist(err) {
+		t.Errorf("discarded release's build still staged (stat err=%v)", err)
 	}
 }

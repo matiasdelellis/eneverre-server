@@ -31,12 +31,27 @@ func VerifyBasic(db *sql.DB, r *http.Request) *CurrentUser {
 	if err := db.QueryRow(
 		"SELECT password, role FROM users WHERE username = ?", username,
 	).Scan(&stored, &role); err != nil {
+		// Same cost as a real check, so response time doesn't reveal which
+		// usernames exist.
+		BurnPasswordCheck(password)
 		return nil
 	}
 	if !CheckPasswordHash(stored, password) {
 		return nil
 	}
 	return &CurrentUser{Username: username, Role: role}
+}
+
+// dummyPasswordHash has the default algorithm and iteration count, so
+// checking a password against it costs exactly what a real check does.
+var dummyPasswordHash = "pbkdf2:sha256:600000$dummy$" + strings.Repeat("0", 64)
+
+// BurnPasswordCheck runs one password verification against a dummy hash. Call
+// it on the unknown-user path of any password check: returning early there is
+// ~100ms faster than a wrong password for a real user, which enumerates
+// usernames by timing.
+func BurnPasswordCheck(password string) {
+	CheckPasswordHash(dummyPasswordHash, password)
 }
 
 // VerifyBearer authenticates an "Authorization: Bearer <token>" header against

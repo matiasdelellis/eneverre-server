@@ -108,9 +108,17 @@ ${storage_dir}/
     ├── manifest.json                       # the current release
     ├── eneverre-tv-arm64-1.0.1.apk         # current
     ├── eneverre-tv-universal-1.0.1.apk     # current
-    └── pending.json                        # only present while a multi-POST
-                                             # publish is in progress
+    ├── pending.json                        # only present while a multi-POST
+    │                                        # publish is in progress
+    └── pending/                            # that publish's build files,
+                                             # moved next to manifest.json
+                                             # on commit
 ```
+
+Build files of a release that is still in progress never sit next to the
+served ones, so a CI may reuse the same filename every release (e.g.
+`app-release.apk`): the served file keeps the bytes `manifest.json`
+describes until the commit swaps it in with an atomic rename.
 
 `manifest.json` has the following JSON shape (the `Manifest` type):
 
@@ -132,7 +140,9 @@ ${storage_dir}/
 
 Every time a release is committed, the server:
 
-1. Replaces `manifest.json` with the new release.
+1. Moves the release's build files from `pending/` into the track
+   directory (replacing same-named files of the previous release), then
+   replaces `manifest.json` with the new release.
 2. Deletes every file in the track directory that is not a sidecar
    (`manifest.json`, `pending.json`, or an in-progress `.tmp` write) and
    is not in the new release's build list.

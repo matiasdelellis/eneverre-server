@@ -290,7 +290,9 @@ func (s Spec) Camera() Camera {
 			// json-prudynt.cgi; the capability is generic, the backend isn't.
 			Settings: s.ThinginoURL != "" && s.ThinginoAPIKey != "",
 		},
-		RTSP:           s.Source,
+		// RTSP (json:"rtsp") is public: only WithEngineURLs fills it, with the
+		// relay URL. Seeding it from Source would publish the camera's own
+		// credentialed URL through any response that skipped that rewrite.
 		Backchannel:    s.Backchannel,
 		Source:         s.Source,
 		SnapshotURL:    s.SnapshotURL,

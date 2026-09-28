@@ -44,6 +44,7 @@ var schema = []string{
 		refresh_token TEXT,
 		refresh_expires_at INTEGER
 	)`,
+	`CREATE INDEX IF NOT EXISTS idx_device_login_user_code ON device_login(user_code)`,
 	`CREATE INDEX IF NOT EXISTS idx_tokens_username ON tokens(username)`,
 	// handleRefresh looks sessions up by refresh_token on every renewal; without
 	// this index that is a full-table scan.

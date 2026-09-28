@@ -127,3 +127,19 @@ func TestNormalize(t *testing.T) {
 		t.Error("unparseable wed should be dropped")
 	}
 }
+
+// Validate accepts any key case, so Normalize must keep those days rather
+// than store an empty (never-recording) schedule.
+func TestNormalizeFoldsDayCase(t *testing.T) {
+	in := map[string][]string{"Mon": {"08:00-12:00"}, "mon": {"14:00-18:00"}, "FRI": {"09:00-10:00"}}
+	if msg := Validate(in); msg != "" {
+		t.Fatalf("Validate rejected mixed-case keys: %s", msg)
+	}
+	out := Normalize(in)
+	if got := out["mon"]; len(got) != 2 || got[0] != "08:00-12:00" || got[1] != "14:00-18:00" {
+		t.Errorf("mon = %v, want both windows merged and sorted", got)
+	}
+	if got := out["fri"]; len(got) != 1 {
+		t.Errorf("fri = %v, want the FRI window", got)
+	}
+}

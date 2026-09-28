@@ -33,6 +33,14 @@ const manifestFilename = "manifest.json"
 // until the final POST with `finalize=true` promotes it to manifest.json.
 const activeFilename = "pending.json"
 
+// pendingDirname is where an in-progress (multi-POST) release's build files
+// are written until CommitActive moves them next to the manifest. Keeping
+// them out of the served directory is what lets a CI reuse a fixed filename
+// (e.g. app-release.apk) across releases: writing the new build in place
+// would overwrite the bytes clients are downloading while manifest.json
+// still advertises the old size and sha256.
+const pendingDirname = "pending"
+
 // ErrNotFound is returned by Get when no manifest exists for the track. The
 // HTTP layer maps it to a 204 No Content.
 var ErrNotFound = errors.New("updates: no manifest")
@@ -229,62 +237,73 @@ func (s *Store) Publish(parts []BuildInput, meta Manifest) (Manifest, error) {
 		return Manifest{}, err
 	}
 
+	// Stage every build in a private directory first and only move them next
+	// to the manifest once all of them are written: a same-named file of the
+	// current release stays intact (and consistent with manifest.json) until
+	// the new release is complete. The stage dir is a directory, so rotation
+	// cleanup never mistakes it for a build.
+	stage, err := os.MkdirTemp(s.dir, "stage-")
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer os.RemoveAll(stage)
+
 	builds := make([]Build, 0, len(parts))
 	for _, p := range parts {
 		safe, err := SanitizeBuildFilename(p.Filename)
 		if err != nil {
-			s.rollbackBuilds(builds)
 			return Manifest{}, err
 		}
-		finalPath := filepath.Join(s.dir, safe)
-		tmpPath := finalPath + ".tmp"
-		out, err := os.Create(tmpPath)
+		b, err := writeBuildFile(filepath.Join(stage, safe), p.Reader)
 		if err != nil {
-			s.rollbackBuilds(builds)
 			return Manifest{}, err
 		}
-		hasher := sha256.New()
-		n, err := io.Copy(out, io.TeeReader(p.Reader, hasher))
-		if err != nil {
-			_ = out.Close()
-			_ = os.Remove(tmpPath)
-			s.rollbackBuilds(builds)
+		b.Variant, b.Filename, b.ContentType = p.Variant, safe, p.ContentType
+		builds = append(builds, b)
+	}
+	for _, b := range builds {
+		if err := os.Rename(filepath.Join(stage, b.Filename), filepath.Join(s.dir, b.Filename)); err != nil {
 			return Manifest{}, err
 		}
-		if err := out.Close(); err != nil {
-			_ = os.Remove(tmpPath)
-			s.rollbackBuilds(builds)
-			return Manifest{}, err
-		}
-		if err := os.Rename(tmpPath, finalPath); err != nil {
-			_ = os.Remove(tmpPath)
-			s.rollbackBuilds(builds)
-			return Manifest{}, err
-		}
-		builds = append(builds, Build{
-			Variant:     p.Variant,
-			Filename:    safe,
-			Size:        n,
-			SHA256:      hex.EncodeToString(hasher.Sum(nil)),
-			ContentType: p.ContentType,
-		})
 	}
 
 	meta.Builds = builds
 	meta.UploadedAt = time.Now().UTC()
 	if err := writeManifest(filepath.Join(s.dir, manifestFilename), &meta); err != nil {
-		s.rollbackBuilds(builds)
 		return Manifest{}, err
 	}
 	return meta, nil
 }
 
-// rollbackBuilds removes the on-disk files for the given builds. Best-effort:
-// errors are swallowed because we are already on an error path.
-func (s *Store) rollbackBuilds(builds []Build) {
-	for _, b := range builds {
-		_ = os.Remove(filepath.Join(s.dir, b.Filename))
+// writeBuildFile streams r into path (via a .tmp + rename) while hashing it,
+// and returns the size and sha256 filled in. O(1) memory.
+func writeBuildFile(path string, r io.Reader) (Build, error) {
+	tmpPath := path + ".tmp"
+	out, err := os.Create(tmpPath)
+	if err != nil {
+		return Build{}, err
 	}
+	hasher := sha256.New()
+	n, err := io.Copy(out, io.TeeReader(r, hasher))
+	if err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmpPath)
+		return Build{}, err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return Build{}, err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return Build{}, err
+	}
+	return Build{Size: n, SHA256: hex.EncodeToString(hasher.Sum(nil))}, nil
+}
+
+// pendingPath is where an active release's build file lives until commit.
+func (s *Store) pendingPath(name string) string {
+	return filepath.Join(s.dir, pendingDirname, name)
 }
 
 // ReadBuild opens the build artifact currently advertised by the manifest.
@@ -325,15 +344,38 @@ func (s *Store) StartActive(meta Manifest) (*ActiveRelease, error) {
 	if !s.Enabled() {
 		return nil, errors.New("updates: not configured")
 	}
-	if err := s.Ensure(); err != nil {
-		return nil, err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startActiveLocked(meta)
+}
+
+// EnsureActive returns the in-progress release for meta.VersionCode, starting
+// a fresh one (discarding any other in-progress release) when none matches.
+// The check and the start happen under one lock: a GetActive followed by
+// StartActive let two concurrent publishes of the same versionCode both
+// decide to start, the second wiping the builds the first had just added.
+func (s *Store) EnsureActive(meta Manifest) (*ActiveRelease, error) {
+	if !s.Enabled() {
+		return nil, errors.New("updates: not configured")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Clean up the previous active release's build files (best-effort).
+	if s.active != nil && s.active.VersionCode == meta.VersionCode {
+		return s.active, nil
+	}
+	return s.startActiveLocked(meta)
+}
+
+// startActiveLocked implements StartActive. Caller holds s.mu.
+func (s *Store) startActiveLocked(meta Manifest) (*ActiveRelease, error) {
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return nil, err
+	}
+	// Clean up the previous active release's build files (best-effort). They
+	// live in the pending dir, so this never touches the served release.
 	if s.active != nil {
 		for _, b := range s.active.Builds {
-			_ = os.Remove(filepath.Join(s.dir, b.Filename))
+			_ = os.Remove(s.pendingPath(b.Filename))
 		}
 	}
 	ar := &ActiveRelease{
@@ -380,39 +422,19 @@ func (s *Store) AppendBuild(meta Manifest, variant string, filename string, cont
 	// If a build with this variant already exists, remove the old file.
 	for _, b := range s.active.Builds {
 		if b.Variant == variant {
-			_ = os.Remove(filepath.Join(s.dir, b.Filename))
+			_ = os.Remove(s.pendingPath(b.Filename))
 		}
 	}
 
-	finalPath := filepath.Join(s.dir, safe)
-	tmpPath := finalPath + ".tmp"
-	out, err := os.Create(tmpPath)
+	if err := os.MkdirAll(filepath.Join(s.dir, pendingDirname), 0o755); err != nil {
+		return nil, err
+	}
+	finalPath := s.pendingPath(safe)
+	newBuild, err := writeBuildFile(finalPath, reader)
 	if err != nil {
 		return nil, err
 	}
-	hasher := sha256.New()
-	n, err := io.Copy(out, io.TeeReader(reader, hasher))
-	if err != nil {
-		_ = out.Close()
-		_ = os.Remove(tmpPath)
-		return nil, err
-	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, err
-	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, err
-	}
-
-	newBuild := Build{
-		Variant:     variant,
-		Filename:    safe,
-		Size:        n,
-		SHA256:      hex.EncodeToString(hasher.Sum(nil)),
-		ContentType: contentType,
-	}
+	newBuild.Variant, newBuild.Filename, newBuild.ContentType = variant, safe, contentType
 	// Replace any existing build for this variant in the list.
 	filtered := s.active.Builds[:0]
 	for _, b := range s.active.Builds {
@@ -449,7 +471,7 @@ func (s *Store) DiscardActive() error {
 		return nil
 	}
 	for _, b := range s.active.Builds {
-		_ = os.Remove(filepath.Join(s.dir, b.Filename))
+		_ = os.Remove(s.pendingPath(b.Filename))
 	}
 	s.active = nil
 	_ = os.Remove(filepath.Join(s.dir, activeFilename))
@@ -479,7 +501,24 @@ func (s *Store) CommitActive() (*Manifest, error) {
 		return nil, errors.New("updates: no active release to commit")
 	}
 
-	// 1. Write the new manifest. This replaces the current one.
+	// 1. Move the staged builds next to the manifest. A rename atomically
+	// replaces a same-named file of the outgoing release (a download already
+	// in progress keeps reading the old inode). A build missing from the
+	// pending dir but present in place was staged by a pre-pending-dir
+	// version of this store (pending.json survived an upgrade), so it is
+	// already where it belongs.
+	for _, b := range s.active.Builds {
+		err := os.Rename(s.pendingPath(b.Filename), filepath.Join(s.dir, b.Filename))
+		if err == nil {
+			continue
+		}
+		if _, serr := os.Stat(filepath.Join(s.dir, b.Filename)); !errors.Is(err, os.ErrNotExist) || serr != nil {
+			return nil, fmt.Errorf("promote build %q: %w", b.Filename, err)
+		}
+	}
+	_ = os.Remove(filepath.Join(s.dir, pendingDirname)) // only if empty
+
+	// 2. Write the new manifest. This replaces the current one.
 	m := Manifest{
 		VersionName:  s.active.VersionName,
 		VersionCode:  s.active.VersionCode,
@@ -492,11 +531,11 @@ func (s *Store) CommitActive() (*Manifest, error) {
 		return nil, err
 	}
 
-	// 2. Clear the active state.
+	// 3. Clear the active state.
 	s.active = nil
 	_ = os.Remove(filepath.Join(s.dir, activeFilename))
 
-	// 3. Delete every build file on disk that is not in the new release.
+	// 4. Delete every build file on disk that is not in the new release.
 	//    The kept set is just the new manifest's builds; the previous
 	//    release's build files are removed. Builds may have any
 	//    extension (or none), so — unlike a fixed ".apk" filter — the

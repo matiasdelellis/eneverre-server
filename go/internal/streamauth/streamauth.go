@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -39,9 +41,12 @@ func gen(n int) string {
 }
 
 // RtspURL builds rtsp://user:pass@host:port/cam — the relay URL embedded in
-// the camera response by /api/cameras.
+// the camera response by /api/cameras. host may be an IPv6 literal, with or
+// without brackets; JoinHostPort brackets it ("rtsp://u:p@[::1]:8554/cam"),
+// where plain concatenation produced the unparseable "u:p@::1:8554".
 func (c Creds) RtspURL(host, port, camID string) string {
-	return fmt.Sprintf("rtsp://%s:%s@%s:%s/%s", c.Username, c.Password, host, port, camID)
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	return fmt.Sprintf("rtsp://%s:%s@%s/%s", c.Username, c.Password, net.JoinHostPort(host, port), camID)
 }
 
 // Store holds the current credentials and rotates them automatically. The

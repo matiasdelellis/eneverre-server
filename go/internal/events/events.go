@@ -238,3 +238,14 @@ func Delete(db *sql.DB, cameraID string, id int64) (bool, error) {
 	n, _ := res.RowsAffected()
 	return n > 0, nil
 }
+
+// DeleteCamera removes every event of a camera (used when the camera is
+// deleted), returning how many rows went.
+func DeleteCamera(db *sql.DB, cameraID string) (int64, error) {
+	res, err := db.Exec("DELETE FROM events WHERE camera_id = ?", cameraID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}

@@ -2,7 +2,11 @@ package thingino
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -110,5 +114,43 @@ func TestDoErrorDoesNotLeakToken(t *testing.T) {
 	// The redacted form still names the endpoint so the log stays useful.
 	if !strings.Contains(err.Error(), "json-motor.cgi") {
 		t.Errorf("error lost the endpoint path: %v", err)
+	}
+}
+
+// The API key rides in X-API-Key, which net/http keeps on a cross-host
+// redirect, so redirects must not be followed — and a 3xx must come back as
+// an error, not as a successful (empty) reply.
+func TestDoDoesNotFollowRedirects(t *testing.T) {
+	var leaked atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != "" {
+			leaked.Store(true)
+		}
+	}))
+	defer other.Close()
+	cam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/grab", http.StatusFound)
+	}))
+	defer cam.Close()
+
+	_, err := Thumb(cam.URL, "the-key")
+	var se *StatusError
+	if !errors.As(err, &se) || se.Code != http.StatusFound {
+		t.Fatalf("Thumb err = %v, want a StatusError 302", err)
+	}
+	if leaked.Load() {
+		t.Error("the API key was sent to the redirect target")
+	}
+}
+
+// A malformed endpoint must fail without quoting the URL (it embeds
+// ?token=<key>) in the error that reaches logs and 502 bodies.
+func TestDoInvalidURLRedactsToken(t *testing.T) {
+	_, err := Thumb("http://cam host", "the-key")
+	if err == nil {
+		t.Fatal("want an error for a URL with a space in the host")
+	}
+	if strings.Contains(err.Error(), "the-key") {
+		t.Errorf("error leaks the API key: %v", err)
 	}
 }

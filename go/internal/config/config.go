@@ -299,11 +299,10 @@ func (c *Config) UpdatesMaxBuildSize() int64 {
 }
 
 // CORSOrigins returns the allowlist of browser Origins that CORS accepts, from
-// [server] cors_origins (comma-separated). Empty (the default) keeps the
-// permissive behavior of reflecting any Origin — acceptable because the API is
-// reached same-origin by the web UI and with Bearer tokens (not cookies) by the
-// apps, so classic CSRF does not apply. Set it to lock the browser surface to
-// known front-ends. A literal "*" entry also means "reflect any".
+// [server] cors_origins (comma-separated). Empty (the default) lets any Origin
+// read responses but without credentials (Bearer front-ends work; cached Basic
+// credentials can't be ridden). Listed Origins get credentials; a literal "*"
+// entry grants credentials to any Origin (explicit opt-in). See server.cors.
 func (c *Config) CORSOrigins() []string {
 	raw := strings.TrimSpace(c.Server.Get("cors_origins", ""))
 	if raw == "" {
@@ -397,13 +396,15 @@ func parseSize(s string) (int64, error) {
 // > 60.
 func (c *Config) AuthCleanupIntervalMinutes() int {
 	const def = 60
+	// Any integer is honored: 0 (or negative) is the documented way to turn
+	// the background ticker off, so it must not fall through to the default.
 	if v := strings.TrimSpace(c.Auth.Get("cleanup_interval_minutes", "")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
 	}
 	if env := strings.TrimSpace(os.Getenv("ENEVERRE_TOKEN_CLEANUP_INTERVAL")); env != "" {
-		if n, err := strconv.Atoi(env); err == nil && n > 0 {
+		if n, err := strconv.Atoi(env); err == nil {
 			return n
 		}
 	}
