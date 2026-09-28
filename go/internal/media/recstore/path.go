@@ -93,14 +93,15 @@ func (p Path) Encode(format string) string {
 	return format
 }
 
-// Decode parses a filesystem path back into a Path, matching the format.
-// Useful for bootstrapping the index from existing recordings.
-func (p *Path) Decode(format string, v string) bool {
+// formatRegexp turns a record-path format into a regular expression: literal
+// parts escaped, %path replaced by pathPattern, each time specifier by its
+// digit group.
+func formatRegexp(format, pathPattern string) string {
 	re := format
 	for _, ch := range []string{"\\", ".", "+", "*", "?", "^", "$", "(", ")", "[", "]", "{", "}", "|"} {
 		re = strings.ReplaceAll(re, ch, "\\"+ch)
 	}
-	re = strings.ReplaceAll(re, "%path", "(.*?)")
+	re = strings.ReplaceAll(re, "%path", pathPattern)
 	re = strings.ReplaceAll(re, "%Y", "([0-9]{4})")
 	re = strings.ReplaceAll(re, "%m", "([0-9]{2})")
 	re = strings.ReplaceAll(re, "%d", "([0-9]{2})")
@@ -110,6 +111,24 @@ func (p *Path) Decode(format string, v string) bool {
 	re = strings.ReplaceAll(re, "%f", "([0-9]{6})")
 	re = strings.ReplaceAll(re, "%z", "(Z|\\+[0-9]{4}|-[0-9]{4})")
 	re = strings.ReplaceAll(re, "%s", "([0-9]{10})")
+	return re
+}
+
+// CameraMatcher returns a predicate reporting whether a file path is one the
+// format produces for exactly this camera. Layouts where cameras share a
+// directory (e.g. %Y/%path_%H…) put several cameras' files side by side, so a
+// directory walk alone can't tell whose a file is; matching the full path
+// against the format with the camera id in place of %path can ("cam" vs
+// "cam-2" included).
+func CameraMatcher(format, camera string) func(string) bool {
+	r := regexp.MustCompile("^" + formatRegexp(format, regexp.QuoteMeta(camera)) + "$")
+	return r.MatchString
+}
+
+// Decode parses a filesystem path back into a Path, matching the format.
+// Useful for bootstrapping the index from existing recordings.
+func (p *Path) Decode(format string, v string) bool {
+	re := formatRegexp(format, "(.*?)")
 	r := regexp.MustCompile(re)
 
 	var groupMapping []string

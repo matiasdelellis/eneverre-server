@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -296,5 +297,37 @@ func TestReindexNoFootage(t *testing.T) {
 	}
 	if n != 0 || total != 0 {
 		t.Fatalf("n=%d total=%v, want 0/0", n, total)
+	}
+}
+
+// With a layout where cameras share directories (%path not its own path
+// component), a rebuild for one camera must index only that camera's files —
+// not its neighbours', and not "cam-2"'s for "cam".
+func TestReindexSharedDirLayoutOnlyOwnCamera(t *testing.T) {
+	dir := t.TempDir()
+	recordPath := filepath.Join(dir, "%Y-%m-%d", "%path_%H-%M-%S-%f")
+	fmtExt := recstore.PathAddExtension(recordPath)
+
+	idx, err := index.Open(filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+
+	st := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	for i, cam := range []string{"cam", "cam-2", "other"} {
+		p := recstore.Path{Start: st.Add(time.Duration(i) * time.Minute), Path: cam}.Encode(fmtExt)
+		writeSegment(t, p, uuid.New(), 0, st, 60, 90000/30)
+	}
+
+	n, _, err := Reindex(context.Background(), idx, recordPath, "cam", nil)
+	if err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("indexed %d segments for cam, want 1 (only its own)", n)
+	}
+	if segs, _ := idx.Range("cam", nil, nil); len(segs) != 1 || !strings.Contains(segs[0].Fpath, string(filepath.Separator)+"cam_") {
+		t.Errorf("cam's index = %+v, want just its own file", segs)
 	}
 }

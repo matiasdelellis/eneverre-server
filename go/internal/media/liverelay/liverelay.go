@@ -9,6 +9,7 @@
 package liverelay
 
 import (
+	"net"
 	"strings"
 	"sync"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/base"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
+	"github.com/bluenviron/gortsplib/v5/pkg/headers"
 	"github.com/bluenviron/gortsplib/v5/pkg/liberrors"
 	"github.com/pion/rtp"
 )
@@ -31,7 +33,13 @@ type Relay struct {
 	// matches any pair. Takes precedence over User/Pass; return an empty slice to
 	// deny everyone. When nil, User/Pass (or open access) is used instead.
 	CredsFn func() [][2]string
-	Logf    func(string, ...any)
+	// OnAuthFailure, when set, is called for a request that carried
+	// credentials which matched no valid pair (a wrong or rotated-out
+	// password), with the peer IP, the attempted username and the path. A
+	// request with no credentials at all is RTSP's normal first step (it gets
+	// the 401 challenge) and is not reported.
+	OnAuthFailure func(ip, user, path string)
+	Logf          func(string, ...any)
 
 	srv     *gortsplib.Server
 	mu      sync.RWMutex
@@ -148,19 +156,45 @@ func (r *Relay) stream(path string) *gortsplib.ServerStream {
 	return r.streams[normalize(path)]
 }
 
-func (r *Relay) authOK(conn *gortsplib.ServerConn, req *base.Request) bool {
-	if r.CredsFn != nil {
+func (r *Relay) authOK(conn *gortsplib.ServerConn, req *base.Request, path string) bool {
+	ok := false
+	switch {
+	case r.CredsFn != nil:
 		for _, p := range r.CredsFn() {
 			if conn.VerifyCredentials(req, p[0], p[1]) {
-				return true
+				ok = true
+				break
 			}
 		}
-		return false
-	}
-	if r.User == "" && r.Pass == "" {
+	case r.User == "" && r.Pass == "":
 		return true
+	default:
+		ok = conn.VerifyCredentials(req, r.User, r.Pass)
 	}
-	return conn.VerifyCredentials(req, r.User, r.Pass)
+	if !ok {
+		r.reportAuthFailure(conn, req, path)
+	}
+	return ok
+}
+
+// reportAuthFailure forwards a failed credentialed attempt to OnAuthFailure.
+func (r *Relay) reportAuthFailure(conn *gortsplib.ServerConn, req *base.Request, path string) {
+	if r.OnAuthFailure == nil {
+		return
+	}
+	hv, has := req.Header["Authorization"]
+	if !has || len(hv) == 0 {
+		return // the unauthenticated first request of the challenge
+	}
+	var auth headers.Authorization
+	_ = auth.Unmarshal(hv) // a malformed header still counts, with no username
+	ip := ""
+	if nc := conn.NetConn(); nc != nil {
+		if host, _, err := net.SplitHostPort(nc.RemoteAddr().String()); err == nil {
+			ip = host
+		}
+	}
+	r.OnAuthFailure(ip, auth.Username, normalize(path))
 }
 
 // normalize strips the leading slash gortsplib includes in ctx.Path so callers
@@ -185,7 +219,7 @@ func (r *Relay) OnSessionClose(_ *gortsplib.ServerHandlerOnSessionCloseCtx) {}
 func (r *Relay) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (
 	*base.Response, *gortsplib.ServerStream, error,
 ) {
-	if !r.authOK(ctx.Conn, ctx.Request) {
+	if !r.authOK(ctx.Conn, ctx.Request, ctx.Path) {
 		return &base.Response{StatusCode: base.StatusUnauthorized}, nil, liberrors.ErrServerAuth{}
 	}
 	st := r.stream(ctx.Path)
@@ -199,7 +233,7 @@ func (r *Relay) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (
 func (r *Relay) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (
 	*base.Response, *gortsplib.ServerStream, error,
 ) {
-	if !r.authOK(ctx.Conn, ctx.Request) {
+	if !r.authOK(ctx.Conn, ctx.Request, ctx.Path) {
 		return &base.Response{StatusCode: base.StatusUnauthorized}, nil, liberrors.ErrServerAuth{}
 	}
 	st := r.stream(ctx.Path)

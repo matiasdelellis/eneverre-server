@@ -43,6 +43,14 @@ type Watcher struct {
 	// blocking work should be dispatched elsewhere.
 	OnLow func(free uint64)
 
+	// OnStillLow is called on every later poll of a low episode that still
+	// finds free below LowWater (not in the 1x-2x hysteresis band). OnLow
+	// alone is one shot: if whatever it started ends early (a failed purge,
+	// or recording eating the space back faster than the band), nothing
+	// would ever react again and the volume would run into ENOSPC while the
+	// watcher sat in the low state. Same goroutine rules as OnLow.
+	OnStillLow func(free uint64)
+
 	// OnRecovered is called once when free climbs back above 2*LowWater.
 	OnRecovered func(free uint64)
 
@@ -86,7 +94,7 @@ func (w *Watcher) LowWaterBytes() uint64 { return w.LowWater }
 // Run polls Statfs at the configured Interval until ctx is cancelled. It
 // transitions the paused state with hysteresis (enter when free < LowWater,
 // exit when free >= 2*LowWater) and fires OnLow / OnRecovered exactly once
-// per transition. A statfs error is logged and treated as "free unknown" —
+// per transition (plus OnStillLow on each poll that stays below LowWater). A statfs error is logged and treated as "free unknown" —
 // the watcher does not transition on it, so a transient statfs failure
 // doesn't flap the system.
 func (w *Watcher) Run(ctx context.Context) {
@@ -138,6 +146,10 @@ func (w *Watcher) Tick(ctx context.Context) {
 		w.pausedSince.Store(time.Now().UnixNano())
 		if w.OnLow != nil {
 			w.OnLow(free)
+		}
+	case wasPaused && shouldPause:
+		if w.OnStillLow != nil {
+			w.OnStillLow(free)
 		}
 	case wasPaused && shouldResume:
 		w.paused.Store(false)

@@ -130,3 +130,28 @@ func TestBroadcasterConcurrentSubmitAndReset(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// A camera with B-frames starts its DTS below zero. tfdt is unsigned, so the
+// stream is shifted to start at 0 instead of wrapping to ~2^64, and later
+// samples keep their spacing.
+func TestBroadcasterShiftsNegativeDTS(t *testing.T) {
+	b := &Broadcaster{}
+	b.Initialize()
+	defer b.Close()
+	primeConnected(b)
+
+	b.writeSample(1, vsample(true, 3000), -6000)
+	b.mu.Lock()
+	first := b.baseDTS[1]
+	b.mu.Unlock()
+	if first != 0 {
+		t.Fatalf("first part base DTS = %d, want 0 after the shift", first)
+	}
+	b.writeSample(1, vsample(true, 3000), -3000) // keyframe: flushes, starts a new part
+	b.mu.Lock()
+	second := b.baseDTS[1]
+	b.mu.Unlock()
+	if second != 3000 {
+		t.Errorf("second part base DTS = %d, want 3000 (spacing preserved)", second)
+	}
+}

@@ -114,6 +114,9 @@ func Recover(idx *index.Index, recordPath, camera string, segmentDuration time.D
 	// minute and de-duplicating covers hour/day layouts alike; the finest sane
 	// directory granularity is a minute, so no directory is skipped.
 	fmtExt := recstore.PathAddExtension(recordPath)
+	// A directory can hold other cameras' files when the layout doesn't give
+	// %path its own component; only this camera's may be indexed under it.
+	belongs := recstore.CameraMatcher(fmtExt, camera)
 	var dirs []string
 	seen := map[string]struct{}{}
 	for t := from.Truncate(time.Minute); !t.After(hardTo); t = t.Add(time.Minute) {
@@ -150,7 +153,7 @@ func Recover(idx *index.Index, recordPath, camera string, segmentDuration time.D
 
 		for _, name := range names {
 			full := filepath.Join(dir, name)
-			if _, ok := indexed[full]; ok {
+			if _, ok := indexed[full]; ok || !belongs(full) {
 				continue
 			}
 			seg, perr := probe(full, camera)
@@ -195,7 +198,12 @@ func Reindex(ctx context.Context, idx *index.Index, recordPath, camera string, l
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	root := cameraRoot(recordPath, camera)
+	root := CameraRoot(recordPath, camera)
+	// CameraRoot falls back to the whole record root when %path isn't its own
+	// directory component; without this filter every camera's files under it
+	// were indexed as this camera's (INSERT OR REPLACE by path even re-assigned
+	// the other cameras' existing rows).
+	belongs := recstore.CameraMatcher(recstore.PathAddExtension(recordPath), camera)
 
 	// Everything already indexed for this camera — skipped without opening.
 	existing, err := idx.Range(camera, nil, nil)
@@ -221,7 +229,7 @@ func Reindex(ctx context.Context, idx *index.Index, recordPath, camera string, l
 			}
 			return nil
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".mp4") {
+		if d.IsDir() || !strings.HasSuffix(path, ".mp4") || !belongs(path) {
 			return nil
 		}
 		if _, ok := indexed[path]; ok {
@@ -248,13 +256,13 @@ func Reindex(ctx context.Context, idx *index.Index, recordPath, camera string, l
 	return recovered, total, nil
 }
 
-// cameraRoot returns the directory subtree that holds one camera's segments,
+// CameraRoot returns the directory subtree that holds one camera's segments,
 // derived from the record-path format by substituting the camera id into the
 // %path component. For the default layout `<dir>/%path/%Y-.../…` this is
 // `<dir>/<camera>`, so a rebuild walks only that camera. If %path is not a clean
 // directory component (unusual custom layout), it falls back to the fixed prefix
 // (the whole record root), which still works — just less selectively.
-func cameraRoot(recordPath, camera string) string {
+func CameraRoot(recordPath, camera string) string {
 	sep := string(filepath.Separator)
 	parts := strings.Split(recordPath, sep)
 	for i, p := range parts {

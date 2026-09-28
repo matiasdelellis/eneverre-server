@@ -148,3 +148,101 @@ func TestPurgeToFreeStopsWhenAlreadyAboveTarget(t *testing.T) {
 		}
 	}
 }
+
+// TestCleanStopsWhenNothingCanBeDeleted guards against a busy loop: when no
+// expired file can be unlinked (EACCES, read-only remount) the same rows come
+// back from Expired forever, so clean must give up for this pass instead of
+// spinning — which also kept Engine.Close waiting on it.
+func TestCleanStopsWhenNothingCanBeDeleted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	idx, err := index.Open(filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatalf("open index: %v", err)
+	}
+	defer idx.Close()
+	segDir := filepath.Join(dir, "segs")
+	seedSegments(t, idx, segDir, 3)
+	if err := os.Chmod(segDir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	defer os.Chmod(segDir, 0o755) //nolint:errcheck // let TempDir clean up
+
+	c := &Cleaner{Index: idx, Retain: time.Hour, Logf: func(string, ...any) {}}
+	done := make(chan struct{})
+	go func() {
+		c.clean(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("clean kept looping over segments it cannot delete")
+	}
+	if n, _ := idx.Oldest(10); len(n) != 3 {
+		t.Errorf("index rows = %d, want the 3 undeletable segments kept for a retry", len(n))
+	}
+}
+
+// Deleting a camera purges its indexed segments and the unindexed files a
+// crash left in its directory, but nothing of another camera and nothing
+// written after the cutoff (a camera re-created with the same id).
+func TestPurgeCamera(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := index.Open(filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatalf("open index: %v", err)
+	}
+	defer idx.Close()
+
+	camDir := filepath.Join(dir, "rec", "cam")
+	otherDir := filepath.Join(dir, "rec", "other")
+	seedSegments(t, idx, camDir, 3)
+	seedSegments(t, idx, otherDir, 2)
+	// Re-path the second batch of rows to "other" (seedSegments uses "cam").
+	otherSegs, _ := idx.Range("cam", nil, nil)
+	for _, s := range otherSegs {
+		if filepath.Dir(s.Fpath) == otherDir {
+			s.Path = "other"
+			if err := idx.Insert(s); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	orphan := filepath.Join(camDir, "orphan.mp4")
+	if err := os.WriteFile(orphan, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := time.Now()
+	fresh := filepath.Join(camDir, "fresh.mp4") // written after cutoff
+	if err := os.WriteFile(fresh, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(fresh, cutoff.Add(time.Minute), cutoff.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Cleaner{Index: idx, Retain: time.Hour, RecordPath: filepath.Join(dir, "rec", "%path", "%s"), Logf: t.Logf}
+	belongs := func(p string) bool { return filepath.Dir(p) == camDir }
+	n, err := c.PurgeCamera(context.Background(), "cam", cutoff, camDir, belongs)
+	if err != nil {
+		t.Fatalf("PurgeCamera: %v", err)
+	}
+	if n != 4 { // 3 indexed + 1 orphan
+		t.Errorf("removed %d files, want 4", n)
+	}
+	if segs, _ := idx.Range("cam", nil, nil); len(segs) != 0 {
+		t.Errorf("cam still has %d index rows", len(segs))
+	}
+	if segs, _ := idx.Range("other", nil, nil); len(segs) != 2 {
+		t.Errorf("other camera has %d rows, want its 2 untouched", len(segs))
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Error("unindexed orphan survived")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Error("file written after the cutoff was deleted")
+	}
+}

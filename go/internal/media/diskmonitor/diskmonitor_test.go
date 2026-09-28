@@ -144,3 +144,30 @@ func TestWatcherDisabledByZero(t *testing.T) {
 		t.Error("watcher paused with LowWater=0")
 	}
 }
+
+// OnLow is one shot per episode, so if the purge it started ends early the
+// engine needs another nudge: every poll that is still below the low-water
+// mark fires OnStillLow — but not in the 1x-2x hysteresis band, and not
+// after recovery.
+func TestWatcherStillLow(t *testing.T) {
+	low := uint64(1 << 30)
+	fs := &fakeStatfs{samples: []uint64{
+		low / 2,     // enter: OnLow
+		low / 3,     // still below: OnStillLow
+		low * 3 / 2, // in the band: nothing
+		low / 4,     // below again, same episode: OnStillLow
+		low * 3,     // recovered
+		low * 3,     // healthy: nothing
+	}}
+	var lows, still int
+	w := New("/p", low)
+	w.Statfs = fs.next
+	w.OnLow = func(uint64) { lows++ }
+	w.OnStillLow = func(uint64) { still++ }
+	for range fs.samples {
+		w.Tick(context.Background())
+	}
+	if lows != 1 || still != 2 {
+		t.Errorf("OnLow=%d OnStillLow=%d, want 1 and 2", lows, still)
+	}
+}

@@ -2,6 +2,7 @@ package playback
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 )
@@ -49,6 +51,9 @@ type blackFrameCall struct {
 // (<cacheDir>/gapfill/<WxH>-<msghash>.h264, Annex-B) → generate with ffmpeg and
 // persist. The message is part of the cache key, so changing it regenerates. A
 // tiny asset (a few KB). cacheDir "" skips the disk cache (memory only).
+// ffmpegTimeout bounds the one-off gap-fill frame generation.
+const ffmpegTimeout = 30 * time.Second
+
 func blackFramePayload(cacheDir, message string, width, height int) ([]byte, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("invalid resolution %dx%d", width, height)
@@ -155,10 +160,18 @@ func ffmpegBlackFrame(message string, width, height int) ([]byte, error) {
 		"-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p", "-frames:v", "1",
 		"-bsf:v", "h264_mp4toannexb", "-f", "h264", "-")
 
-	cmd := exec.Command("ffmpeg", args...)
+	// Bounded: one 1-frame encode takes well under a second, and every
+	// playback request needing this filler waits on it (see inflight), so a
+	// wedged ffmpeg must not hang them all forever.
+	ctx, cancel := context.WithTimeout(context.Background(), ffmpegTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("generate black frame: ffmpeg timed out after %s", ffmpegTimeout)
+		}
 		return nil, fmt.Errorf("generate black frame: %w", err)
 	}
 	return out.Bytes(), nil

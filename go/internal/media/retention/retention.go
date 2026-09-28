@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,13 +51,13 @@ func (c *Cleaner) Run(ctx context.Context) {
 		c.interval = time.Hour
 	}
 
-	c.clean()
+	c.clean(ctx)
 	t := time.NewTicker(c.interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-t.C:
-			c.clean()
+			c.clean(ctx)
 		case <-ctx.Done():
 			return
 		}
@@ -68,11 +69,14 @@ func (c *Cleaner) Run(ctx context.Context) {
 // the recorder, repeat. Bounding each batch keeps the SQLite write
 // transaction short (one fsync per batch instead of one per segment)
 // and the read transaction short (the query result set is bounded).
-func (c *Cleaner) clean() {
+func (c *Cleaner) clean(ctx context.Context) {
 	cutoff := time.Now().Add(-c.Retain)
 
 	totalRemoved := 0
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		expired, err := c.Index.Expired(cutoff, purgeBatchSize)
 		if err != nil {
 			c.Logf("query expired: %v", err)
@@ -85,6 +89,13 @@ func (c *Cleaner) clean() {
 		if err != nil {
 			c.Logf("index delete batch: %v", err)
 			return
+		}
+		if deleted == 0 {
+			// Nothing in this batch could be unlinked (EACCES, read-only
+			// remount): the same rows would come back forever. Leave them for
+			// the next tick instead of spinning.
+			c.Logf("retention stalled: none of %d expired segment(s) could be removed; retrying next pass", len(expired))
+			break
 		}
 		totalRemoved += deleted
 		c.Logf("purged %d expired segment(s) (older than %s)", deleted, c.Retain)
@@ -152,9 +163,87 @@ func (c *Cleaner) PurgeToFree(ctx context.Context, dir string, target uint64, st
 			c.Logf("emergency purge: index delete batch: %v", err)
 			return totalRemoved
 		}
+		if deleted == 0 {
+			c.Logf("emergency purge: none of the %d oldest segment(s) could be removed — check permissions / mount state", len(batch))
+			return totalRemoved
+		}
 		totalRemoved += deleted
 		c.Logf("emergency purge: removed %d oldest segment(s) (%d byte(s) free, target %d)", deleted, free, target)
 	}
+}
+
+// PurgeCamera deletes every recording of one camera made before cutoff — used
+// when the camera itself is deleted, so its footage doesn't linger for the
+// retain window (or forever, with no retain) and isn't inherited by a later
+// camera that gets the same id. Two passes:
+//
+//  1. every indexed segment of the camera, through the regular batch path
+//     (unlink, one index transaction per batch, prune emptied dirs);
+//  2. unindexed files a crash left behind: a walk of root (the camera's
+//     subtree, see recovery.CameraRoot) removing the .mp4 files that belongs
+//     attributes to this camera. Without it, a new camera with the same id
+//     would re-index them at startup recovery.
+//
+// cutoff protects a camera re-created with the same id while this runs: its
+// new segments start (and are written) after cutoff, so neither pass touches
+// them. Returns how many files were removed.
+func (c *Cleaner) PurgeCamera(ctx context.Context, camera string, cutoff time.Time, root string, belongs func(string) bool) (int, error) {
+	if c.Logf == nil {
+		c.Logf = func(string, ...any) {}
+	}
+	segs, err := c.Index.Range(camera, nil, &cutoff)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for len(segs) > 0 {
+		if ctx.Err() != nil {
+			return removed, ctx.Err()
+		}
+		n := min(len(segs), purgeBatchSize)
+		batch := segs[:n]
+		segs = segs[n:]
+		// Range includes a segment that merely overlaps cutoff; keep one that
+		// started after it (it belongs to a re-created camera).
+		keep := batch[:0]
+		for _, s := range batch {
+			if s.Start.Before(cutoff) {
+				keep = append(keep, s)
+			}
+		}
+		deleted, err := c.purgeBatch(keep)
+		if err != nil {
+			return removed, err
+		}
+		removed += deleted
+	}
+
+	var orphans []string
+	if root != "" {
+		walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, werr error) error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if werr != nil || d.IsDir() || !strings.HasSuffix(path, ".mp4") || !belongs(path) {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil || !info.ModTime().Before(cutoff) {
+				return nil
+			}
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				c.Logf("purge camera %s: remove %s: %v", camera, path, err)
+				return nil
+			}
+			orphans = append(orphans, path)
+			return nil
+		})
+		if walkErr != nil && !os.IsNotExist(walkErr) {
+			return removed + len(orphans), walkErr
+		}
+		c.pruneEmptyDirsAround(orphans)
+	}
+	return removed + len(orphans), nil
 }
 
 // purgeBatch deletes one batch of segment files in parallel, drops the

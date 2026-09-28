@@ -118,9 +118,19 @@ func seekAndMux(segments []index.Segment, start time.Time, duration time.Duratio
 			return segmentEnd, prevInit, false, err
 		}
 
+		// The output has one init (firstInit): a segment whose tracks differ
+		// (camera changed codec, gained/lost audio) can't be muxed into it —
+		// its samples would be written under the wrong codec config and the
+		// clip would decode as garbage from here on. End the stitched footage
+		// at this point; with fill_gaps the trailing filler below still pads
+		// the window to its full length.
+		if !tracksAreEqual(firstInit.Tracks, init.Tracks) {
+			return segmentEnd, prevInit, true, nil
+		}
+
 		concat := segmentCanBeConcatenated(prevInit, segmentEnd, init, seg.Start)
 		if !concat {
-			// gap or incompatible stream
+			// gap (or a new stream session with the same tracks)
 			if blackPayload == nil {
 				return segmentEnd, prevInit, true, nil // no filler: stop here (legacy behavior)
 			}

@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
@@ -39,6 +40,7 @@ import (
 	"eneverre/internal/media/playback"
 	"eneverre/internal/media/recorder"
 	"eneverre/internal/media/recovery"
+	"eneverre/internal/media/recstore"
 	"eneverre/internal/media/retention"
 )
 
@@ -79,6 +81,10 @@ type Options struct {
 	// accepts (current + grace), consulted per auth so credential rotation takes
 	// effect without dropping readers. Nil leaves the relay open.
 	RelayCredsFn func() [][2]string
+	// RelayAuthFailure, when set, receives each relay request whose
+	// credentials matched no valid pair (peer IP, username, camera path), for
+	// the security log fail2ban tails.
+	RelayAuthFailure func(ip, user, path string)
 }
 
 // DefaultOptions returns the in-memory defaults: MSE, relay and recording
@@ -217,6 +223,9 @@ type Engine struct {
 	// and the low-disk emergency purge (onLowDisk) both drive it. Nil when
 	// recording is off (no index to purge).
 	cleaner *retention.Cleaner
+	// purgeRunning is set while an emergency PurgeToFree goroutine is in
+	// flight, so the watcher's repeated still-low polls don't stack purges.
+	purgeRunning atomic.Bool
 
 	mu           sync.RWMutex
 	broadcasters map[string]*live.Broadcaster // camera id -> live MSE broadcaster
@@ -231,7 +240,7 @@ type Engine struct {
 	// row to idxCh and a single drainer goroutine performs every insert off the
 	// hot path (and serialized, which also eases the single SQLite writer). Both
 	// are nil when recording is disabled (no index). See runIndexer / Close.
-	idxCh   chan index.Segment
+	idxCh   chan idxItem
 	idxDone chan struct{}
 
 	ctx    context.Context
@@ -253,6 +262,9 @@ type camCtrl struct {
 	// runtime. It cancels a context derived from the engine's, so an engine
 	// Close() still tears every camera down too.
 	cancel context.CancelFunc
+	// done is closed when the retry-loop goroutine has exited (and with it the
+	// last rec.Start, including its OnSourceLost teardown).
+	done chan struct{}
 }
 
 func (c *camCtrl) isPaused() bool {
@@ -324,9 +336,10 @@ func New(opts Options) (*Engine, error) {
 	var relay *liverelay.Relay
 	if opts.RelayEnabled {
 		relay = &liverelay.Relay{
-			Address: opts.RTSPAddress,
-			CredsFn: opts.RelayCredsFn,
-			Logf:    func(f string, a ...any) { slog.Debug("media/relay: " + fmt.Sprintf(f, a...)) },
+			Address:       opts.RTSPAddress,
+			CredsFn:       opts.RelayCredsFn,
+			OnAuthFailure: opts.RelayAuthFailure,
+			Logf:          func(f string, a ...any) { slog.Debug("media/relay: " + fmt.Sprintf(f, a...)) },
 		}
 		if err := relay.Initialize(); err != nil {
 			if idx != nil {
@@ -362,6 +375,7 @@ func New(opts Options) (*Engine, error) {
 		// the operator's opt-out and skips the watcher entirely.
 		w := diskmonitor.New(opts.RecordDir, opts.MinFreeBytes)
 		w.OnLow = e.onLowDisk
+		w.OnStillLow = e.onStillLowDisk
 		w.OnRecovered = e.onDiskRecovered
 		e.diskMon = w
 	}
@@ -369,7 +383,7 @@ func New(opts Options) (*Engine, error) {
 		// Buffered well beyond the real rate (segments rotate ~once/minute per
 		// camera), so the non-blocking enqueue in enqueueIndex effectively never
 		// spills to its synchronous fallback in normal operation.
-		e.idxCh = make(chan index.Segment, 256)
+		e.idxCh = make(chan idxItem, 256)
 		e.idxDone = make(chan struct{})
 		go e.runIndexer()
 	}
@@ -382,12 +396,64 @@ func New(opts Options) (*Engine, error) {
 // idxDone so Close can safely close the index.
 func (e *Engine) runIndexer() {
 	defer close(e.idxDone)
-	for seg := range e.idxCh {
-		if err := e.idx.Insert(seg); err != nil {
-			slog.Error("media/index insert failed", "camera", seg.Path, "seg", seg.SegmentNumber, "err", err)
+	for it := range e.idxCh {
+		if it.flushed != nil { // barrier: everything queued before it is inserted
+			close(it.flushed)
+			continue
+		}
+		seg := it.seg
+		if err := insertWithRetry(e.idx, seg); err != nil {
+			slog.Error("media/index insert failed; segment stays on disk unindexed until the next startup recovery",
+				"camera", seg.Path, "seg", seg.SegmentNumber, "path", seg.Fpath, "err", err)
 			continue
 		}
 		slog.Debug("media/segment indexed", "camera", seg.Path, "seg", seg.SegmentNumber, "dur_s", seg.Duration, "path", seg.Fpath)
+	}
+}
+
+// indexRetryDelays spaces the retries of a failed segment insert. A failure is
+// almost always SQLITE_BUSY outlasting busy_timeout during a long retention or
+// emergency purge; a row that is simply dropped leaves a file retention never
+// deletes (it only removes indexed segments) and playback never shows. The
+// total wait is bounded so shutdown (which drains this queue) stays prompt.
+var indexRetryDelays = []time.Duration{500 * time.Millisecond, 2 * time.Second, 5 * time.Second}
+
+func insertWithRetry(idx *index.Index, seg index.Segment) error {
+	err := idx.Insert(seg)
+	for _, d := range indexRetryDelays {
+		if err == nil {
+			return nil
+		}
+		slog.Warn("media/index insert failed, retrying", "camera", seg.Path, "seg", seg.SegmentNumber, "in", d, "err", err)
+		time.Sleep(d)
+		err = idx.Insert(seg)
+	}
+	return err
+}
+
+// idxItem is one entry of the async index queue: a segment to insert, or (with
+// flushed set) a barrier closed once every earlier entry has been processed.
+type idxItem struct {
+	seg     index.Segment
+	flushed chan struct{}
+}
+
+// flushIndex blocks until every segment queued so far has been inserted (or
+// ctx ends). Used before purging a camera, so a segment finalized during its
+// removal can't be indexed after its files were deleted.
+func (e *Engine) flushIndex(ctx context.Context) {
+	if e.idxCh == nil {
+		return
+	}
+	done := make(chan struct{})
+	select {
+	case e.idxCh <- idxItem{flushed: done}:
+	case <-ctx.Done():
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
@@ -398,7 +464,7 @@ func (e *Engine) runIndexer() {
 // under-lock stall only in that pathological case.
 func (e *Engine) enqueueIndex(seg index.Segment) {
 	select {
-	case e.idxCh <- seg:
+	case e.idxCh <- idxItem{seg: seg}:
 	default:
 		if err := e.idx.Insert(seg); err != nil {
 			slog.Error("media/index insert failed (sync fallback)", "camera", seg.Path, "seg", seg.SegmentNumber, "err", err)
@@ -475,18 +541,40 @@ func (e *Engine) Start(cams []camera.Camera) {
 // footage is sacrificed to make room for the newest.
 //
 // The purge runs in its own goroutine so the watcher's poll loop stays
-// responsive. OnLow fires once per low episode (the monitor's hysteresis
-// won't re-fire until free recovers above the high-water mark), so at most
-// one purge goroutine is in flight.
+// responsive. OnLow fires once per low episode; onStillLowDisk re-arms the
+// purge on later polls that are still below the low-water mark, and
+// purgeRunning keeps at most one purge goroutine in flight.
 func (e *Engine) onLowDisk(free uint64) {
 	slog.Warn("media: disk space low, purging oldest segments",
 		"free_bytes", free,
 		"min_free_bytes", e.opts.MinFreeBytes,
 		"record_dir", e.opts.RecordDir)
+	e.startEmergencyPurge()
+}
 
+// onStillLowDisk is the diskmonitor's OnStillLow callback: a poll in the same
+// low episode still finds free space below min_free_bytes, so the previous
+// purge ended without recovering it (an index error, or recording refilling
+// the volume). Try again unless one is still running.
+func (e *Engine) onStillLowDisk(free uint64) {
+	if e.purgeRunning.Load() {
+		return
+	}
+	slog.Warn("media: disk space still low, purging oldest segments again",
+		"free_bytes", free,
+		"min_free_bytes", e.opts.MinFreeBytes)
+	e.startEmergencyPurge()
+}
+
+// startEmergencyPurge launches PurgeToFree unless one is already in flight.
+func (e *Engine) startEmergencyPurge() {
+	if !e.purgeRunning.CompareAndSwap(false, true) {
+		return
+	}
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
+		defer e.purgeRunning.Store(false)
 		high := 2 * e.opts.MinFreeBytes
 		e.cleaner.PurgeToFree(e.ctx, e.opts.RecordDir, high, diskfree.Available)
 	}()
@@ -637,6 +725,9 @@ func (e *Engine) ReindexAll(cams []camera.Camera) {
 // segment), tears down the live MSE broadcast and RTSP relay source, and drops
 // the camera's engine state. Returns false when the camera is not supervised.
 // Recorded segments already on disk are left untouched (retention prunes them).
+// removeWaitTimeout bounds how long RemoveCamera waits for a camera's loop.
+const removeWaitTimeout = 10 * time.Second
+
 func (e *Engine) RemoveCamera(id string) bool {
 	e.mu.Lock()
 	ctrl := e.ctrls[id]
@@ -657,6 +748,17 @@ func (e *Engine) RemoveCamera(id string) bool {
 
 	ctrl.cancel()    // stop the retry loop
 	ctrl.rec.Close() // unblock rec.Start and finalize the current segment (no more Submit after this)
+	// Wait for the loop to actually exit. Its last rec.Start runs the
+	// OnSourceLost hook (relay.ClearSource) on the way out; an update does
+	// RemoveCamera+AddCamera back to back, so without this the old session's
+	// late ClearSource could land after the new pipeline published its source
+	// and leave the relay down until the next reconnect. Close unblocks every
+	// RTSP step, so this is quick; the bound only guards against a wedge.
+	select {
+	case <-ctrl.done:
+	case <-time.After(removeWaitTimeout):
+		slog.Warn("media: camera pipeline slow to stop; continuing removal", "camera", id)
+	}
 	if e.relay != nil {
 		e.relay.ClearSource(id)
 	}
@@ -739,7 +841,7 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 	// this camera's loop; an engine Close() cancels the parent and so tears every
 	// camera down too.
 	camCtx, camCancel := context.WithCancel(e.ctx)
-	ctrl := &camCtrl{rec: rec, resumeCh: make(chan struct{}), cancel: camCancel}
+	ctrl := &camCtrl{rec: rec, resumeCh: make(chan struct{}), cancel: camCancel, done: make(chan struct{})}
 
 	// Abort a connect in flight when privacy or removal landed after the
 	// loop's pause check: rec.Close() at that point may have had no client to
@@ -755,6 +857,7 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
+		defer close(ctrl.done)
 		for {
 			// Park here while the camera is in privacy: the loop must not
 			// reconnect until privacy is turned off (SetPrivacy resumes it).
@@ -826,6 +929,35 @@ func (e *Engine) Broadcaster(id string) *live.Broadcaster {
 
 // Playback returns the HTTP playback handler backed by the shared index.
 func (e *Engine) Playback() *playback.Handler { return e.playback }
+
+// PurgeCameraRecordings deletes, in the background, every recording of a camera
+// that was just removed (RemoveCamera first): indexed segments and the
+// unindexed files a crash may have left in its directory. Deleting a camera
+// means deleting its footage — disabling it is the way to keep it. Segments
+// recorded after this call (a camera re-created with the same id) are spared.
+// No-op when recording is off (no index). Tracked by the engine's WaitGroup,
+// so Close waits for it.
+func (e *Engine) PurgeCameraRecordings(id string) {
+	if e.cleaner == nil {
+		return
+	}
+	cutoff := time.Now()
+	root := recovery.CameraRoot(e.opts.RecordPath, id)
+	belongs := recstore.CameraMatcher(recstore.PathAddExtension(e.opts.RecordPath), id)
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		// The segment finalized during RemoveCamera is still in the async
+		// index queue; let it land so this purge sees (and deletes) it.
+		e.flushIndex(e.ctx)
+		n, err := e.cleaner.PurgeCamera(e.ctx, id, cutoff, root, belongs)
+		if err != nil {
+			slog.Warn("media: purge of deleted camera's recordings incomplete", "camera", id, "removed", n, "err", err)
+			return
+		}
+		slog.Info("media: deleted camera's recordings purged", "camera", id, "files", n)
+	}()
+}
 
 // Index returns the shared segment index (for metadata queries).
 func (e *Engine) Index() *index.Index { return e.idx }

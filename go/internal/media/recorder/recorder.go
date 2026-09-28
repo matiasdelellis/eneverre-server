@@ -131,6 +131,9 @@ type Recorder struct {
 	videoCodecH265 *mcodecs.H265
 	dtsExtractor   videoDTS
 	videoStarted   bool
+	// resyncKeyframe is set when a segment write failed and the segment was
+	// dropped: the next segment must not open until a video keyframe arrives.
+	resyncKeyframe bool
 
 	// lastVideoNano is the UnixNano of the most recent video RTP packet. A media
 	// watchdog uses it to force a reconnect when a camera goes silent while
@@ -164,7 +167,10 @@ func (r *Recorder) Start() error {
 
 	r.streamID = uuid.New()
 	r.pathFmt = recstore.PathAddExtension(strings.ReplaceAll(r.PathFormat, "%path", r.PathName))
-	// reset per-connection state
+	// reset per-connection state — under mu, since a concurrent Close()
+	// (privacy toggled right as the retry loop reconnects) reads
+	// currentSegment under it.
+	r.mu.Lock()
 	r.tracks = nil
 	r.hasVideo = false
 	r.currentSegment = nil
@@ -172,6 +178,8 @@ func (r *Recorder) Start() error {
 	r.videoCodecH265 = nil
 	r.dtsExtractor = nil
 	r.videoStarted = false
+	r.resyncKeyframe = false
+	r.mu.Unlock()
 
 	u, err := base.ParseURL(r.URL)
 	if err != nil {
@@ -215,8 +223,16 @@ func (r *Recorder) Start() error {
 	r.client = c
 	r.clientMu.Unlock()
 	if err = c.Start(); err != nil {
+		r.clientMu.Lock()
+		r.client = nil // never started: Close() on it would panic
+		r.clientMu.Unlock()
 		return err
 	}
+	// Every return from here on must release the session: gortsplib's run()
+	// only exits on Close or a transport fault, so a failed DESCRIBE/SETUP/PLAY
+	// (401, 404, no H264) would otherwise leak its goroutine and TCP socket on
+	// every retry. Close is idempotent, so the paths that already close are fine.
+	defer c.Close()
 
 	desc, _, err := c.Describe(u)
 	if err != nil {
@@ -257,6 +273,14 @@ func (r *Recorder) Start() error {
 	// sinks fed from the same RTP, so log the relay off for this session and
 	// keep going. (OnRTP below then no-ops harmlessly — the relay drops packets
 	// for a path with no source.)
+	// From here on the relay (and, below, the live broadcaster) may hold this
+	// session's state, so any exit — a later SETUP/PLAY failure or a stop
+	// request included, not just the source dropping — must tear it down.
+	// Otherwise the relay keeps answering DESCRIBE for a stream with no data
+	// and /live/info reports available.
+	if r.OnSourceLost != nil {
+		defer r.OnSourceLost()
+	}
 	if r.OnSource != nil {
 		if err = r.OnSource(desc); err != nil {
 			r.Logf("live relay disabled for this session: %v", err)
@@ -432,9 +456,6 @@ func (r *Recorder) Start() error {
 	}
 	r.mu.Unlock()
 
-	if r.OnSourceLost != nil {
-		r.OnSourceLost()
-	}
 	return werr
 }
 

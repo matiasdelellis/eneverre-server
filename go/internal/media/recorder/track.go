@@ -59,6 +59,17 @@ func (t *recTrack) write(smp *sample) {
 	dts := timestampToDuration(smp.dts, int(t.clockRate))
 
 	if r.currentSegment == nil {
+		// After a write error the segment was dropped mid-GOP. Starting the
+		// next one on whatever sample arrives would make its first frames
+		// reference a keyframe that lives in the previous file — undecodable
+		// until the next IDR in playback/HLS. Wait for a video keyframe (and
+		// drop audio until then, so the segment still starts on video).
+		if r.resyncKeyframe && r.hasVideo {
+			if !t.initTrack.Codec.IsVideo() || smp.IsNonSyncSample {
+				return
+			}
+			r.resyncKeyframe = false
+		}
 		r.currentSegment = r.newSegment(dts, smp.ntp)
 	} else if (dts - r.currentSegment.startDTS) < 0 {
 		r.Logf("sample of track %d received too late, discarding", t.initTrack.ID)
@@ -69,6 +80,7 @@ func (t *recTrack) write(smp *sample) {
 		r.Logf("segment write: %v", err)
 		r.currentSegment.close() //nolint:errcheck
 		r.currentSegment = nil
+		r.resyncKeyframe = true
 		return
 	}
 

@@ -31,7 +31,7 @@ import (
 
 const (
 	partDuration  = 300 * time.Millisecond // target fMP4 part length (latency knob)
-	subChanBuffer = 128                    // parts queued per client before dropping (slow client)
+	subChanBuffer = 128                    // parts queued per client before it is cut off as a slow viewer
 	submitBuffer  = 256                    // samples queued for the marshaler before dropping
 )
 
@@ -76,9 +76,16 @@ type Broadcaster struct {
 	subs             map[*subscriber]struct{}
 
 	// current part accumulation
-	seq          uint32
-	samples      map[int][]*fmp4.Sample
-	baseDTS      map[int]int64
+	seq     uint32
+	samples map[int][]*fmp4.Sample
+	baseDTS map[int]int64
+	// dtsShift moves the whole stream (every track, same wall-clock amount)
+	// so no part's BaseTime is negative: tfdt is unsigned, and a camera with
+	// B-frames starts its DTS below zero, which uint64() wraps to ~2^64 and
+	// MSE rejects. Chosen from the first sample after SetTracks.
+	dtsShift     int64  // in dtsShiftTS ticks (exact for the track that set it)
+	dtsShiftTS   uint32 // timescale dtsShift is expressed in
+	haveDTSShift bool
 	curVideoDur  time.Duration
 	partKeyframe bool
 	havePartVid  bool
@@ -149,6 +156,7 @@ func (b *Broadcaster) SetTracks(all []*fmp4.InitTrack) error {
 	var incl []*fmp4.InitTrack
 	var dropped []string
 	b.timeScale = map[int]uint32{}
+	b.dtsShift, b.dtsShiftTS, b.haveDTSShift = 0, 0, false // new session: re-derive from its first sample
 	b.videoID = 0
 	b.unsupportedVideo = ""
 	codecs := ""
@@ -294,6 +302,20 @@ func (b *Broadcaster) writeSample(trackID int, s *fmp4.Sample, dts int64) {
 		b.flushPartLocked()
 	}
 
+	if !b.haveDTSShift {
+		b.haveDTSShift = true
+		if dts < 0 {
+			b.dtsShift, b.dtsShiftTS = -dts, ts
+		}
+	}
+	if b.dtsShift > 0 {
+		// Same wall-clock amount on every track; rounded up so the track that
+		// set it lands exactly on 0 and others never go below.
+		dts += (b.dtsShift*int64(ts) + int64(b.dtsShiftTS) - 1) / int64(b.dtsShiftTS)
+		if dts < 0 {
+			dts = 0 // a later track starting even earlier: clamp rather than wrap
+		}
+	}
 	if _, ok := b.baseDTS[trackID]; !ok {
 		b.baseDTS[trackID] = dts
 	}
@@ -345,11 +367,17 @@ func (b *Broadcaster) flushPartLocked() {
 		b.gop = append(b.gop, data)
 	}
 
-	// fan out (drop for slow clients rather than block the recorder)
+	// fan out without ever blocking the recorder. A subscriber whose buffer is
+	// full is cut off rather than skipped: dropping a part mid-GOP corrupts
+	// the browser's decode until the next keyframe, while a clean disconnect
+	// makes the MSE client reconnect and resync at the current GOP.
 	for s := range b.subs {
 		select {
 		case s.ch <- data:
 		default:
+			delete(b.subs, s)
+			close(s.ch)
+			b.Logf("live: dropping slow viewer (%d parts behind)", cap(s.ch))
 		}
 	}
 	b.resetPartLocked()
@@ -417,11 +445,22 @@ func (b *Broadcaster) HandleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Cache-Control", "no-store")
 
-	if _, err := w.Write(init); err != nil {
+	// The server's WriteTimeout is lifted for this endless response, so give
+	// every write its own deadline instead: a half-open connection (client
+	// vanished without a FIN) otherwise pins this goroutine and its queued
+	// parts until TCP gives up, ~15 minutes later.
+	rc := http.NewResponseController(w)
+	write := func(p []byte) bool {
+		_ = rc.SetWriteDeadline(time.Now().Add(liveWriteTimeout))
+		_, err := w.Write(p)
+		return err == nil
+	}
+
+	if !write(init) {
 		return
 	}
 	for _, p := range gop {
-		if _, err := w.Write(p); err != nil {
+		if !write(p) {
 			return
 		}
 	}
@@ -433,9 +472,9 @@ func (b *Broadcaster) HandleStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case data, ok := <-sub.ch:
 			if !ok {
-				return // stream reset/stopped
+				return // stream reset/stopped, or cut off as a slow viewer
 			}
-			if _, err := w.Write(data); err != nil {
+			if !write(data) {
 				return
 			}
 			if fl != nil {
@@ -448,6 +487,9 @@ func (b *Broadcaster) HandleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- helpers ---
+
+// liveWriteTimeout bounds one write of the live stream to a viewer.
+const liveWriteTimeout = 15 * time.Second
 
 func appendCodec(cur, c string) string {
 	if cur == "" {

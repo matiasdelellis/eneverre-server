@@ -85,6 +85,15 @@ func segmentCanBeConcatenated(prevInit *fmp4.Init, prevEnd time.Time, curInit *f
 	}
 }
 
+// Sanity bounds for sizes read from segment files. A real ftyp/moov is a few
+// KiB; one trun's samples are at most one recorder part (MaxPartSize, 50 MiB
+// by default), so both caps leave ample headroom while keeping a corrupt size
+// field from allocating gigabytes.
+const (
+	maxHeaderBoxBytes = 16 << 20
+	maxTrunBytes      = 256 << 20
+)
+
 // readHeader parses ftyp+moov and returns the init and duration (from mvhd).
 func readHeader(r io.ReadSeeker) (*fmp4.Init, time.Duration, error) {
 	buf := make([]byte, 8)
@@ -95,6 +104,12 @@ func readHeader(r io.ReadSeeker) (*fmp4.Init, time.Duration, error) {
 		return nil, 0, fmt.Errorf("ftyp box not found")
 	}
 	ftypSize := uint32(buf[0])<<24 | uint32(buf[1])<<16 | uint32(buf[2])<<8 | uint32(buf[3])
+	// Box sizes come straight from the file: a truncated or corrupt segment
+	// (crash, bad disk) must fail this request, not underflow a size or ask for
+	// a multi-GB buffer.
+	if ftypSize < 8 || ftypSize > maxHeaderBoxBytes {
+		return nil, 0, fmt.Errorf("invalid ftyp size %d", ftypSize)
+	}
 
 	if _, err := r.Seek(int64(ftypSize), io.SeekStart); err != nil {
 		return nil, 0, err
@@ -106,6 +121,9 @@ func readHeader(r io.ReadSeeker) (*fmp4.Init, time.Duration, error) {
 		return nil, 0, fmt.Errorf("moov box not found")
 	}
 	moovSize := uint32(buf[0])<<24 | uint32(buf[1])<<16 | uint32(buf[2])<<8 | uint32(buf[3])
+	if moovSize < 16 || moovSize > maxHeaderBoxBytes {
+		return nil, 0, fmt.Errorf("invalid moov size %d", moovSize)
+	}
 
 	if _, err := r.Seek(8, io.SeekCurrent); err != nil {
 		return nil, 0, err
@@ -114,6 +132,9 @@ func readHeader(r io.ReadSeeker) (*fmp4.Init, time.Duration, error) {
 	var mvhd amp4.Mvhd
 	if _, err := amp4.Unmarshal(r, uint64(moovSize-8), &mvhd, amp4.Context{}); err != nil {
 		return nil, 0, err
+	}
+	if mvhd.Timescale == 0 {
+		return nil, 0, fmt.Errorf("mvhd timescale is zero")
 	}
 	d := time.Duration(mvhd.DurationV0) * time.Second / time.Duration(mvhd.Timescale)
 
@@ -173,6 +194,9 @@ func muxParts(
 				return nil, err
 			}
 			tfdt = box.(*amp4.Tfdt)
+			if tfhd == nil {
+				return nil, fmt.Errorf("tfdt before tfhd")
+			}
 
 			track := findInitTrack(tracks, int(tfhd.TrackID))
 			if track == nil {
@@ -190,6 +214,9 @@ func muxParts(
 				return nil, err
 			}
 			trun := box.(*amp4.Trun)
+			if tfdt == nil {
+				return nil, fmt.Errorf("trun before tfdt")
+			}
 
 			dataOffset := moofOffset + uint64(trun.DataOffset)
 			dts := int64(tfdt.BaseMediaDecodeTimeV1) + startDTSMP4
@@ -203,6 +230,9 @@ func muxParts(
 			var totalSize uint64
 			for _, e := range trun.Entries {
 				totalSize += uint64(e.SampleSize)
+			}
+			if totalSize > maxTrunBytes {
+				return nil, fmt.Errorf("trun payload of %d bytes exceeds %d", totalSize, maxTrunBytes)
 			}
 			blob := make([]byte, totalSize)
 			if _, err := r.ReadAt(blob, int64(dataOffset)); err != nil {
