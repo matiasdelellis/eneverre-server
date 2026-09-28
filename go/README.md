@@ -117,7 +117,7 @@ Embedded assets are served with a content-hash `ETag` and `Cache-Control:
 no-cache`, so repeat loads revalidate with `If-None-Match` and get a `304`
 instead of re-downloading (~550 KB of JS/CSS). Text assets are also served
 gzip-compressed when the client accepts it (e.g. `hls.min.js` 414 KB → ~125
-KB). The ETag is content-based, so a redeploy with changed assets invalidates
+KB, loaded on demand by the playback view). The ETag is content-based, so a redeploy with changed assets invalidates
 the cache automatically.
 
 Admin seeding: when the users table is empty, an `admin` user is created with
@@ -194,7 +194,7 @@ internal/server               HTTP routes + handlers
   handlers_updates.go         Android auto-update publish + download
   logging.go                  access log + client-IP resolution (trusted_proxies)
   seclog.go                   auth-failure security log (fail2ban/CrowdSec format)
-  ratelimit.go                failed-auth throttle, keyed per peer IP and per username
+  ratelimit.go                failed-auth throttle, keyed per client IP and per username
   static.go                   embedded UI serving: ETag, gzip, Cache-Control
 static/                       the web UI itself (js/views/*.js, one module per screen)
 ```

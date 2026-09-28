@@ -1,6 +1,7 @@
 import { $, $$, escapeHtml, makeMsg } from "../util/dom.js";
 import { getState, setWallFilter, setOverlay, on, emit } from "../state.js";
 import { fetchCameras, token, apiFetch } from "../api.js";
+import { getCachedThumb } from "../util/thumb-cache.js";
 import { loadSidebar, updateSidebarActive, publishLiveThumb } from "./sidebar.js";
 import { attachMse, captureVideoFrame } from "./mse.js";
 import { hidePtzModal, centerOnVideoPoint } from "./ptz.js";
@@ -146,6 +147,18 @@ async function tryLoadThumbnail(tile, camId) {
   if (!camId) return;
   try {
     if (!token()) return;
+    // Reuse the sidebar's shared cache when fresh (<10 min): a wall re-render
+    // (filter click, mode switch) used to re-fetch a JPEG per thumbnail-capable
+    // camera even though the sidebar already had it. Data URLs go straight on
+    // the poster — nothing to revoke (only network blobs use _posterBlob).
+    const THUMB_MAX_AGE_MS = 10 * 60 * 1000;
+    const cached = getCachedThumb(camId, THUMB_MAX_AGE_MS);
+    if (cached) {
+      tile.dataset.poster = cached;
+      const cachedVideo = tile.querySelector("video");
+      if (cachedVideo) cachedVideo.poster = cached;
+      return;
+    }
     const resp = await apiFetch(`/api/camera/${encodeURIComponent(camId)}/thumbnail`);
     if (!resp.ok) return;
     const blob = await resp.blob();
@@ -175,6 +188,12 @@ function renderWallTile(cam) {
   tile.className = "wall-tile";
   tile.dataset.id = cam.id;
   tile.dataset.mode = "live";
+  // Keyboard/reader equivalent of clicking the tile body (zoom the wall to
+  // this camera). The inner action buttons stay natively focusable; Enter or
+  // Space on the tile itself zooms, like a click outside the buttons.
+  tile.setAttribute("tabindex", "0");
+  tile.setAttribute("role", "button");
+  tile.setAttribute("aria-label", cam.name || cam.id);
   // A camera that is out of service is never connected to, so its dot starts
   // (and stays) in the steady "disabled" state — it must not flash the amber
   // "connecting" pulse on render.
@@ -182,7 +201,7 @@ function renderWallTile(cam) {
   const dotLabel = cam.enabled === false ? t("disabled") : t("connecting");
   tile.innerHTML = `
     <video autoplay playsinline muted poster="/img/camera-banner.png"></video>
-    <span class="cam-status-dot ${dotState}" data-cam="${escapeHtml(cam.id)}" title="${dotLabel}" aria-label="${dotLabel}"></span>
+    <span class="cam-status-dot ${dotState}" data-cam="${escapeHtml(cam.id)}" role="img" title="${dotLabel}" aria-label="${dotLabel}"></span>
     <div class="wall-overlay">
       <div class="wall-bottom">
         <div class="wall-name">${escapeHtml(cam.name || cam.id)}</div>
@@ -305,6 +324,17 @@ function renderWallTile(cam) {
       toast(t("ptz.error", { msg: err.message }), { type: "error" });
     }
   });
+  tile.addEventListener("keydown", (e) => {
+    // Buttons inside the tile handle their own keys; a key on the tile body
+    // zooms, mirroring a click outside the buttons. No 250ms delay needed:
+    // keyboard has no double-click ambiguity. (PTZ centering stays a pointer
+    // gesture; the PTZ panel and arrow keys cover keyboard users.)
+    if (e.target !== tile) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      selectCamFromTile(cam.id);
+    }
+  });
   return tile;
 }
 
@@ -405,20 +435,32 @@ export function destroyWall() {
   wallInstances.clear();
 }
 
-export function pauseWall() {
+// pauseLiveHandles / resumeLiveHandles act on the live stream handles only
+// (MSE tiles, including the ones playback shows at the live edge), leaving
+// any VOD <video> alone — playback's own suspend/resume owns those, and
+// blindly play()ing them would undo a pause the user made.
+function pauseLiveHandles() {
   for (const h of wallInstances.values()) {
     // pause() tears down the live connection (no more decoding AND no more
     // network); stopLoad() is the softer fallback for handles without it.
     if (h.pause) { try { h.pause(); } catch {} }
     else { try { h.stopLoad(); } catch {} }
   }
+}
+
+function resumeLiveHandles() {
+  for (const h of wallInstances.values()) {
+    if (h.resume) { try { h.resume(); } catch {} }
+  }
+}
+
+export function pauseWall() {
+  pauseLiveHandles();
   $$("#wall video").forEach((v) => v.pause());
 }
 
 export function resumeWall() {
-  for (const h of wallInstances.values()) {
-    if (h.resume) { try { h.resume(); } catch {} }
-  }
+  resumeLiveHandles();
   $$("#wall video").forEach((v) => v.play().catch(() => {}));
 }
 
@@ -579,10 +621,39 @@ export function initWall() {
   // running indefinitely, burning CPU, battery and bandwidth for frames nobody
   // sees. Only acts in the wall-like views (live/playback); resuming snaps each
   // MSE tile back to the live edge via its latency-control loop.
-  document.addEventListener("visibilitychange", () => {
+  //
+  // Playback needs more than pausing the <video>s: its wall-clock cursor and
+  // background pollers keep running off Date.now(), so the cursor would drift
+  // minutes ahead of the (paused) frames while hidden. playback.js's
+  // suspend/resume freeze those and re-anchor on show.
+  document.addEventListener("visibilitychange", async () => {
     if (!isWallLike()) return;
-    if (document.hidden) pauseWall();
-    else resumeWall();
+    const { viewMode } = getState();
+    const pb = viewMode === "playback" ? await import("./playback.js") : null;
+    // Act on the state as it is now, not as it was when the event fired: the
+    // import can resolve after the tab flipped again or the view changed, and
+    // every step below is idempotent, so re-reading document.hidden is enough
+    // to keep a hide/show/hide burst from leaving streams running hidden.
+    if (!isWallLike() || getState().viewMode !== viewMode) return;
+    if (document.hidden) {
+      if (pb) {
+        pb.suspendPlayback();
+        pauseLiveHandles(); // live-edge tiles in playback stream too
+      } else {
+        pauseWall();
+      }
+      return;
+    }
+    if (pb) {
+      pb.resumePlayback();
+      resumeLiveHandles();
+    } else {
+      resumeWall();
+    }
+    // Warm the shared camera cache in the background (privacy/schedule_off/
+    // connection may have changed while hidden) so the next render is fresh;
+    // resuming doesn't wait on it.
+    import("../api.js").then(({ fetchCameras }) => fetchCameras()).catch(() => {});
   });
 
   // Reload the wall (or just refresh the sidebar highlight) when the
@@ -599,13 +670,25 @@ export function initWall() {
     }
   });
 
+  // Language switch: tiles and overlays cache rendered t() strings, so a
+  // full re-render is the only way to pick the new catalog up everywhere.
+  // captureTimelineState keeps the playback cursor across the rebuild.
+  on("lang", async () => {
+    const { viewMode } = getState();
+    if (viewMode === "live" || viewMode === "playback") {
+      const { captureTimelineState } = await import("./playback.js");
+      captureTimelineState();
+      await loadWall(viewMode);
+    }
+  });
+
   // Escape walks the filter up one level: single camera → its location,
   // location → all cameras. Ignored while typing or when a blocking
   // overlay/dialog is open (help and dialogs own Escape themselves).
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape") return;
-    const t = e.target;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (e.key !== "Escape" || e.defaultPrevented) return; // a dialog/help already consumed it
+    const tgt = e.target;
+    if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable)) return;
     if (document.querySelector(
       "#help-overlay:not([hidden]), #dlg-modal:not([hidden]), #user-edit-modal:not([hidden]), #users-view:not([hidden]), #cameras-view:not([hidden]), #cam-wizard-modal:not([hidden]), #device-auth-view:not([hidden])",
     )) return;

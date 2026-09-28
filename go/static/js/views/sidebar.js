@@ -3,6 +3,7 @@ import { setWallFilter, getState, on } from "../state.js";
 import { fetchCameras, apiFetch } from "../api.js";
 import { isMobileViewport, closeSidebarDrawer } from "./app-shell.js";
 import { loadJson, saveJson, LOCATION_ORDER_KEY } from "../util/storage.js";
+import { getCachedThumb, setCachedThumb, deleteCachedThumb } from "../util/thumb-cache.js";
 import { icon } from "../ui/icons.js";
 import { setCamStatus } from "../ui/cam-status.js";
 import { t } from "../i18n.js";
@@ -14,8 +15,6 @@ function maybeCloseDrawer() {
   // override that.
   if (isMobileViewport()) closeSidebarDrawer();
 }
-
-const THUMB_CACHE = new Map(); // camId -> dataURL (in-memory, faster than localStorage)
 
 const SIDEBAR_THUMB_REFRESH_MS = 10 * 60 * 1000;
 const THUMB_PERSIST_MS = 2 * 60 * 1000; // throttle localStorage writes for live frames
@@ -30,12 +29,10 @@ const lastPersist = new Map(); // camId -> last localStorage write (live thumbs)
 // already decoding, with no extra stream or server round-trip.
 export function publishLiveThumb(camId, dataUrl) {
   if (!dataUrl) return;
-  THUMB_CACHE.set(camId, dataUrl);
   const now = Date.now();
-  if (now - (lastPersist.get(camId) || 0) > THUMB_PERSIST_MS) {
-    lastPersist.set(camId, now);
-    try { localStorage.setItem(`thumb_${camId}`, dataUrl); } catch {}
-  }
+  const persist = now - (lastPersist.get(camId) || 0) > THUMB_PERSIST_MS;
+  if (persist) lastPersist.set(camId, now);
+  setCachedThumb(camId, dataUrl, { persist, at: now });
   const tile = $(`#viewer-side-scroll .viewer-thumb[data-id="${CSS.escape(camId)}"]`);
   if (tile) {
     const preview = tile.querySelector(".thumb-preview");
@@ -165,6 +162,11 @@ function renderViewerThumb(cam) {
   tile.className = "viewer-thumb";
   tile.dataset.id = cam.id;
   tile.dataset.location = cam.location || "";
+  // Keyboard/reader equivalent of the click below: the thumb is a single
+  // action (zoom the wall to this camera).
+  tile.setAttribute("tabindex", "0");
+  tile.setAttribute("role", "button");
+  tile.setAttribute("aria-label", cam.name || cam.id);
   // The banner is the static poster shown while the real thumbnail is
   // loading (or fails to load). loadViewerThumb() replaces it with the
   // camera's actual frame when available.
@@ -177,13 +179,20 @@ function renderViewerThumb(cam) {
     <div class="thumb-preview">
       <img alt="" src="/img/camera-banner.png" />
       <span class="thumb-loading">${t("sidebar.loading")}</span>
-      <span class="cam-status-dot ${dotState}" data-cam="${escapeHtml(cam.id)}" title="${dotLabel}" aria-label="${dotLabel}"></span>
+      <span class="cam-status-dot ${dotState}" data-cam="${escapeHtml(cam.id)}" role="img" title="${dotLabel}" aria-label="${dotLabel}"></span>
       <div class="thumb-caption">${escapeHtml(cam.name || cam.id)}</div>
     </div>
   `;
   tile.addEventListener("click", () => {
     onSidebarThumbClick(cam);
     maybeCloseDrawer();
+  });
+  tile.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onSidebarThumbClick(cam);
+      maybeCloseDrawer();
+    }
   });
   loadViewerThumb(cam, tile);
   return tile;
@@ -368,20 +377,14 @@ async function loadViewerThumb(cam, tile, { force = false } = {}) {
   applyThumbDisabled(tile, false);
 
   if (!force) {
-    let dataUrl = THUMB_CACHE.get(cam.id);
-    if (!dataUrl) {
-      try {
-        dataUrl = localStorage.getItem(`thumb_${cam.id}`) || null;
-        if (dataUrl) THUMB_CACHE.set(cam.id, dataUrl);
-      } catch {}
-    }
+    const dataUrl = getCachedThumb(cam.id);
     if (dataUrl) {
       img.src = dataUrl;
       loading.hidden = true;
       return;
     }
   } else {
-    THUMB_CACHE.delete(cam.id);
+    deleteCachedThumb(cam.id);
   }
 
   // Thumbnail source, in priority order:
@@ -408,8 +411,7 @@ async function loadViewerThumb(cam, tile, { force = false } = {}) {
   }
   img.src = dataUrl;
   loading.hidden = true;
-  THUMB_CACHE.set(cam.id, dataUrl);
-  try { localStorage.setItem(`thumb_${cam.id}`, dataUrl); } catch {}
+  setCachedThumb(cam.id, dataUrl, { at: Date.now() });
 }
 
 // fetchThumbnailDataUrl pulls a fresh JPEG from the Thingino-backed thumbnail
@@ -443,8 +445,10 @@ export function stopSidebarThumbRefresh() {
     sidebarThumbTimer = null;
   }
   sidebarThumbCams = [];
-  for (const k of [...THUMB_CACHE.keys()]) THUMB_CACHE.delete(k);
   lastPersist.clear();
+  // The shared thumb cache is deliberately NOT cleared here: this runs on
+  // every sidebar rebuild (loadSidebar → start → stop), and the wall reads
+  // the same cache. Full wipe is logout's job (app-shell → clearThumbCache).
 }
 
 async function refreshSidebarThumbs() {
@@ -464,5 +468,12 @@ export function initSidebar() {
   // that were filtered out). The wall filter listener in wall.js handles
   // loadWall(); we only need to keep the active class in sync.
   on("wallFilter", () => updateSidebarActive());
+  // Language switch: captions/titles are baked into the tiles at render
+  // time. Drop the loaded flag and rebuild on the next loadSidebar (the
+  // wall's own "lang" listener calls loadWall → loadSidebar).
+  on("lang", () => {
+    const side = $("#viewer-side-scroll");
+    if (side) delete side.dataset.loaded;
+  });
   initSidebarDnd();
 }

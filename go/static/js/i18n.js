@@ -11,6 +11,7 @@
 // Adding a string = add the key to EVERY ./i18n/*.js and reference it via
 // t("key") in JS, or a data-i18n* attribute in the HTML (see applyI18n).
 import { get, set, LANG_KEY } from "./util/storage.js";
+import { emit } from "./state.js";
 import en from "./i18n/en.js";
 import es from "./i18n/es.js";
 
@@ -57,13 +58,16 @@ export function getSupportedLangs() {
 }
 
 // Switch language, persist it, and re-run the static pass so already-rendered
-// markup updates in place. Dynamic views re-read t() on their next render.
+// markup updates in place. Dynamic views (wall tiles, sidebar captions,
+// open dialogs) re-read t() on their next render — emit("lang") lets them
+// repaint NOW instead of waiting for the next natural re-render.
 export function setLang(next) {
   if (!supported.includes(next) || next === lang) return;
   lang = next;
   set(LANG_KEY, next);
   applyDocumentLang();
   applyI18n();
+  emit("lang", lang);
 }
 
 // Translate a key. Falls back to English, then to the key itself so a missing

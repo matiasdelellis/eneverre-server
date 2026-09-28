@@ -1,4 +1,5 @@
 import { $ } from "../util/dom.js";
+import { trapFocus } from "../util/focus-trap.js";
 import { closeUserMenu } from "./user-menu.js";
 
 // Shortcut/gesture help overlay plus the global `f` (fullscreen) shortcut.
@@ -10,14 +11,20 @@ function isTyping(t) {
   return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
 }
 
+let helpRelease = null;
+
 function openHelp() {
   const ov = $("#help-overlay");
-  if (ov) ov.hidden = false;
+  if (!ov || !ov.hidden) return;
+  ov.hidden = false;
+  if (!helpRelease) helpRelease = trapFocus(ov);
 }
 
 function closeHelp() {
   const ov = $("#help-overlay");
-  if (ov) ov.hidden = true;
+  if (!ov || ov.hidden) return;
+  ov.hidden = true;
+  if (helpRelease) { helpRelease(); helpRelease = null; }
 }
 
 // The tile the `f` shortcut acts on: whatever the pointer is over, or the
@@ -42,7 +49,7 @@ export function initHelp() {
       return;
     }
     if (e.key === "?") {
-      if (ov) { ov.hidden = !ov.hidden; e.preventDefault(); }
+      if (ov) { if (ov.hidden) openHelp(); else closeHelp(); e.preventDefault(); }
       return;
     }
     if (e.key === "f" || e.key === "F") {

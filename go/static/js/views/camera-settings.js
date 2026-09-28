@@ -13,9 +13,12 @@ import { $, escapeHtml } from "../util/dom.js";
 import { getState, on } from "../state.js";
 import { fetchCameraSettings, setCameraSettings } from "../api.js";
 import { loadJson, USER_KEY } from "../util/storage.js";
+import { trapFocus } from "../util/focus-trap.js";
+import { registerModalEsc } from "../util/modal-esc.js";
 import { t } from "../i18n.js";
 
 let currentCam = null;
+let settingsRelease = null;
 // uiMode is the selector's client-side position. It starts from the
 // snapshot but persists across repaints, because the heartbeat cannot tell
 // "manual" apart from a fixed day/night mode (both report enabled=false +
@@ -187,15 +190,18 @@ export function openSettings() {
   uiMode = null;
   $("#settings-modal-sub").textContent = currentCam.name || currentCam.id;
   modal.hidden = false;
+  if (!settingsRelease) settingsRelease = trapFocus(modal);
   refresh();
 }
 
 export function closeSettings() {
   const modal = $("#settings-modal");
   if (modal) modal.hidden = true;
+  if (settingsRelease) { settingsRelease(); settingsRelease = null; }
 }
 
 export function initSettings() {
+  registerModalEsc("#settings-modal", closeSettings);
   $("#settings-toggle")?.addEventListener("click", openSettings);
   $("#settings-modal-close")?.addEventListener("click", closeSettings);
   // Backdrop click closes; clicks inside the card don't bubble to the
@@ -208,5 +214,9 @@ export function initSettings() {
   on("wallFilter", syncSettingsButton);
   on("viewMode", syncSettingsButton);
   on("wallRendered", syncSettingsButton);
+  on("lang", () => {
+    const modal = $("#settings-modal");
+    if (modal && !modal.hidden) refresh();
+  });
   syncSettingsButton();
 }

@@ -45,6 +45,14 @@ export function trapFocus(container) {
   };
 
   container.addEventListener("keydown", onKeydown);
+  // The listener lives on the container, so it only sees Tab once focus is
+  // inside: move it in on open (first focusable, or the container itself),
+  // or the trap would never engage for a dialog opened from elsewhere.
+  if (!container.contains(document.activeElement)) {
+    const target = focusables(container)[0] || container;
+    if (target === container && !container.hasAttribute("tabindex")) container.setAttribute("tabindex", "-1");
+    try { target.focus({ preventScroll: true }); } catch {}
+  }
 
   return function release() {
     container.removeEventListener("keydown", onKeydown);

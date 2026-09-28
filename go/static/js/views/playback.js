@@ -27,6 +27,13 @@ const PB_PAGE_MS = 24 * 3600 * 1000;        // older chunk loaded per back-scrol
 let pbRefreshTimer = null;   // present-edge poll (setInterval id)
 let pbRefreshing = false;    // reentrancy guard for a slow poll
 
+// Hidden-tab suspension state (see suspendPlayback/resumePlayback below).
+// suspendedByVisibility: the tab-hide handler has frozen this session.
+// suspendedAutoUnpause: WE paused the session on hide (it was playing), so
+// we unpause on show — a pause the user initiated themselves is left alone.
+let suspendedByVisibility = false;
+let suspendedAutoUnpause = false;
+
 // Per-timeline backward-pagination state, indexed by timeline index and reset
 // on every buildPlaybackTimeline. pbRecFloor[i] is the oldest wall-clock we've
 // loaded recordings down to; pbRecEarliest[i] is the camera's first-ever
@@ -108,6 +115,17 @@ document.addEventListener("eneverre:themechange", () => {
   pbTimeline.draw();
 });
 
+// httpFailure separates "no data" from "failed" for the timeline fetches
+// below. apiFetch already drove the 401 path (one session refresh, then the
+// global logout), so 401 is fatal-but-handled; 404 is a legitimate empty
+// (recording off, no history yet). Anything else (403/5xx) is a real failure
+// the caller must surface — never a silently empty timeline. Returns an Error
+// carrying the HTTP status, or null when the result counts as empty.
+function httpFailure(r) {
+  if (r.status === 401 || r.status === 404) return null;
+  return Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
+}
+
 // fetchRecordingsRange fetches recording segments over an explicit
 // [startMs,endMs] wall-clock window and shapes them into timeline records
 // (ascending by start, as the server returns them). The window is explicit so
@@ -122,6 +140,8 @@ async function fetchRecordingsRange(camId, startMs, endMs) {
     const r = await apiFetch(
       `/api/camera/${encodeURIComponent(camId)}/recordings/list?${params}`,
     );
+    const failure = !r.ok && httpFailure(r);
+    if (failure) throw failure;
     if (!r.ok) return [];
     const segs = await r.json();
     return segs.map((s) => ({
@@ -148,6 +168,8 @@ async function fetchRecordingStart(camId) {
     const r = await apiFetch(
       `/api/camera/${encodeURIComponent(camId)}/recordings/timeline`,
     );
+    const failure = !r.ok && httpFailure(r);
+    if (failure) throw failure;
     if (!r.ok) return null;
     const data = await r.json();
     return data && data.start ? new Date(data.start).getTime() : null;
@@ -169,6 +191,8 @@ async function fetchEventsRange(camId, startMs, endMs) {
     const r = await apiFetch(
       `/api/camera/${encodeURIComponent(camId)}/events?${params}`,
     );
+    const failure = !r.ok && httpFailure(r);
+    if (failure) throw failure;
     if (!r.ok) return [];
     const data = await r.json();
     return (data.events || [])
@@ -231,6 +255,9 @@ async function refreshTimelineEdge() {
       tl.setMajor1Records(i, freshEvs.concat(evTail));
     }));
     if (gen === pbBuildGen) tl.scheduleDraw();
+  } catch {
+    // Background poll stays silent: the initial build already toasted real
+    // failures, and the next poll retries.
   } finally {
     pbRefreshing = false;
   }
@@ -258,20 +285,27 @@ async function loadOlderRecordings(i) {
   const gen = pbBuildGen;
   const to = pbRecFloor[i];
   const from = earliest != null ? Math.max(earliest, to - PB_PAGE_MS) : to - PB_PAGE_MS;
-  const older = await fetchRecordingsRange(cam.id, from, to);
-  if (gen !== pbBuildGen) return; // superseded; state arrays already reset
-
-  const fresh = older.filter((r) => r.timestampMsec < to);
-  if (fresh.length) {
-    const recs = tl.getBackgroundRecords(i) || [];
-    tl.setBackgroundRecords(i, fresh.concat(recs));
-    tl.scheduleDraw();
+  try {
+    const older = await fetchRecordingsRange(cam.id, from, to);
+    if (gen !== pbBuildGen) return; // superseded; state arrays already reset
+    const fresh = older.filter((r) => r.timestampMsec < to);
+    if (fresh.length) {
+      const recs = tl.getBackgroundRecords(i) || [];
+      tl.setBackgroundRecords(i, fresh.concat(recs));
+      tl.scheduleDraw();
+    }
+    pbRecFloor[i] = from;
+    // Terminate at the start of history, or after one extra chunk when the extent
+    // is unknown (endpoint failed) so a runaway loop can't form.
+    if (earliest == null || from <= earliest) pbRecPageDone[i] = true;
+  } catch {
+    // A failed page stops pagination for this camera so a persistently
+    // failing endpoint can't spin the requestMore loop forever. Stale
+    // generations leave the (already reset) state alone.
+    if (gen === pbBuildGen) pbRecPageDone[i] = true;
+  } finally {
+    if (gen === pbBuildGen) pbRecPageLoading[i] = false;
   }
-  pbRecFloor[i] = from;
-  // Terminate at the start of history, or after one extra chunk when the extent
-  // is unknown (endpoint failed) so a runaway loop can't form.
-  if (earliest == null || from <= earliest) pbRecPageDone[i] = true;
-  pbRecPageLoading[i] = false;
 }
 
 export async function loadPlaybackBlob(camId, start, duration, opts = {}) {
@@ -285,7 +319,7 @@ export async function loadPlaybackBlob(camId, start, duration, opts = {}) {
   if (opts.fillGaps === false) params.set("fill_gaps", "false");
   const r = await apiFetch(
     `/api/camera/${encodeURIComponent(camId)}/recordings/get?${params}`,
-    { signal: opts.signal },
+    { signal: opts.signal, timeoutMs: opts.timeoutMs ?? 120_000 },
   );
   if (!r.ok) {
     let detail = `HTTP ${r.status}`;
@@ -345,12 +379,18 @@ export async function buildPlaybackTimeline(filtered) {
   tl.setCanvas(canvas);
 
   const buildStart = Date.now();
+  // A camera whose fetch fails (403/5xx — see httpFailure) still yields its
+  // empty slot so one bad camera can't blank the whole wall; loadFailed
+  // toasts once below instead of per camera.
+  let loadFailed = false;
+  const quiet = (p, empty) => p.catch(() => { loadFailed = true; return empty; });
   const [results, events, earliests] = await Promise.all([
-    Promise.all(filtered.map((c) => fetchRecordings(c.id))),
-    Promise.all(filtered.map((c) => fetchEvents(c.id))),
-    Promise.all(filtered.map((c) => fetchRecordingStart(c.id))),
+    Promise.all(filtered.map((c) => quiet(fetchRecordings(c.id), []))),
+    Promise.all(filtered.map((c) => quiet(fetchEvents(c.id), []))),
+    Promise.all(filtered.map((c) => quiet(fetchRecordingStart(c.id), null))),
   ]);
   if (myGen !== pbBuildGen) return null;
+  if (loadFailed) toast(t("pb.load_error"), { type: "error" });
 
   for (let i = 0; i < filtered.length; i++) {
     tl.setBackgroundRecords(i, results[i]);
@@ -485,11 +525,47 @@ export function teardownPlaybackTimeline() {
   pbLive = false;
   if (pbRefreshTimer) { clearInterval(pbRefreshTimer); pbRefreshTimer = null; }
   pbRefreshing = false;
+  suspendedByVisibility = false;
+  suspendedAutoUnpause = false;
   killVods();
   pbTimeline = null;
   pbCams = [];
   const canvas = $("#pb-canvas");
   if (canvas) canvas.style.height = "";
+}
+
+// suspendPlayback freezes the playback session while the tab is hidden: the
+// wall-clock cursor (Date.now()-based) would otherwise keep advancing while
+// the videos are paused by the wall's visibility handler, so returning to
+// the tab would land the cursor minutes ahead of the frame on screen —
+// firing bogus "No recording" overlays and mis-stamping clips/share links.
+// Stops both background tickers and, when the session was playing, pauses
+// it through setVodPaused so the resume adjustment re-anchors the cursor.
+// A pause the user initiated themselves is remembered but not auto-resumed.
+export function suspendPlayback() {
+  if (suspendedByVisibility) return;
+  suspendedByVisibility = true;
+  suspendedAutoUnpause = !vodPaused && vodPlaybackStartTime > 0;
+  if (pbRefreshTimer) { clearInterval(pbRefreshTimer); pbRefreshTimer = null; }
+  if (vodCursorTimer) { clearInterval(vodCursorTimer); vodCursorTimer = null; }
+  if (suspendedAutoUnpause) setVodPaused(true);
+}
+
+// resumePlayback reverses suspendPlayback: unpauses only what we paused
+// (setVodPaused's resume path shifts vodPlaybackStartTime by the hidden
+// duration, so the cursor continues from where it left off), then restarts
+// the tickers if the timeline is still alive. No-op when not suspended.
+export function resumePlayback() {
+  if (!suspendedByVisibility) return;
+  suspendedByVisibility = false;
+  if (suspendedAutoUnpause) {
+    suspendedAutoUnpause = false;
+    setVodPaused(false);
+  }
+  if (!pbTimeline) return;
+  if (pbRefreshTimer) clearInterval(pbRefreshTimer);
+  pbRefreshTimer = setInterval(refreshTimelineEdge, PB_REFRESH_INTERVAL_MS);
+  if (vodPlaybackStartTime > 0 && !vodPaused) startVodCursor();
 }
 
 function resizePbCanvas() {
@@ -839,6 +915,7 @@ let vodPlaybackStartTime = 0;           // Date.now() at the start of the curren
 let vodPlaybackStartMsec = 0;           // wall-clock of the scrub position
 let vodPaused = false;                  // wall-clock cursor respects user pause
 let vodPausedAt = 0;                    // Date.now() when paused (for elapsed adjustment on resume)
+let vodStartGen = 0;                    // bumped by killVods; a startVodPlayback that awaited across a bump is stale
 
 // vodCursorMsec maps a real-time instant to the wall-clock the playback is
 // showing. The videos run at pbSpeed, so a second of real time advances the
@@ -879,7 +956,19 @@ function showTileBuffering(tile) {
   if (el) el.classList.remove("wall-connection-lost");
 }
 
+// wireTileBuffering shows/hides the tile's buffering overlay on the video's
+// waiting/playing events. The <video> element is reused across gap exits
+// (reinitTileVideo), so wire once per element — otherwise every gap crossing
+// stacks another pair of handlers on the same video.
+function wireTileBuffering(video, tile) {
+  if (video._bufferingWired) return;
+  video._bufferingWired = true;
+  video.addEventListener("waiting", () => showTileBuffering(tile));
+  video.addEventListener("playing", () => hideTileBuffering(tile));
+}
+
 export function killVods() {
+  vodStartGen++;
   if (vodCursorTimer) { clearInterval(vodCursorTimer); vodCursorTimer = null; }
   for (const h of vodInstances.values()) { try { h.destroy(); } catch {} }
   vodInstances.clear();
@@ -887,6 +976,8 @@ export function killVods() {
   vodPlaybackStartMsec = 0;
   vodPaused = false;
   vodPausedAt = 0;
+  suspendedByVisibility = false;
+  suspendedAutoUnpause = false;
   // Sweep both overlay kinds: .wall-gap-overlay (transient, cursor in a gap)
   // and the standalone .wall-no-recording that showVodNoRecording puts in
   // place of the <video>. The gap overlays also carry .wall-no-recording, so
@@ -953,6 +1044,79 @@ function showVodNoRecording(tile) {
   tile.dataset.mode = "playback-no-data";
 }
 
+// showVodError paints a retryable failure overlay — a network drop, an
+// expired token, a 5xx — which is NOT the same as an empty archive. Painting
+// "No recording" here used to hide real outages behind a plausible lie and
+// offered no way back without a full scrub.
+function showVodError(tile, retry) {
+  for (const o of tile.querySelectorAll(".wall-gap-overlay")) o.remove();
+  const v = tile.querySelector("video");
+  const msg = document.createElement("div");
+  msg.className = "wall-no-recording wall-status wall-vod-error";
+  msg.innerHTML = `<div class='wall-no-recording-icon'>${icon("alert-triangle")}</div><div>${t("playback.load_failed")}</div>`;
+  const btn = document.createElement("button");
+  btn.className = "wall-retry-btn";
+  btn.type = "button";
+  btn.textContent = t("retry");
+  btn.addEventListener("click", (e) => { e.stopPropagation(); retry(); });
+  msg.appendChild(btn);
+  if (v) v.replaceWith(msg); else tile.appendChild(msg);
+  tile.dataset.mode = "playback-no-data";
+}
+
+// attachVodHls wires one tile's HLS controller: lazy hls.js must already be
+// loaded. Fatal errors are split by cause — a 404/204 from the playlist or
+// segment endpoint genuinely means "nothing recorded in this window"; every
+// other fatal (network, 5xx, auth, decoder) gets a retryable error overlay
+// instead of masquerading as an empty archive.
+function attachVodHls(tile, cam, video, startMsec) {
+  hideTileBuffering(tile);
+  wireTileBuffering(video, tile);
+  const existing = vodInstances.get(cam.id);
+  if (existing) { try { existing.destroy(); } catch {} }
+  vodInstances.delete(cam.id);
+
+  const hls = new Hls({
+    maxBufferLength: vodMaxBufferLength(),
+    xhrSetup: (xhr) => { const tk = token(); if (tk) xhr.setRequestHeader("Authorization", `Bearer ${tk}`); },
+  });
+  // Respect a pause made while the playlist loaded (or before a Retry).
+  hls.on(Hls.Events.MANIFEST_PARSED, () => { if (!vodPaused) video.play().catch(() => {}); });
+  hls.on(Hls.Events.ERROR, (_e, data) => {
+    hideTileBuffering(tile);
+    if (!data || !data.fatal) return;
+    try { hls.destroy(); } catch {}
+    vodInstances.delete(cam.id);
+    const code = data.response?.code;
+    if (code === 404 || code === 204) {
+      showVodNoRecording(tile);
+      return;
+    }
+    // Retry at the cursor's position at click time, not where this instance
+    // started: the other tiles kept playing, so the old start is stale.
+    showVodError(tile, () => restartTileVod(tile, cam, vodPaused ? vodCursorMsec(vodPausedAt) : vodCursorMsec()));
+  });
+  hls.loadSource(vodPlaylistUrl(cam.id, startMsec));
+  hls.attachMedia(video);
+  video.playbackRate = pbSpeed;
+  vodInstances.set(cam.id, hls);
+}
+
+// restartTileVod restores a clean <video> (an error overlay may have replaced
+// it) and reattaches HLS at startMsec — the Retry path for showVodError.
+function restartTileVod(tile, cam, startMsec) {
+  for (const o of tile.querySelectorAll(".wall-no-recording")) o.remove();
+  let video = tile.querySelector("video");
+  if (!video) {
+    video = document.createElement("video");
+    video.autoplay = true; video.playsInline = true; video.muted = true;
+    video.poster = tile.dataset.poster || "/img/camera-banner.png";
+    tile.appendChild(video);
+  }
+  tile.dataset.mode = "playback";
+  attachVodHls(tile, cam, video, startMsec);
+}
+
 // setTileGapState drives the per-tile gap state machine. Each tile is
 // independent so a camera with recording continues playing while a
 // camera without recording (cursor in a gap) is paused + overlaid.
@@ -1011,45 +1175,52 @@ function vodMaxBufferLength() {
   return 30;
 }
 
+// ensureHls lazy-loads the vendored hls.js on first VOD use, so live-only
+// sessions never download it (~400KB, ~125KB gzipped). The <script> tag used
+// to be unconditional in index.html. Resolves true when window.Hls is usable;
+// never rejects (load failure counts as unusable, like an old browser).
+let hlsLoad = null;
+function ensureHls() {
+  if (window.Hls) return Promise.resolve(true);
+  if (!hlsLoad) {
+    hlsLoad = new Promise((resolve) => {
+      const s = document.createElement("script");
+      s.src = "hls.min.js";
+      s.onload = () => resolve(true);
+      s.onerror = () => resolve(false);
+      document.head.appendChild(s);
+    });
+  }
+  return hlsLoad;
+}
+
 // reinitTileVideo rebuilds the HLS instance for one tile so playback
 // resumes at cursorMsec (the cursor's current wall-clock). The existing
 // video element is reused; only the HLS controller is torn down and a
 // fresh one is attached loading the playlist from cursorMsec.
 function reinitTileVideo(tile, cam, cursorMsec) {
-  hideTileBuffering(tile);
-  const existing = vodInstances.get(cam.id);
-  if (existing) { try { existing.destroy(); } catch {} }
-  vodInstances.delete(cam.id);
-
   const video = tile.querySelector("video");
   if (!video) return;
   if (!window.Hls || !Hls.isSupported()) return; // defensive: same guard startVodPlayback uses
-
-  const hls = new Hls({
-    maxBufferLength: vodMaxBufferLength(),
-    xhrSetup: (xhr) => { const t = token(); if (t) xhr.setRequestHeader("Authorization", `Bearer ${t}`); },
-  });
-  hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
-  hls.on(Hls.Events.ERROR, (_e, data) => {
-    if (data && data.fatal) {
-      try { hls.destroy(); } catch {}
-      vodInstances.delete(cam.id);
-      showVodNoRecording(tile);
-    }
-  });
-  hls.loadSource(vodPlaylistUrl(cam.id, cursorMsec));
-  hls.attachMedia(video);
-  video.playbackRate = pbSpeed;
-  vodInstances.set(cam.id, hls);
+  attachVodHls(tile, cam, video, cursorMsec);
 }
 
 // startVodPlayback (re)starts VOD playback for every camera tile at
 // startMsec. Anchor the cursor to wall-clock first so the per-tile gap
 // check (which keys off vodPlaybackStartTime) sees the correct value
-// before the first HLS instance is created.
-export function startVodPlayback(cams, startMsec) {
+// before the first HLS instance is created. Async only for the lazy hls.js
+// load — the synchronous teardown (killVods) still runs immediately, so
+// callers stay fire-and-forget.
+export async function startVodPlayback(cams, startMsec) {
   killVods();
-  if (!window.Hls || !Hls.isSupported()) {
+  const gen = vodStartGen;
+  const usable = await ensureHls();
+  // The first hls.js load can take a while; if the timeline was torn down
+  // (back to live) or another scrub started meanwhile, this call is stale —
+  // carrying on would swap the <video> of whatever tiles now carry these
+  // camera ids (the live wall's) and leave a cursor timer with no timeline.
+  if (gen !== vodStartGen || !pbTimeline) return;
+  if (!usable || !Hls.isSupported()) {
     for (const cam of cams) {
       const tile = tileOf(cam.id);
       const ph = tile && tile._loadingPlaceholder;
@@ -1069,8 +1240,6 @@ export function startVodPlayback(cams, startMsec) {
     video.autoplay = true; video.playsInline = true; video.muted = true;
     video.playbackRate = pbSpeed;
     video.poster = tile.dataset.poster || "/img/camera-banner.png";
-    video.addEventListener("waiting", () => showTileBuffering(tile));
-    video.addEventListener("playing", () => hideTileBuffering(tile));
     const ph = tile._loadingPlaceholder;
     if (ph) { ph.replaceWith(video); tile._loadingPlaceholder = null; }
     else {
@@ -1078,23 +1247,7 @@ export function startVodPlayback(cams, startMsec) {
       if (existing) existing.replaceWith(video); else tile.appendChild(video);
     }
     tile.dataset.mode = "playback";
-
-    const hls = new Hls({
-      maxBufferLength: vodMaxBufferLength(),
-      xhrSetup: (xhr) => { const t = token(); if (t) xhr.setRequestHeader("Authorization", `Bearer ${t}`); },
-    });
-    hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
-    hls.on(Hls.Events.ERROR, (_e, data) => {
-      hideTileBuffering(tile);
-      if (data && data.fatal) {
-        try { hls.destroy(); } catch {}
-        vodInstances.delete(cam.id);
-        showVodNoRecording(tile);
-      }
-    });
-    hls.loadSource(vodPlaylistUrl(cam.id, startMsec));
-    hls.attachMedia(video);
-    vodInstances.set(cam.id, hls);
+    attachVodHls(tile, cam, video, startMsec);
   }
   vodPaused = false;
   setPlayButtonState(false);
@@ -1140,8 +1293,8 @@ export function initPlaybackKeys() {
   // on Space and any focused button has fired).
   document.addEventListener("keydown", (e) => {
     if (getState().viewMode !== "playback") return;
-    const t = e.target;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    const tgt = e.target;
+    if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable)) return;
     if (!pbTimeline) return;
     if (e.key === "j" || e.key === "l") {
       e.preventDefault();

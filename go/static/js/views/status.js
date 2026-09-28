@@ -10,7 +10,7 @@ import { formatBytes, formatUptime } from "../util/format.js";
 import { icon as svgIcon } from "../ui/icons.js";
 import { moveGlobalControlsTo, closeOverlayViews, backLabel } from "./app-shell.js";
 import { closeUserMenu } from "../ui/user-menu.js";
-import { setOverlay } from "../state.js";
+import { setOverlay, on } from "../state.js";
 import { t } from "../i18n.js";
 
 const REFRESH_MS = 10_000; // status view auto-refresh cadence while open
@@ -233,4 +233,9 @@ export function initStatus() {
   document.getElementById("status-back")?.addEventListener("click", () => setOverlay(null));
   document.getElementById("status-refresh")?.addEventListener("click", () => load());
   document.getElementById("disk-alert-open")?.addEventListener("click", () => setOverlay("status"));
+  // Language switch: the panel bakes t() strings into innerHTML — repaint if open.
+  on("lang", () => {
+    const v = document.getElementById("status-view");
+    if (v && !v.hidden) load();
+  });
 }

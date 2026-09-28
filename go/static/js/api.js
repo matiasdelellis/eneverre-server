@@ -24,12 +24,12 @@ import { getState, setCamerasCache } from "./state.js";
  */
 
 /**
- * Camera object as returned by GET /api/cameras. Field set depends on the
- * active mode (embedded [media] vs none):
- *  - rtsp:     RTSP relay URL (embedded: relay with rotating credentials;
- *             otherwise: the INI `source` value as-is)
- *  - live_mse: same-origin MSE fMP4 path (embedded: set; otherwise absent).
- *              The web UI plays live from this URL.
+ * Camera object as returned by GET /api/cameras. The embedded engine is the
+ * only streaming mode and is always on for cameras with a `source` URL:
+ *  - rtsp:     RTSP relay URL with rotating credentials (withheld while the
+ *             camera is in privacy or off-hours).
+ *  - live_mse: same-origin MSE fMP4 path (withheld under the same conditions,
+ *             or when the camera opted out). The web UI plays live from this URL.
  *  - source/backchannel/thingino_*: NOT exposed (stripped server-side).
  * @typedef {object} Camera
  * @property {string} id
@@ -55,6 +55,36 @@ export function token() {
   return localStorage.getItem(TOKEN_KEY);
 }
 
+// Default per-request timeout. The server's Read timeout is 5m for regular
+// endpoints — waiting that long with a disabled submit button is worse than
+// failing fast; callers with legitimately slow work (RTSP probe, clip
+// download) pass a larger timeoutMs.
+const DEFAULT_TIMEOUT_MS = 15_000;
+
+// joinSignals merges an optional caller AbortSignal with a timeout signal.
+// AbortSignal.any is widely available in 2026; the fallback composes the two
+// manually for older engines (the timeout always fires, the caller signal
+// may already be aborted).
+function joinSignals(callerSignal, timeoutMs) {
+  const timeout = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null;
+  if (!timeout) return callerSignal || null;
+  if (!callerSignal) return timeout;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([callerSignal, timeout]);
+  const ctrl = new AbortController();
+  const onAbort = () => ctrl.abort(callerSignal.reason);
+  if (callerSignal.aborted) onAbort();
+  else callerSignal.addEventListener("abort", onAbort, { once: true });
+  timeout.addEventListener("abort", () => ctrl.abort(timeout.reason), { once: true });
+  return ctrl.signal;
+}
+
+// isTimeoutError distinguishes our AbortSignal.timeout from a caller-initiated
+// abort (e.g. a superseded request): a timeout carries a TimeoutError name.
+function isTimeoutError(err) {
+  return err && (err.name === "TimeoutError" ||
+    (err.name === "AbortError" && err.message && err.message.includes("timeout")));
+}
+
 // Single-flight guard: concurrent 401s (a wall of tiles expiring together)
 // must produce ONE refresh call — the server rotates the refresh token
 // atomically, so a second concurrent attempt with the same token would fail
@@ -71,24 +101,35 @@ export function refreshSession() {
   if (!rt) return Promise.resolve(false);
   if (!refreshing) {
     refreshing = (async () => {
-      try {
-        const r = await fetch("/api/auth/refresh", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refresh_token: rt }),
-        });
-        if (!r.ok) {
-          // Another tab may have rotated the pair first; if the stored token
-          // changed under us, its refresh succeeded and we can ride it.
-          return get(REFRESH_KEY) !== rt;
+      // A network blip at the moment of expiry must not kill a valid session:
+      // retry once after a short pause before giving up. Only a definitive
+      // non-ok response (or a second network failure) ends the attempt.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const r = await fetch("/api/auth/refresh", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refresh_token: rt }),
+            signal: joinSignals(null, DEFAULT_TIMEOUT_MS),
+          });
+          if (!r.ok) {
+            // Another tab may have rotated the pair first; if the stored token
+            // changed under us, its refresh succeeded and we can ride it.
+            return get(REFRESH_KEY) !== rt;
+          }
+          const data = await r.json();
+          set(TOKEN_KEY, data.token);
+          set(REFRESH_KEY, data.refresh_token);
+          return true;
+        } catch {
+          if (attempt === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            continue;
+          }
+          return false;
         }
-        const data = await r.json();
-        set(TOKEN_KEY, data.token);
-        set(REFRESH_KEY, data.refresh_token);
-        return true;
-      } catch {
-        return false;
       }
+      return false;
     })();
     refreshing.finally(() => { refreshing = null; });
   }
@@ -104,19 +145,32 @@ export function refreshSession() {
  * api() below wraps it for JSON endpoints.
  */
 export async function apiFetch(path, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const withAuth = () => {
     const headers = { ...(opts.headers || {}) };
     const t = token();
     if (t) headers["Authorization"] = `Bearer ${t}`;
-    return { ...opts, headers };
+    const { timeoutMs: _ignored, headers: _h, ...rest } = opts;
+    return { ...rest, headers, signal: joinSignals(opts.signal, timeoutMs) };
   };
-  let r = await fetch(path, withAuth());
+  let r;
+  try {
+    r = await fetch(path, withAuth());
+  } catch (err) {
+    if (isTimeoutError(err)) throw new Error("Request timed out");
+    throw err;
+  }
   // The auth endpoints answer 401 as part of their normal contract (wrong
   // password, consumed refresh token) — recovering or logging out on those
   // would loop.
   if (r.status === 401 && !path.startsWith("/api/auth/")) {
     if (await refreshSession()) {
-      r = await fetch(path, withAuth());
+      try {
+        r = await fetch(path, withAuth());
+      } catch (err) {
+        if (isTimeoutError(err)) throw new Error("Request timed out");
+        throw err;
+      }
     }
     if (r.status === 401) onUnauthorized();
   }
@@ -140,11 +194,42 @@ export async function api(path, opts = {}) {
 }
 
 /** @returns {Promise<Camera[]>} */
-export async function fetchCameras() {
+// Camera-list cache: shared by the wall, sidebar, PTZ and the admin list.
+// - TTL: privacy/schedule_off/connection can change from another client or
+//   tab; without a TTL the first fetch of a session stuck forever. 30s is
+//   short enough that a returning tab sees fresh state on the next load and
+//   long enough that filter-click storms don't refetch.
+// - In-flight dedup: loadWall and updatePtzModal both call fetchCameras on
+//   every filter change; with an empty cache they used to race two GETs.
+const CAMERAS_TTL_MS = 30_000;
+let camerasFetchedAt = 0;
+let camerasInflight = null;
+// camerasGen is bumped by invalidateCameras. A request started before an
+// invalidation carries the pre-mutation list: it must neither be joined by a
+// later caller nor be cached as fresh when it lands.
+let camerasGen = 0;
+let camerasInflightGen = -1;
+
+export async function fetchCameras(opts = {}) {
   const s = getState();
-  if (!s.camerasCache) s.camerasCache = await api("/api/cameras");
-  setCamerasCache(s.camerasCache);
-  return s.camerasCache;
+  const fresh = s.camerasCache && (Date.now() - camerasFetchedAt) < CAMERAS_TTL_MS;
+  if (fresh && opts.force !== true) return s.camerasCache;
+  if (!camerasInflight || camerasInflightGen !== camerasGen) {
+    const gen = camerasGen;
+    const req = api("/api/cameras")
+      .then((cams) => {
+        if (gen === camerasGen) {
+          s.camerasCache = cams;
+          setCamerasCache(cams);
+          camerasFetchedAt = Date.now();
+        }
+        return cams;
+      })
+      .finally(() => { if (camerasInflight === req) camerasInflight = null; });
+    camerasInflight = req;
+    camerasInflightGen = gen;
+  }
+  return camerasInflight;
 }
 
 /**
@@ -152,7 +237,9 @@ export async function fetchCameras() {
  * the server. Call after a create/delete so the change shows up everywhere.
  */
 export function invalidateCameras() {
+  camerasGen++;
   setCamerasCache(null);
+  camerasFetchedAt = 0;
 }
 
 /** Create a camera. body is the create request; returns the new Camera. */
@@ -212,6 +299,7 @@ export async function probeCamera(source, transport) {
   return api("/api/cameras/probe", {
     method: "POST",
     body: JSON.stringify({ source, transport }),
+    timeoutMs: 60_000, // RTSP DESCRIBE against an unreachable camera can hang
   });
 }
 
@@ -225,6 +313,7 @@ export async function probeThingino(thingino_url, thingino_api_key) {
   return api("/api/cameras/probe-thingino", {
     method: "POST",
     body: JSON.stringify({ thingino_url, thingino_api_key }),
+    timeoutMs: 30_000,
   });
 }
 

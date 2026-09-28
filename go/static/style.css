@@ -1231,6 +1231,10 @@ button.icon-btn {
   font-size: 32px;
   opacity: 0.5;
 }
+.wall-vod-error .wall-no-recording-icon {
+  color: var(--danger);
+  opacity: 0.8;
+}
 .wall-buffering {
   position: absolute;
   inset: 0;

@@ -1,19 +1,21 @@
 import { escapeHtml } from "../util/dom.js";
 import {
-  api, createCamera, updateCamera, getCameraConfig, deleteCamera, probeCamera, probeThingino, invalidateCameras, fetchStatus,
+  createCamera, updateCamera, getCameraConfig, deleteCamera, probeCamera, probeThingino, invalidateCameras, fetchCameras, fetchStatus,
 } from "../api.js";
-import { getState, setOverlay } from "../state.js";
+import { getState, setOverlay, on } from "../state.js";
 import { confirmModal } from "../ui/dialog.js";
 import { closeUserMenu } from "../ui/user-menu.js";
 import { moveGlobalControlsTo, closeOverlayViews, backLabel } from "./app-shell.js";
 import { t } from "../i18n.js";
 import { trapFocus } from "../util/focus-trap.js";
+import { registerModalEsc } from "../util/modal-esc.js";
+import { deleteCachedThumb } from "../util/thumb-cache.js";
 import { openSchedules, populateScheduleSelect } from "./schedules.js";
 
 // Focus-trap release for the open wizard modal (null when closed).
 let wizardRelease = null;
 
-let camerasCache = null; // [Camera, ...] as returned by GET /api/cameras
+let camerasCache = null; // admin list mirror, refreshed via fetchCameras({force})
 let wizardStep = 1;
 let editingId = null; // non-null when the wizard is editing an existing camera
 const LAST_STEP = 5;
@@ -80,7 +82,9 @@ function setStatus(msg, kind) {
 
 async function loadCameras() {
   try {
-    camerasCache = await api("/api/cameras");
+    // force: the admin list is a management surface — always show the
+    // server's current state, never a 30s-stale shared cache entry.
+    camerasCache = await fetchCameras({ force: true });
   } catch (e) {
     setStatus(t("cameras.failed_load", { msg: e.message }));
     camerasCache = [];
@@ -152,6 +156,7 @@ async function onCameraActionClick(e, c) {
   try {
     await deleteCamera(c.id);
     invalidateCameras();
+    deleteCachedThumb(c.id);
     setStatus(t("cameras.deleted", { id: c.id }), "ok");
     await loadCameras();
     refreshUnderlyingViews();
@@ -415,11 +420,11 @@ async function onProbe() {
     const r = await probeCamera(source, transport);
     if (!r.ok) {
       result.className = "cam-probe-result error";
-      result.textContent = t("cameras.probe_failed", { error: r.error || "unreachable" });
+      result.textContent = t("cameras.probe_failed", { error: r.error || t("cameras.probe_unreachable") });
       return;
     }
     result.className = "cam-probe-result ok";
-    const codecs = (r.codecs || []).join(", ") || "no codecs reported";
+    const codecs = (r.codecs || []).join(", ") || t("cameras.probe_no_codecs");
     const dims = r.width && r.height ? ` · ${r.width}×${r.height}` : "";
     const bc = r.backchannel && r.backchannel.supported;
     const talk = bc
@@ -471,7 +476,7 @@ async function onProbeThingino() {
     const r = await probeThingino(url, apiKey);
     if (!r.ok) {
       result.className = "cam-probe-result error";
-      result.textContent = t("cameras.probe_failed", { error: r.error || "unreachable" });
+      result.textContent = t("cameras.probe_failed", { error: r.error || t("cameras.probe_unreachable") });
       return;
     }
     result.className = "cam-probe-result ok";
@@ -546,10 +551,10 @@ function buildReview() {
     [t("cameras.review_location"), b.location || "—"],
     [t("cameras.review_enabled"), b.enabled ? t("cameras.yes") : t("cameras.no")],
     [t("cameras.review_source"), maskSource(b.source)],
-    [t("cameras.review_transport"), b.transport || "auto"],
-    [t("cameras.review_sinks"), [b.record && "record", b.mse && "MSE", b.relay && "relay"].filter(Boolean).join(", ") || "none"],
+    [t("cameras.review_transport"), b.transport || t("cameras.transport_auto")],
+    [t("cameras.review_sinks"), [b.record && t("cameras.sink_record"), b.mse && t("cameras.sink_mse"), b.relay && t("cameras.sink_relay")].filter(Boolean).join(", ") || t("cameras.sink_none")],
     [t("wizard.schedule"), scheduleLabel()],
-    [t("cameras.review_resolution"), b.width && b.height ? `${b.width}×${b.height}` : "default"],
+    [t("cameras.review_resolution"), b.width && b.height ? `${b.width}×${b.height}` : t("cameras.resolution_default")],
     [t("cameras.review_privacy"), b.privacy ? t("cameras.yes") : t("cameras.no")],
     [t("cameras.review_talk"), b.backchannel ? t("cameras.yes") : t("cameras.no")],
     [t("cameras.review_snapshot"), b.snapshot_url ? t("cameras.yes") : t("cameras.no")],
@@ -612,6 +617,7 @@ async function refreshUnderlyingViews() {
 // --- init -----------------------------------------------------------------
 
 export function initCameras() {
+  registerModalEsc("#cam-wizard-modal", closeWizard);
   document.getElementById("cameras-btn")?.addEventListener("click", () => { closeUserMenu(); setOverlay("cameras"); });
   document.getElementById("cameras-back")?.addEventListener("click", () => setOverlay(null));
   document.getElementById("cameras-new")?.addEventListener("click", () => openWizard());
@@ -651,4 +657,6 @@ export function initCameras() {
   if (modal) {
     modal.addEventListener("click", (e) => { if (e.target === modal) closeWizard(); });
   }
+  // Language switch: rows bake t() strings — repaint the list if the view is open.
+  on("lang", () => { if (isCamerasViewOpen()) loadCameras(); });
 }

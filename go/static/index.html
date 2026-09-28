@@ -31,7 +31,7 @@
   </script>
 </head>
 <body>
-  <div id="boot" class="boot-overlay" aria-hidden="true">
+  <div id="boot" class="boot-overlay">
     <div class="boot-spinner" role="status" aria-label="Loading"></div>
   </div>
 
@@ -144,7 +144,7 @@
                its own full-width row with `flex-wrap` alone; CSS `order` restores
                the desktop reading order (transport | timeline | tools). -->
           <div id="playback-bar" class="playback-bar" hidden>
-            <canvas id="pb-canvas" class="pb-canvas"></canvas>
+            <canvas id="pb-canvas" class="pb-canvas" role="img" data-i18n-aria-label="playback.timeline_label" aria-label="Recording timeline"></canvas>
             <div class="pb-transport">
               <button id="pb-prev-rec" class="pb-btn" data-i18n-title="pb.prev_recording" title="Previous recording" data-i18n-aria-label="pb.prev_recording" aria-label="Previous recording" data-icon="skip-back"></button>
               <button id="pb-play" class="pb-btn" data-i18n-title="pb.play_pause" title="Play/Pause" aria-label="Play" data-icon="play"></button>
@@ -182,7 +182,7 @@
     </div>
   </div>
 
-  <div id="ptz-modal" class="ptz-modal" hidden>
+  <div id="ptz-modal" class="ptz-modal" role="dialog" aria-modal="false" aria-labelledby="ptz-modal-title" hidden>
     <header class="ptz-modal-header" id="ptz-modal-handle">
       <h2 id="ptz-modal-title" data-i18n="ptz.title">PTZ</h2>
       <button id="ptz-modal-close" class="ghost" data-i18n-aria-label="ptz.close" aria-label="Close" data-icon="x"></button>
@@ -619,12 +619,9 @@
     </div>
   </div>
 
-  <!-- defer so the 400KB HLS library never blocks HTML parsing / first paint
-       (it's only needed once the user opens playback). Deferred classic
-       scripts still run in document order before the deferred module below,
-       so window.Hls is guaranteed present by the time app.js — and any
-       playback code it later triggers — runs. -->
-  <script src="hls.min.js" defer></script>
+  <!-- hls.js is NOT loaded here: playback.js lazy-loads hls.min.js on first
+       VOD use (ensureHls), so live-only sessions never download the ~400KB
+       library. -->
   <script src="app.js" type="module"></script>
 </body>
 </html>

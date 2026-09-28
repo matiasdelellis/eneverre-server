@@ -5,6 +5,7 @@ import {
   TOKEN_KEY, REFRESH_KEY, USER_KEY, VIEW_KEY, USERCODE_KEY, USERCODE_NAME_KEY,
 } from "../util/storage.js";
 import { api, token, setOnUnauthorized } from "../api.js";
+import { clearThumbCache } from "../util/thumb-cache.js";
 import { t } from "../i18n.js";
 import {
   getState, setViewMode as setViewModeState, setWallFilter,
@@ -82,13 +83,9 @@ export async function logout(silent = false) {
   // on the next login and the sidebar stays empty until a full page reload.
   delete sideScroll.dataset.loaded;
   stopSidebarThumbRefresh();
-  // Drop cached sidebar thumbnails so the next login captures them
-  // fresh under the new session. `thumb_*` keys are the only ones
-  // written by captureFrame().
-  for (let i = localStorage.length - 1; i >= 0; i--) {
-    const k = localStorage.key(i);
-    if (k && k.startsWith("thumb_")) remove(k);
-  }
+  // Drop cached thumbnails (memory + localStorage) so the next login
+  // captures them fresh under the new session.
+  clearThumbCache();
   resetOnLogout();
   sessionRemove(VIEW_KEY);
   remove(TOKEN_KEY);

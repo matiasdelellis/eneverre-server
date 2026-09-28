@@ -23,6 +23,8 @@ import { t } from "../i18n.js";
 
 let currentCam = null;      // selected single camera that supports talk, or null
 let armed = false;          // mic permission granted + stream held
+let arming = false;         // a getUserMedia request is in flight
+let armGen = 0;             // bumped by disarm; an arm() that awaited across it is stale
 let stream = null;          // the armed mic MediaStream (this module owns it)
 let client = null;          // active talk client during a session
 let sessionState = "idle";  // "idle" | "connecting" | "talking"
@@ -45,7 +47,12 @@ function renderTopButton() {
 }
 
 async function arm() {
-  if (armed) return;
+  // A second click while the permission prompt is up must not request a
+  // second stream: the first would be overwritten without stop(), leaving
+  // the browser's mic indicator on until reload.
+  if (armed || arming) return;
+  arming = true;
+  const gen = armGen;
   let s;
   try {
     // Resolves without a prompt when the mic is already granted ("o ya lo
@@ -54,11 +61,14 @@ async function arm() {
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
   } catch (err) {
-    alertModal(t("talk.mic_failed", { msg: err.message || err }), { title: t("talk.title") });
+    arming = false;
+    if (gen === armGen) alertModal(t("talk.mic_failed", { msg: err.message || err }), { title: t("talk.title") });
     return;
   }
-  // The selection may have moved while the permission prompt was up.
-  if (!currentCam) { try { s.getTracks().forEach((t) => t.stop()); } catch {} return; }
+  arming = false;
+  // The selection may have moved, or the user disarmed, while the permission
+  // prompt was up.
+  if (!currentCam || gen !== armGen) { try { s.getTracks().forEach((t) => t.stop()); } catch {} return; }
   stream = s;
   armed = true;
   sessionState = "idle";
@@ -67,6 +77,7 @@ async function arm() {
 }
 
 function disarm() {
+  armGen++;
   if (client) { client.userStopped = true; try { client.stop(); } catch {} client = null; }
   if (stream) { try { stream.getTracks().forEach((t) => t.stop()); } catch {} stream = null; }
   armed = false;
@@ -170,8 +181,9 @@ function syncTalk() {
   const changed = (cam?.id || null) !== (currentCam?.id || null);
   currentCam = cam;
   // Leaving the armed camera (switched cams, or left single-cam/live) releases
-  // the mic and any in-flight session.
-  if (armed && changed) disarm();
+  // the mic and any in-flight session — or voids a pending permission prompt,
+  // so the grant doesn't arm the camera the user just left.
+  if ((armed || arming) && changed) disarm();
   renderTopButton();
   syncTalkOverlay();
 }
@@ -184,15 +196,19 @@ export function initTalk() {
   on("wallFilter", syncTalk);
   on("viewMode", syncTalk);
   on("wallRendered", syncTalk);
+  on("lang", syncTalk);
 
   // Space toggles the session while armed (walkie-talkie feel), unless the user
   // is typing. preventDefault stops the page scroll and any focused-button
   // double-activation.
   document.addEventListener("keydown", (e) => {
     if (e.code !== "Space" && e.key !== " ") return;
+    // Already handled (a focused wall tile / sidebar entry activating on
+    // Space): toggling talk too would make one press do two things.
+    if (e.defaultPrevented) return;
     if (!armed || !currentCam || !currentTile()) return;
-    const t = e.target;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    const tgt = e.target;
+    if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable)) return;
     e.preventDefault();
     toggleTalk();
   });

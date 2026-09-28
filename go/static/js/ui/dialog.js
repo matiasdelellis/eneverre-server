@@ -109,7 +109,13 @@ function init() {
   }
   document.addEventListener("keydown", (e) => {
     if (dlg.modal.hidden) return;
-    if (e.key === "Escape") resolve(null);
+    if (e.key === "Escape") {
+      // Mark it handled: by the time later document listeners (the wall's
+      // filter-walk) run, the dialog is already hidden, so they can't tell
+      // this Escape was meant for it otherwise.
+      e.preventDefault();
+      resolve(null);
+    }
   });
 }
 

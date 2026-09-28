@@ -1,9 +1,10 @@
 import { $ } from "../util/dom.js";
 import { get, set } from "../util/storage.js";
-import { getState, setLastPtzCam, setCamerasCache, on } from "../state.js";
-import { api, fetchCameras } from "../api.js";
+import { getState, setLastPtzCam, on } from "../state.js";
+import { api, fetchCameras, invalidateCameras } from "../api.js";
 import { alertModal } from "../ui/dialog.js";
 import { icon } from "../ui/icons.js";
+import { registerModalEsc } from "../util/modal-esc.js";
 import { t } from "../i18n.js";
 
 // Per-click pan/tilt step, in degrees. The old STEP=50 was firmware-native
@@ -217,7 +218,7 @@ async function togglePrivacy(cam) {
   // thumbnail, and re-render the live wall so the tile flips to/from the
   // privacy placeholder immediately.
   cam.privacy = next;
-  setCamerasCache(null);
+  invalidateCameras();
   syncPrivacyButton();
   import("./sidebar.js")
     .then(({ setSidebarPrivacy }) => setSidebarPrivacy(cam.id, next))
@@ -327,10 +328,37 @@ function initPtzDrag() {
 }
 
 function initPtzKeyboard() {
+  // Key-repeat coalescing: holding an arrow fires the OS key-repeat rate
+  // (~15-30/s), which used to mean one POST per repeat — a storm of requests
+  // to the camera firmware and the access log. Deltas accumulate here and a
+  // trailing flush sends ONE move with the total every PTZ_FLUSH_MS, so
+  // scrubbing by holding still works but at a sane request rate.
+  const PTZ_FLUSH_MS = 150;
+  let pendingPan = 0;
+  let pendingTilt = 0;
+  let pendingCamId = null;
+  let flushTimer = null;
+
+  const flushMove = async () => {
+    flushTimer = null;
+    const camId = pendingCamId;
+    const pan = pendingPan;
+    const tilt = pendingTilt;
+    pendingPan = 0;
+    pendingTilt = 0;
+    pendingCamId = null;
+    if (!camId || (!pan && !tilt)) return;
+    try {
+      await api(`/api/camera/${encodeURIComponent(camId)}/ptz/move?pan=${pan}&tilt=${tilt}`, { method: "POST" });
+    } catch (err) {
+      alertModal(t("ptz.error", { msg: err.message }), { title: t("ptz.error_title") });
+    }
+  };
+
   document.addEventListener("keydown", async (e) => {
     const { viewMode, wallFilter, lastPtzCam } = getState();
-    const t = e.target;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    const tgt = e.target;
+    if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable)) return;
 
     // Playback mode: + / - zoom timeline. preventDefault synchronously (before
     // the dynamic import resolves) so the key never triggers a browser default.
@@ -347,9 +375,9 @@ function initPtzKeyboard() {
 
     // Live mode + single cam + PTZ capable: arrow keys move PTZ. Same public
     // unit (degrees) as the dpad, same per-press step. Holding the key fires
-    // native key repeat on the browser side, so the user can scrub by holding
-    // — the server's range clamp still bounds the cumulative travel to a
-    // half revolution per direction.
+    // native key repeat on the browser side, coalesced into one POST per
+    // PTZ_FLUSH_MS above — the server's range clamp still bounds the
+    // cumulative travel to a half revolution per direction.
     if (viewMode === "live" && wallFilter.type === "cam" && lastPtzCam?.capabilities?.ptz) {
       const map = {
         ArrowUp:    { pan: 0,  tilt: -STEP_DEG },
@@ -360,18 +388,20 @@ function initPtzKeyboard() {
       const dir = map[e.key];
       if (dir) {
         e.preventDefault();
-        try {
-          await api(`/api/camera/${encodeURIComponent(lastPtzCam.id)}/ptz/move?pan=${dir.pan}&tilt=${dir.tilt}`, { method: "POST" });
-        } catch (err) {
-          const { alertModal } = await import("../ui/dialog.js");
-          alertModal(`PTZ failed: ${err.message}`, { title: "PTZ error" });
-        }
+        // A different camera selection between repeats: flush the old
+        // camera's delta first so it isn't applied to the new one.
+        if (pendingCamId && pendingCamId !== lastPtzCam.id) await flushMove();
+        pendingCamId = lastPtzCam.id;
+        pendingPan += dir.pan;
+        pendingTilt += dir.tilt;
+        if (!flushTimer) flushTimer = setTimeout(flushMove, PTZ_FLUSH_MS);
       }
     }
   });
 }
 
 export function initPtz() {
+  registerModalEsc("#ptz-modal", hidePtzModal);
   $("#ptz-modal-close")?.addEventListener("click", hidePtzModal);
   $("#ptz-fab")?.addEventListener("click", () => {
     const { lastPtzCam } = getState();
@@ -387,6 +417,10 @@ export function initPtz() {
   // a different cam in the sidebar) or after the wall re-renders its tiles.
   on("wallFilter", () => updatePtzModal());
   on("wallRendered", () => updatePtzModal());
+  on("lang", () => {
+    const modal = $("#ptz-modal");
+    if (modal && !modal.hidden) updatePtzModal();
+  });
 
   // When the viewport crosses the mobile breakpoint, drop any persisted
   // desktop position so the bottom-sheet layout can take over without

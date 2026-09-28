@@ -33,6 +33,7 @@ export function attachMse(cam, video) {
   let abort = null;
   let timer = null;      // latency-control interval for the current connection
   let retry = null;      // pending reconnect timeout
+  let waitingTimer = null; // delayed buffering overlay for the current connection
   let objectUrl = null;
   let reconnectCount = 0;
   const tile = video.closest(".wall-tile");
@@ -50,6 +51,7 @@ export function attachMse(cam, video) {
   const clearConn = () => {
     if (abort) { try { abort.abort(); } catch {} abort = null; }
     if (timer) { clearInterval(timer); timer = null; }
+    if (waitingTimer) { clearTimeout(waitingTimer); waitingTimer = null; }
     if (objectUrl) { try { URL.revokeObjectURL(objectUrl); } catch {} objectUrl = null; }
   };
 
@@ -134,6 +136,11 @@ export function attachMse(cam, video) {
     let info;
     try {
       const r = await apiFetch(infoUrl, { signal });
+      if (r.status === 401) return; // session expired: apiFetch fired the global logout
+      if (!r.ok) {
+        scheduleReconnect(); // transient (camera reconnecting, engine busy) — retry
+        return;
+      }
       info = await r.json();
     } catch {
       scheduleReconnect(); // engine/API momentarily unreachable — keep trying
@@ -189,7 +196,26 @@ export function attachMse(cam, video) {
     let started = false;
     const pump = () => {
       if (!sb || sb.updating || !queue.length) return;
-      try { sb.appendBuffer(queue.shift()); } catch {}
+      try {
+        sb.appendBuffer(queue[0]);
+        queue.shift();
+      } catch (err) {
+        // A full SourceBuffer: evict played history down to a short tail and
+        // retry this chunk on updateend. Dropping it instead would cut an fMP4
+        // fragment out of the stream and corrupt decoding until reconnect.
+        if (err && err.name === "QuotaExceededError" && video.buffered.length) {
+          const s = video.buffered.start(0);
+          const keep = Math.max(s, video.currentTime - 1);
+          if (keep > s) {
+            try { sb.remove(s, keep); return; } catch { /* fall through */ }
+          }
+        }
+        // Anything else (InvalidStateError after a decode error, or a quota
+        // we can't free) means this MediaSource is dead: every later append
+        // would throw too while the reader kept pulling bytes into the void
+        // and the tile sat frozen. Rebuild the pipeline instead.
+        scheduleReconnect();
+      }
     };
     sb.addEventListener("updateend", () => {
       if (!sb.updating && video.buffered.length) {
@@ -224,7 +250,8 @@ export function attachMse(cam, video) {
     // connection is torn down (reconnect / pause / destroy). Without { signal }
     // they stack up on the persistent <video> element on every reconnect — a
     // flaky camera retrying for hours would accumulate hundreds of live handlers.
-    let waitingTimer = null;
+    // waitingTimer lives in the attachMse scope (cleared by clearConn) so a
+    // destroy during the 2s delay can't fire ensureOverlay on a dead tile.
     video.addEventListener("waiting", () => {
       if (!tile || tile.querySelector(".wall-buffering")) return;
       if (!video.buffered.length) {
@@ -245,6 +272,9 @@ export function attachMse(cam, video) {
       removeOverlay();
       setCamStatus(cam.id, "online");
     }, { signal });
+    // A decode error puts the element (and its MediaSource) into a terminal
+    // state that no further append recovers from.
+    video.addEventListener("error", () => scheduleReconnect(), { signal });
 
     timer = setInterval(() => {
       if (!started || !video.buffered.length) return;
@@ -255,7 +285,10 @@ export function attachMse(cam, video) {
     }, 1000);
 
     try {
-      const resp = await apiFetch(streamUrl, { signal });
+      // timeoutMs 0: this is the long-lived chunked live stream — an
+      // inactivity timeout would tear it down every 15s; reconnect logic
+      // below owns recovery instead.
+      const resp = await apiFetch(streamUrl, { signal, timeoutMs: 0 });
       if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
       const reader = resp.body.getReader();
       while (true) {

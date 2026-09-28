@@ -5,7 +5,8 @@ import { api } from "../api.js";
 import { blankToNull, displayName } from "../util/format.js";
 import { alertModal, confirmModal, promptModal } from "../ui/dialog.js";
 import { trapFocus } from "../util/focus-trap.js";
-import { setOverlay } from "../state.js";
+import { registerModalEsc } from "../util/modal-esc.js";
+import { setOverlay, on } from "../state.js";
 
 // Focus-trap release for the open user-edit / my-password modals (null when closed).
 let userEditRelease = null;
@@ -348,21 +349,22 @@ function renderSessions() {
 function renderSessionRow(s, isExpired) {
   const row = document.createElement("div");
   row.className = "session-row" + (isExpired ? " session-row-expired" : "");
-  const created = s.created_at ? new Date(s.created_at * 1000).toLocaleString() : "unknown";
-  const expires = s.expires_at ? new Date(s.expires_at * 1000).toLocaleString() : "unknown";
+  const created = s.created_at ? new Date(s.created_at * 1000).toLocaleString() : t("users.session_unknown");
+  const expires = s.expires_at ? new Date(s.expires_at * 1000).toLocaleString() : t("users.session_unknown");
   const badges = [];
   if (s.is_current) badges.push(`<span class="role-badge role-admin">${t("users.this_device")}</span>`);
   if (isExpired) badges.push(`<span class="role-badge role-user">${t("users.expired")}</span>`);
   const deviceName = s.device_name
     ? escapeHtml(s.device_name)
     : t("users.browser_session");
+  const revokeTitle = s.is_current ? ` title="${escapeHtml(t("users.revoke_title"))}" disabled` : "";
   row.innerHTML = `
     <div>
       <div class="session-device">${deviceName}</div>
       ${badges.join(" ")}
-      <div class="muted session-meta">created ${escapeHtml(created)} · expires ${escapeHtml(expires)}</div>
+      <div class="muted session-meta">${escapeHtml(t("users.session_meta", { created, expires }))}</div>
     </div>
-    <button data-id="${s.id}" ${s.is_current ? "disabled title='" + t("users.revoke_title") + "'" : ""}>
+    <button data-id="${escapeHtml(s.id)}"${revokeTitle}>
       ${t("users.revoke")}
     </button>
   `;
@@ -468,6 +470,8 @@ async function submitMyPassword(e) {
 }
 
 export function initUsers() {
+  registerModalEsc("#user-edit-modal", closeUserEditModal);
+  registerModalEsc("#my-password-modal", closeMyPasswordModal);
   document.getElementById("account-btn")?.addEventListener("click", () => { closeUserMenu(); setOverlay("account"); });
   document.getElementById("users-btn")?.addEventListener("click", () => { closeUserMenu(); setOverlay("users"); });
   document.getElementById("users-back")?.addEventListener("click", () => setOverlay(null));
@@ -490,4 +494,9 @@ export function initUsers() {
       if (e.target === pwModal) closeMyPasswordModal();
     });
   }
+  // Language switch: rows/sessions bake t() strings — repaint if the view is open.
+  on("lang", () => {
+    const v = document.getElementById("users-view");
+    if (v && !v.hidden) enterUsersView();
+  });
 }

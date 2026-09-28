@@ -76,6 +76,24 @@ function pickBuild(builds) {
   return builds.find((b) => b.variant === "universal") || builds[0];
 }
 
+// safeBuildUrl accepts an http(s) URL or a site-relative path; anything else
+// (javascript:, data:, …) returns null so the caller can skip the download
+// link entirely. Other origins are allowed on purpose: the server builds the
+// URL from [updates] public_base_url or the proxy's X-Forwarded-* headers, so
+// a user who reached the UI by its LAN address (or through a scheme-rewriting
+// proxy) legitimately gets a link on the public origin. The manifest comes
+// from our own API, and the scheme check is what stops script URLs.
+function safeBuildUrl(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  try {
+    const u = new URL(raw, location.origin);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.href;
+  } catch {
+    return null;
+  }
+}
+
 function shouldDismiss(manifest) {
   // Per-session dismiss keyed by versionCode. A new release re-prompts even
   // within the same tab. localStorage would survive across sessions; we
@@ -110,12 +128,16 @@ function buildBanner(manifest, kind) {
   text.append(iconEl, main);
 
   const build = pickBuild(manifest.builds);
+  // Only offer an http(s) link (see safeBuildUrl): a tampered/buggy manifest
+  // with javascript: or data: must not become an XSS vector via href.
+  const buildUrl = safeBuildUrl(build && build.url);
+  if (!buildUrl) return null;
 
   const actions = document.createElement("div");
   actions.className = "upgrade-prompt-actions";
   const dl = document.createElement("a");
   dl.className = "upgrade-prompt-dl primary";
-  dl.href = build.url;
+  dl.href = buildUrl;
   // `download` hints the browser to save rather than navigate; on Android
   // it triggers the system download manager which then offers the package
   // installer for .apk files.
@@ -128,13 +150,12 @@ function buildBanner(manifest, kind) {
   dismiss.innerHTML = icon("x");
   actions.append(dl, dismiss);
 
-  el.append(text, actions);
-
   dismiss.addEventListener("click", () => {
     sessionSet(DISMISS_KEY, String(manifest.versionCode));
     el.remove();
   });
 
+  el.append(text, actions);
   return el;
 }
 
@@ -151,6 +172,7 @@ export async function initUpgradePrompt() {
   if (!manifest) return;
   if (shouldDismiss(manifest)) return;
   const banner = buildBanner(manifest, kind);
+  if (!banner) return;
   document.body.appendChild(banner);
   // The CSS transition depends on the element being attached first; force
   // a layout flush before adding the "shown" class so the slide-in plays.

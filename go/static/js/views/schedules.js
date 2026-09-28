@@ -7,6 +7,8 @@ import { fetchSchedules, createSchedule, updateSchedule, deleteSchedule } from "
 import { confirmModal } from "../ui/dialog.js";
 import { t } from "../i18n.js";
 import { trapFocus } from "../util/focus-trap.js";
+import { registerModalEsc } from "../util/modal-esc.js";
+import { on } from "../state.js";
 
 // Display order Monday-first; matches the weekday keys the API uses.
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -33,6 +35,7 @@ const listStatus = (msg, kind) => setErr("schedules-status", msg, kind);
 // --- public API -----------------------------------------------------------
 
 export function initSchedules() {
+  registerModalEsc("#schedules-modal", closeSchedules);
   el("schedule-new")?.addEventListener("click", () => openEditor(null));
   el("schedule-cancel")?.addEventListener("click", showList);
   el("schedules-close")?.addEventListener("click", closeSchedules);
@@ -40,6 +43,17 @@ export function initSchedules() {
   el("schedule-delete")?.addEventListener("click", onDelete);
   const modal = el("schedules-modal");
   modal?.addEventListener("click", (e) => { if (e.target === modal) closeSchedules(); });
+  // Language switch: list rows bake t() — rebuild when the modal is open.
+  on("lang", () => {
+    if (modal && !modal.hidden) {
+      buildDayRows();
+      renderList();
+      if (editingId) {
+        const s = schedulesCache.find((x) => x.id === editingId);
+        if (s) openEditor(s);
+      }
+    }
+  });
 }
 
 // openSchedules shows the manager modal. opts.onClosed runs after the modal
