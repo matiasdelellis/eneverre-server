@@ -25,6 +25,11 @@ const (
 	purgeBatchSize   = 500                   // segments per query + delete batch
 	purgeFileWorkers = 4                     // parallel os.Remove goroutines per batch
 	purgeBatchPause  = 50 * time.Millisecond // yield between batches
+
+	// orphanSweepInterval spaces the full walk of the record tree that catches
+	// files the index-driven sweep can't see (see sweepOrphans). A walk is
+	// O(files on disk), so it runs far less often than clean().
+	orphanSweepInterval = 6 * time.Hour
 )
 
 // Cleaner periodically removes expired recordings.
@@ -52,12 +57,18 @@ func (c *Cleaner) Run(ctx context.Context) {
 	}
 
 	c.clean(ctx)
+	c.sweepOrphans(ctx)
+	lastSweep := time.Now()
 	t := time.NewTicker(c.interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-t.C:
 			c.clean(ctx)
+			if time.Since(lastSweep) >= orphanSweepInterval {
+				c.sweepOrphans(ctx)
+				lastSweep = time.Now()
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -103,6 +114,75 @@ func (c *Cleaner) clean(ctx context.Context) {
 
 	if totalRemoved > 0 {
 		c.Logf("purge pass complete: %d segment(s) removed (older than %s)", totalRemoved, c.Retain)
+	}
+}
+
+// sweepOrphans walks the whole record tree and removes every segment file last
+// written before the retain cutoff, whether or not the index knows about it.
+// clean() only ever sees indexed rows, so without this pass these files would
+// stay on disk forever:
+//
+//   - segments whose index insert failed (insertWithRetry gave up);
+//   - crash leftovers outside recovery.Recover's tail window, or ones it
+//     couldn't parse ("leave it for retention");
+//   - an entire history orphaned by a lost, reset or relocated index.db;
+//   - indexed rows whose recorded duration is bogus (a DTS jump), which
+//     Expired's start+duration test never reaches.
+//
+// The criterion is the file's mtime: a file not written since the cutoff holds
+// nothing newer than it, so this never touches footage clean() would keep. Only
+// paths matching the record-path format are considered, so an unrelated .mp4
+// under the same root is left alone. Matching index rows are dropped with the
+// files (DeleteBatch ignores paths that have none).
+func (c *Cleaner) sweepOrphans(ctx context.Context) {
+	if c.Logf == nil {
+		c.Logf = func(string, ...any) {}
+	}
+	root := recstore.CommonPath(c.RecordPath)
+	if root == "" {
+		return
+	}
+	matches := recstore.SegmentMatcher(recstore.PathAddExtension(c.RecordPath))
+	cutoff := time.Now().Add(-c.Retain)
+
+	var stale []index.Segment
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, werr error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if werr != nil || d.IsDir() || !strings.HasSuffix(path, ".mp4") || !matches(path) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			return nil
+		}
+		stale = append(stale, index.Segment{Fpath: path})
+		return nil
+	})
+	if walkErr != nil && !os.IsNotExist(walkErr) {
+		if ctx.Err() == nil {
+			c.Logf("orphan sweep: walk %s: %v", root, walkErr)
+		}
+		return
+	}
+
+	removed := 0
+	for len(stale) > 0 {
+		if ctx.Err() != nil {
+			return
+		}
+		n := min(len(stale), purgeBatchSize)
+		deleted, err := c.purgeBatch(stale[:n])
+		stale = stale[n:]
+		if err != nil {
+			c.Logf("orphan sweep: index delete batch: %v", err)
+			return
+		}
+		removed += deleted
+	}
+	if removed > 0 {
+		c.Logf("orphan sweep: removed %d stale segment file(s) the index sweep missed (older than %s)", removed, c.Retain)
 	}
 }
 

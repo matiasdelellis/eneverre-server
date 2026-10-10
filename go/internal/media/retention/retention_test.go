@@ -246,3 +246,57 @@ func TestPurgeCamera(t *testing.T) {
 		t.Error("file written after the cutoff was deleted")
 	}
 }
+
+// sweepOrphans removes stale segment files the index never saw (and stale
+// indexed ones), but keeps fresh segments and anything not shaped like a
+// segment path.
+func TestSweepOrphans(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := index.Open(filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatalf("open index: %v", err)
+	}
+	defer idx.Close()
+
+	recordPath := filepath.Join(dir, "rec", "%path", "%Y-%m-%d", "%H", "%Y-%m-%d_%H-%M-%S-%f")
+	old := time.Now().Add(-48 * time.Hour)
+	write := func(rel string, mtime time.Time) string {
+		fp := filepath.Join(dir, "rec", rel)
+		if err := os.MkdirAll(filepath.Dir(fp), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fp, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(fp, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		return fp
+	}
+	orphan := write("cam/2026-01-01/10/2026-01-01_10-00-00-000000.mp4", old)
+	indexed := write("cam/2026-01-01/10/2026-01-01_10-01-00-000000.mp4", old)
+	fresh := write("cam/2026-01-01/11/2026-01-01_11-00-00-000000.mp4", time.Now())
+	foreign := write("cam/holiday.mp4", old)
+	// A bogus duration keeps this row out of Expired forever; the sweep's
+	// mtime test still catches it.
+	if err := idx.Insert(index.Segment{Fpath: indexed, Path: "cam", Start: old, Duration: 1e9, StreamID: "s"}); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Cleaner{Index: idx, Retain: 24 * time.Hour, RecordPath: recordPath}
+	c.sweepOrphans(context.Background())
+
+	for _, fp := range []string{orphan, indexed} {
+		if _, err := os.Stat(fp); !os.IsNotExist(err) {
+			t.Errorf("%s survived the sweep", fp)
+		}
+	}
+	for _, fp := range []string{fresh, foreign} {
+		if _, err := os.Stat(fp); err != nil {
+			t.Errorf("%s was removed: %v", fp, err)
+		}
+	}
+	if segs, _ := idx.Oldest(0); len(segs) != 0 {
+		t.Errorf("index still has %d row(s), want 0", len(segs))
+	}
+}

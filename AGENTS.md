@@ -317,7 +317,11 @@ All code lives under `go/` (module `eneverre`).
     `Expired` in batches, `os.Remove`s the files with bounded parallel
     workers, calls `DeleteBatch` (one tx, one fsync), and prunes the
     now-empty parents of the just-deleted files (cheaper than walking the
-    whole record tree). `PurgeToFree` reuses the same per-batch machinery
+    whole record tree). Every 6h (and at startup) `sweepOrphans` also walks
+    the record tree and removes segment-shaped `.mp4` files whose mtime is
+    older than `retain`, indexed or not — the files the index-driven sweep
+    can't see (failed inserts, crash leftovers, a lost `index.db`, rows with
+    a bogus duration). `PurgeToFree` reuses the same per-batch machinery
     (`purgeBatch`) but queries `Oldest` and stops on a free-space target
     instead of an age cutoff — this is the engine's low-disk emergency valve.
 - `go/internal/diskfree` — shared statfs wrapper (`Available(path)`,

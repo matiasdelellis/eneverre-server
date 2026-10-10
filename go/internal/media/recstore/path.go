@@ -125,6 +125,15 @@ func CameraMatcher(format, camera string) func(string) bool {
 	return r.MatchString
 }
 
+// SegmentMatcher returns a predicate reporting whether a file path is one the
+// format produces for any camera. Retention's orphan sweep uses it so a walk of
+// the record root only ever deletes files the recorder could have written, never
+// an unrelated .mp4 that happens to live under the same directory.
+func SegmentMatcher(format string) func(string) bool {
+	r := regexp.MustCompile("^" + formatRegexp(format, "(.+?)") + "$")
+	return r.MatchString
+}
+
 // Decode parses a filesystem path back into a Path, matching the format.
 // Useful for bootstrapping the index from existing recordings.
 func (p *Path) Decode(format string, v string) bool {
