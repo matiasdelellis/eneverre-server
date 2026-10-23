@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Eneverre NVR API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     API for camera management, streaming and playback.
 
