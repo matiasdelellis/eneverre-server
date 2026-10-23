@@ -267,11 +267,9 @@ func (c *Config) UpdatesPublicBaseURL() string {
 // UpdatesPublishToken resolves the bearer token accepted by the publish
 // endpoints. Precedence: [updates] publish_token >
 // ENEVERRE_UPDATES_PUBLISH_TOKEN > "". When empty, the publish endpoints
-// fall back to admin-user auth (Basic or Bearer issued by POST
-// /api/auth/login) for backward compatibility. When set, only the token is
-// accepted — user/password auth is rejected for these endpoints, so the
-// token can be rotated without touching user accounts and revoked without
-// affecting the rest of the API.
+// return 503 (publishing is disabled): there is deliberately no fallback to
+// admin-user auth, so a stolen session token can never publish builds. When
+// set, only the token is accepted.
 func (c *Config) UpdatesPublishToken() string {
 	if v := strings.TrimSpace(c.UpdatesSection().Get("publish_token", "")); v != "" {
 		return v
@@ -503,6 +501,14 @@ func (c *Config) ZaguanToken() (string, error) {
 		return v, nil
 	}
 	return strings.TrimSpace(os.Getenv("ENEVERRE_ZAGUAN_TOKEN")), nil
+}
+
+// ZaguanLegacyMediaAuth reports whether the pre-signed media URLs may still be
+// authenticated with the rotating relay pair as user/pass query parameters.
+// It defaults to false: the signed grants are the supported path, and the old
+// form is a one-release migration aid for hubs with cached URLs.
+func (c *Config) ZaguanLegacyMediaAuth() bool {
+	return c.ZaguanSection().GetBool("legacy_media_auth", false)
 }
 
 // ZaguanName is the name the source shows in the hub's Sources page.

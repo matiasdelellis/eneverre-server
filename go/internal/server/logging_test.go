@@ -130,10 +130,11 @@ func TestAccessLogRedaction(t *testing.T) {
 	if got := logPath("/api/cameras"); got != "/api/cameras" {
 		t.Errorf("logPath(other) = %q", got)
 	}
-	q, _ := url.ParseQuery("token=s3cret&start=10&Refresh_Token=x&user=streamuser&pass=streampass")
+	q, _ := url.ParseQuery("token=s3cret&start=10&Refresh_Token=x&user=streamuser&pass=streampass&sig=abc123&usercode=DEADBEEF")
 	got := logQuery(q)
 	if strings.Contains(got, "s3cret") || strings.Contains(got, "=x") ||
-		strings.Contains(got, "streamuser") || strings.Contains(got, "streampass") {
+		strings.Contains(got, "streamuser") || strings.Contains(got, "streampass") ||
+		strings.Contains(got, "abc123") || strings.Contains(got, "DEADBEEF") {
 		t.Errorf("logQuery leaks a credential: %q", got)
 	}
 	if !strings.Contains(got, "start=10") {

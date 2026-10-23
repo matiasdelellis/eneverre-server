@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"eneverre/internal/camera"
+	"eneverre/internal/mediaauth"
 	"eneverre/internal/timeutil"
 )
 
@@ -153,24 +154,52 @@ func (a *App) handlePlaybackGaps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// playbackGate enforces engine-active (in recording mode) + user auth + the
-// per-camera playback capability shared by every recordings endpoint, returning
-// the camera or nil (after writing the error). It is the single source of truth
-// for that preamble so the individual handlers can't drift apart.
-func (a *App) playbackGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
+// playbackEnabled enforces the engine-active (recording mode) precondition
+// shared by the recordings gates.
+func (a *App) playbackEnabled(w http.ResponseWriter) bool {
 	if a.engine == nil || !a.engine.RecordingEnabled() {
 		httpError(w, http.StatusNotFound, "Not Found")
-		return nil
+		return false
 	}
-	if !a.requireMedia(w, r) {
-		return nil
-	}
+	return true
+}
+
+// playbackCamera resolves the per-camera playback capability. Callers
+// authenticate first so an anonymous request cannot probe camera existence by
+// comparing 401 with 404.
+func (a *App) playbackCamera(w http.ResponseWriter, r *http.Request) *camera.Camera {
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
 	if !ok || !cam.Capabilities.Playback {
 		httpError(w, http.StatusNotFound, "Not found")
 		return nil
 	}
 	return &cam
+}
+
+// playbackGate is the session-authenticated recordings surface: list, get,
+// timeline and gaps. It stays user-only so a media grant handed to a hub or a
+// player cannot export arbitrary clips.
+func (a *App) playbackGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
+	if !a.playbackEnabled(w) {
+		return nil
+	}
+	if a.requireUser(w, r) == nil {
+		return nil
+	}
+	return a.playbackCamera(w, r)
+}
+
+// hlsGate authenticates the HLS VOD surface. It accepts a normal session or a
+// camera-scoped signed grant (the Zaguán hub, native HLS players); the grant is
+// forwarded to the playlist's init/segment URIs by hlsAuthQuery.
+func (a *App) hlsGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
+	if !a.playbackEnabled(w) {
+		return nil
+	}
+	if !a.requireMediaAccess(w, r, r.PathValue("cam_id"), mediaauth.ScopeHLS) {
+		return nil
+	}
+	return a.playbackCamera(w, r)
 }
 
 // delegateHLS rewrites the request to carry path=<camID> and hands it to fn.
@@ -196,7 +225,7 @@ func (a *App) delegateHLS(w http.ResponseWriter, r *http.Request, camID string, 
 // list/gaps — so a parameterless request can't build a playlist line for every
 // segment ever recorded.
 func (a *App) handlePlaybackHLSPlaylist(w http.ResponseWriter, r *http.Request) {
-	cam := a.playbackGate(w, r)
+	cam := a.hlsGate(w, r)
 	if cam == nil {
 		return
 	}
@@ -210,7 +239,7 @@ func (a *App) handlePlaybackHLSPlaylist(w http.ResponseWriter, r *http.Request) 
 
 // handlePlaybackHLSInit serves the CMAF init segment referenced by the playlist.
 func (a *App) handlePlaybackHLSInit(w http.ResponseWriter, r *http.Request) {
-	cam := a.playbackGate(w, r)
+	cam := a.hlsGate(w, r)
 	if cam == nil {
 		return
 	}
@@ -219,7 +248,7 @@ func (a *App) handlePlaybackHLSInit(w http.ResponseWriter, r *http.Request) {
 
 // handlePlaybackHLSSegment serves a CMAF media segment referenced by the playlist.
 func (a *App) handlePlaybackHLSSegment(w http.ResponseWriter, r *http.Request) {
-	cam := a.playbackGate(w, r)
+	cam := a.hlsGate(w, r)
 	if cam == nil {
 		return
 	}

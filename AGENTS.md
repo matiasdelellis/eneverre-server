@@ -111,7 +111,7 @@ All code lives under `go/` (module `eneverre`).
   deadline per-request via `clearWriteDeadline`. Credential rotation is started when the engine is
   running (always). When `[zaguan]` is configured, main also starts the
   camera publisher there (after the engine and the App exist, so the first
-  snapshot has the live privacy state and relay credentials); the shutdown
+  snapshot has the live privacy state and the signed media grants); the shutdown
   cleanup cancels it and waits for its loops before closing the engine/DB.
   SIGINT/SIGTERM trigger a graceful `srv.Shutdown`
   (10s) followed by `engine.Close()`, which finalizes each camera's
@@ -163,18 +163,31 @@ All code lives under `go/` (module `eneverre`).
   rewrites the slices in `init()` to `%ProgramData%\Eneverre\...`).
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
   (`users`, `device_login`, `tokens`, `events`, `streamauth_credentials`,
-  `cameras`, `schedules`) plus a short list of idempotent `ALTER TABLE`
-  migrations (`Init` swallows a "duplicate column" so re-running is safe — this
-  is how `cameras.schedule_id` was backfilled onto upgraded installs),
-  and seeds an admin when the users table is empty: username from
+  `media_auth_key`, `cameras`, `schedules`) plus a short list of idempotent
+  `ALTER TABLE` migrations (`Init` swallows a "duplicate column" so re-running
+  is safe — this is how `cameras.schedule_id` and the token role were
+  backfilled onto upgraded installs), chmods the DB file to 0600, and seeds an
+  admin when the users table is empty: username from
   `ENEVERRE_ADMIN_USER` (default `admin`), password from
   `ENEVERRE_ADMIN_PASS` or, when unset, a random one logged once at `WARN`.
   No credential is read from a config file. The seeded admin is inserted with
-  `must_change_password = 1` so the web UI forces a new password on first login
-  (the `users.must_change_password` column defaults to 0 for every other row).
+  `must_change_password = 1`; the server now enforces that flag, not just the
+  web UI (the `users.must_change_password` column defaults to 0 for every other
+  row).
 - `go/internal/auth` — `CheckPasswordHash`/`GeneratePasswordHash` (Werkzeug
   format) plus Basic/Bearer verification and `CurrentUser`. Bearer reads the
-  `tokens` table and rejects expired tokens.
+  `tokens` table (a non-empty `tokens.role` overrides the user's role, which is
+  how TV sessions stay ordinary users) and rejects expired tokens. Both paths
+  expose `must_change_password`; `requireUser` confines a flagged session to
+  the password-change, logout and session-revoke endpoints with a
+  `403 {"code":"password_change_required"}`.
+- `go/internal/mediaauth` — short-lived HMAC grants for the HTTP media
+  surfaces a client cannot authenticate with a header: `live`, `thumb` and
+  `hls`. The key is a random DB row (`media_auth_key`), never the RTSP relay
+  pair. A grant is `?exp=<unix>&sig=<hex>` over camera id + scope + exp;
+  `exp` lives 1 h (6 h for HLS) and the publisher refreshes it with the camera
+  inventory. `requireMediaAccess` accepts a valid grant, a normal session, or
+  the legacy relay pair only when `[zaguan] legacy_media_auth = true`.
 - `go/internal/camera` — `Camera` model + INI loader. Credential fields
   (`thingino_url`/`thingino_api_key`/`backchannel`/`source`) are tagged
   `json:"-"`, so marshaling a `Camera` is the public view (no credential
@@ -271,19 +284,22 @@ All code lives under `go/` (module `eneverre`).
   camera's `location` becomes an area, and the state is `streaming` while
   the NVR has the camera (else `idle`; unavailable when disabled, in
   privacy, outside its schedule or disconnected). The entity advertises
-  only `snapshot` (the pipeline runs continuously, so there is no
-  per-viewer stream to start/stop); it asks the server to fetch a fresh
-  still, and the hub applies the confirmed state/attributes. The
+  the `snapshot` and PTZ commands it can actually serve (the pipeline runs
+  continuously, so there is no per-viewer stream to start/stop); it asks the
+  server to fetch a fresh still, and the hub applies the confirmed
+  state/attributes. The
   publisher sends the snapshot immediately, republishes it every
   `[zaguan] sync_interval` (30s default), heartbeats every 30s and long-
   polls commands for 25s. It is off unless `[zaguan] url` and a token
   (`token_file` recommended) are set. Media links in the attributes are
-  absolute only with `[zaguan] public_url`; they carry the rotating relay
-  credentials as `user`/`pass` query parameters, accepted by the media
-  endpoints only while `[zaguan]` is on. The attributes include live MSE
-  (`mse_url` + `mse_info_url`), a last-hour HLS **VOD** playlist (`hls_url`)
-  and the thumbnail. Eneverre has no HLS live mode (live is MSE/RTSP). See
-  `doc/ZAGUAN.md`.
+  absolute only with `[zaguan] public_url`; they carry short-lived signed
+  grants (`exp`/`sig`, camera- and surface-scoped, 1 h / 6 h for HLS) instead
+  of the relay password. `[zaguan] legacy_media_auth = true` re-enables the
+  old `user`/`pass` query pair for one release so a hub with cached URLs can
+  migrate. The attributes include live MSE (`mse_url` + `mse_info_url`), a
+  last-hour HLS **VOD** playlist (`hls_url`) and the thumbnail; links are
+  omitted while a camera is paused/disabled. Eneverre has no HLS live mode
+  (live is MSE/RTSP). See `doc/ZAGUAN.md`.
 - `go/internal/media` — **embedded media engine**. Always built and started;
   the optional `[media]` section only tunes it (a missing section behaves
   exactly like a present-but-empty one). One binary, no external streamer.
@@ -468,12 +484,14 @@ see request query strings and the more verbose media-engine traces
   token (same column the device-login flow uses), so `GET
   /api/users/me/sessions` can label the session; omit it and the column is
   NULL (backward compatible). The expensive password hash runs once here. The
-  login response carries `must_change_password`; the web client gates the app
-  on it and routes to a forced change-password screen until the user changes
-  it. `PUT /api/users/me/password` clears the flag (`must_change_password = 0`
-  in the same UPDATE); admins can set it when creating a user
-  (`POST /api/users`) or resetting a password (`PUT /api/users/{u}/password`).
-  The flag is UI-enforced only — a valid token still works for API calls.
+  login response carries `must_change_password`; the server enforces it for
+  every protected route (only the password change, logout and session-revoke
+  endpoints stay reachable), so a bootstrap/forced-reset password cannot be
+  used through the API until it is changed. `PUT /api/users/me/password`
+  clears the flag (`must_change_password = 0` in the same UPDATE); admins can
+  set it when creating a user (`POST /api/users`) or resetting a password
+  (`PUT /api/users/{u}/password`). Clients should handle
+  `403 {"code":"password_change_required"}` by routing to the change screen.
 - **Token model.** A `tokens` row is one session. Password login issues a
   short-lived **access** token plus a long-lived **refresh** token stored on
   the same row. Both lifetimes are resolved once at startup with precedence
@@ -489,9 +507,15 @@ see request query strings and the more verbose media-engine traces
   same row** — the session list grows per login, never per refresh. Lookups
   never cross columns: `VerifyBearer` matches `WHERE token = ?`, refresh matches
   `WHERE refresh_token = ?`, so the two are not interchangeable.
-- **Device (TV) sessions are deliberately non-renewable**: the device-login
-  flow issues only an access token with `refresh_token` left NULL, so they
-  cannot hit `/api/auth/refresh` and must re-pair when the access token lapses.
+- **Device (TV) sessions are renewable and limited to the `user` role**: the
+  device-login flow issues an access token plus a refresh token
+  (`refresh_token`/`refresh_expires_at` in the approved poll response) and
+  stores `tokens.role = 'user'` even when an admin approves the device, so a TV
+  can live/playback/PTZ/talk but cannot administer users or cameras. Older TV
+  clients can ignore the refresh fields and keep re-pairing; new ones call
+  `/api/auth/refresh` like a phone. A user flagged
+  `must_change_password` cannot approve a device (and an already-approved code
+  is refused when polled), so a TV can never receive a bypass session.
 - `cleanupExpiredTokens()` runs both on every login **and** on a background
   ticker (`[auth] cleanup_interval_minutes`, default 60 min) so the tokens
   table stays lean even on rarely-used installations. Deletes dead sessions:
@@ -570,13 +594,13 @@ see request query strings and the more verbose media-engine traces
   wall-clock versions, plus a 30s heartbeat and a 25s command long poll; a
   hub restart is recovered by the next snapshot. The integration is
   outbound-only and never changes the camera pipeline. Media links in the
-  attributes need `[zaguan] public_url`; they carry the rotating relay
-  credentials (`user`/`pass`) so the hub's web client can play them, and the
-  media handlers accept that pair only while `[zaguan]` is on. They include
-  live MSE (`mse_url` + `mse_info_url`), a last-hour HLS VOD playlist
-  (`hls_url`) and the thumbnail; there is no HLS live. `server.ZaguanCameras`
-  applies the live privacy state and the rotating relay credentials;
-  `App.CaptureSnapshot` backs the command. See
+  attributes need `[zaguan] public_url`; they carry a short-lived signed grant
+  (`exp`/`sig`) scoped to the camera and surface, not the relay password.
+  `[zaguan] legacy_media_auth = true` accepts the old `user`/`pass` pair as a
+  migration aid. They include live MSE (`mse_url` + `mse_info_url`), a
+  last-hour HLS VOD playlist (`hls_url`) and the thumbnail; there is no HLS
+  live. `server.ZaguanCameras` applies the live privacy state and signs the
+  links; `App.CaptureSnapshot` backs the command. See
   [`doc/ZAGUAN.md`](doc/ZAGUAN.md).
 - The embedded engine (live MSE, RTSP relay, recording) is always active for
   any camera with a `source` URL — there is no mode where it's off.
@@ -681,13 +705,21 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
   no cwd-relative autodetection, so a released binary always serves the assets
   embedded in it.
 - The Bearer token lives in `localStorage`.
+- **Security headers:** the Go handler sets CSP (`script-src 'self'`, no
+  inline scripts — the early boot shims live in `/boot.js`), `X-Frame-Options:
+  DENY` / `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`,
+  `X-Content-Type-Options: nosniff`, a microphone-only Permissions-Policy and
+  HSTS when the request is HTTPS. API responses are sent with
+  `Cache-Control: no-store` (the published APK download is the exception).
 - **Forced password change** (`js/views/force-password.js`): when the stored
   user carries `must_change_password`, the app is gated behind a mandatory
   change-password screen (no cancel). `login.js` routes to it after a flagged
   login (prefilling the just-typed current password), and `app-shell.js`
   `showApp()` re-gates on reload while the flag is still set. A successful
   `PUT /api/users/me/password` clears the flag server-side and in the stored
-  user, then `showApp()` proceeds.
+  user, then `showApp()` proceeds. `apiFetch` also watches for
+  `403 {"code":"password_change_required"}` and routes to this screen when an
+  admin flags the account mid-session.
 - **Live view** (`js/views/wall.js` + `js/views/mse.js`): the wall plays
   `camera.live_mse` (the embedded engine's MSE feed at
   `/api/camera/{id}/live/stream`, ~1-2s latency). There is no live fallback

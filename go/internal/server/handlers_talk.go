@@ -151,6 +151,10 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 		a.unauthorized(w)
 		return
 	}
+	if u.MustChangePassword {
+		httpErrorCode(w, http.StatusForbidden, "password_change_required", "Password change required")
+		return
+	}
 
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
 	talkURL := ""

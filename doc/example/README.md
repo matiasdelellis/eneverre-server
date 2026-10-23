@@ -67,8 +67,8 @@ port = 8080
    lets any Origin read API responses **without credentials**: a front-end on
    another origin that sends a Bearer token works, but a foreign page can't use
    HTTP Basic credentials the browser has cached. Listed Origins also get
-   credentials (`Access-Control-Allow-Credentials`); a single `*` entry grants
-   them to every Origin (the pre-2026-09 default — only if you need it).
+   credentials (`Access-Control-Allow-Credentials`); a single `*` entry keeps
+   the any-Origin read behavior but still never grants credentials.
  * **trusted_proxies:** Comma-separated IPs or CIDRs of reverse proxies whose
    `X-Forwarded-For` / `X-Real-IP` headers are honored when resolving the
    client IP for the access log, the failed-login throttle and the
@@ -81,6 +81,13 @@ port = 8080
    `none` when eneverre is exposed directly with no proxy at all. Peers not
    on the list get logged by their socket address, so a direct client cannot
    spoof the banned IP.
+ * **Remote access:** clients outside the LAN must reach the API through
+   HTTPS (the example Caddyfile terminates TLS). The RTSP relay is plain RTSP
+   and carries the global relay pair; keep `:8554` on the LAN or tunnel it
+   (VPN/TLS), and prefer the HTTPS MSE/HLS links for remote live. The binary
+   sets CSP, frame-ancestors/X-Frame-Options, Referrer-Policy, nosniff, HSTS
+   (when HTTPS) and `Cache-Control: no-store` on API responses itself, so a
+   direct LAN deployment gets the same browser hardening as the proxied one.
 
 > **Admin user.** Eneverre does **not** read any username/password from this
 > file — all user management lives in `data/eneverre.db`. The first time the
@@ -90,11 +97,12 @@ port = 8080
 > password yourself, set `ENEVERRE_ADMIN_PASS` (and optionally
 > `ENEVERRE_ADMIN_USER`) before the first start. Either way the seeded admin is
 > flagged **must change password**: the web UI forces a new password on the
-> first login before the app opens, so the bootstrap credential never becomes
-> the permanent one. (The flag is UI-enforced; Basic-auth API calls such as
-> `curl -u admin:...` are not blocked by it.) Manage further users through the
-> `/api/users` endpoints or the web UI — where an admin can require the same
-> forced change when creating a user or resetting a password.
+> first login before the app opens, and the **server** blocks every protected
+> API route (`403 {"code":"password_change_required"}`) except the password
+> change, logout and session-revoke endpoints. The bootstrap credential can
+> therefore not be used with `curl -u admin:...` either. Manage further users
+> through the `/api/users` endpoints or the web UI — where an admin can require
+> the same forced change when creating a user or resetting a password.
 
 ## `[auth]`
 
@@ -110,11 +118,12 @@ Token lifetimes and session hygiene. Every key is optional.
 ```
 
  * **access_token_ttl_hours:** Bearer-token lifetime. Default `24`. This is
-   also the lifetime of a TV (device-login) session, which cannot be
-   refreshed. Overridden by `--access-token-ttl-hours` /
-   `ENEVERRE_ACCESS_TOKEN_TTL_HOURS`.
- * **refresh_token_ttl_days:** Renewal window for a password login, slid
-   forward on every refresh. Default `90`. Overridden by
+   also the access-token lifetime of a TV (device-login) session; new TV
+   clients also receive a refresh token and can renew it, while older clients
+   keep re-pairing when the access token lapses. Overridden by
+   `--access-token-ttl-hours` / `ENEVERRE_ACCESS_TOKEN_TTL_HOURS`.
+ * **refresh_token_ttl_days:** Renewal window for a password or device login,
+   slid forward on every refresh. Default `90`. Overridden by
    `--refresh-token-ttl-days` / `ENEVERRE_REFRESH_TOKEN_TTL_DAYS`.
  * **cleanup_interval_minutes:** How often the background goroutine prunes
    expired token rows, so the DB doesn't accumulate dead sessions on a
@@ -241,7 +250,10 @@ overridable per camera:
  * **rotate_hours:** The relay URL embeds a random 8/8 username/password that
    rotates on this interval, with the previous pair staying valid for one
    interval as a grace window. Default `24`; `0` (or negative) disables
-   rotation. The credentials live in the SQLite DB, not in this file.
+   rotation. The credentials live in the SQLite DB, not in this file. Keep
+   rotation on for remote clients: signed media grants expire by themselves,
+   but RTSP URLs (and the legacy `[zaguan]` media pair) stay valid until the
+   next rotation.
  * **gap_message:** Caption burned into the gap-fill black frames served for
    uncovered ranges. UTF-8 is fine; changing it regenerates the cached asset.
    Default `NO RECORDING`.
@@ -302,12 +314,12 @@ endpoints return 503.
    TLS-terminating proxy does not send by default (Caddy included). Setting it
    works behind any proxy with zero extra config. Env:
    `ENEVERRE_UPDATES_PUBLIC_BASE_URL`.
- * **publish_token:** Optional publish-only bearer token. When set,
-   `POST /api/admin/app/updates/{track}` requires
-   `Authorization: Bearer <token>` and rejects user/password and session
-   tokens — only the dedicated token works, so it can be rotated without
-   touching user accounts. Leave empty to keep the default (publish requires an
-   admin user). Generate with `openssl rand -hex 32`. Precedence: this key >
+ * **publish_token:** Publish-only bearer token. `POST
+   /api/admin/app/updates/{track}` requires `Authorization: Bearer <token>`
+   and rejects user/password and session tokens — only the dedicated token
+   works, so it can be rotated without touching user accounts. When unset, the
+   publish endpoint answers 503 (there is no admin-session fallback). Generate
+   with `openssl rand -hex 32`. Precedence: this key >
    `ENEVERRE_UPDATES_PUBLISH_TOKEN`.
  * **max_build_size:** Hard cap on the publish request body (multipart + APK),
    enforced via `http.MaxBytesReader` so a 413 comes back as soon as the body
@@ -335,6 +347,7 @@ token_file = /etc/eneverre/zaguan.token ; source token, mode 0600
 ;name = Eneverre                       ; source name in the hub
 ;public_url = https://cams.example.com  ; base for the media links
 ;sync_interval = 30s                    ; inventory refresh
+;legacy_media_auth = false              ; migration aid only
 ```
 
  * **url:** Address of the hub, with or without a scheme. Create the source in
@@ -343,10 +356,11 @@ token_file = /etc/eneverre/zaguan.token ; source token, mode 0600
  * **token_file / token:** The Source API token. `token_file` is recommended so
    the secret stays out of the INI and out of backups of it; an unreadable or
    empty file is an error and never falls back to the inline token. The file
-   must be readable by the Eneverre user: with the example unit's
-   `DynamicUser=yes` a root-only `0600` file is not, so either keep the file
-   `0644` on a single-user host (`0660`/owner `eneverre` with a dedicated
-   account) or put the token inline in a `0640` `eneverre.ini`. Precedence:
+   must be readable by the Eneverre user: preferably run a dedicated
+   `eneverre` account and keep it `0600`/`0640 root:eneverre`. With the
+   example unit's `DynamicUser=yes` the transient user cannot read a
+   root-only file; in that case use `0644` only on a single-user host, or put
+   the token inline in a `0640` `eneverre.ini`. Precedence:
    `token_file` > `ENEVERRE_ZAGUAN_TOKEN_FILE` > `token` >
    `ENEVERRE_ZAGUAN_TOKEN`.
  * **name:** Name shown in the hub's Sources page. Default `Eneverre`.
@@ -355,24 +369,30 @@ token_file = /etc/eneverre/zaguan.token ; source token, mode 0600
    attributes and, when `[media] rtsp_host` is unset, the host of the RTSP
    relay URL. Optional: with no base the attributes carry no links, and the
    relay URL is still published when `rtsp_host` is configured. The HTTP
-   media URLs carry the rotating relay credentials as `user`/`pass` query
-   parameters (accepted only while `[zaguan]` is on), so the hub's web client
-   can play them without an Eneverre login. Precedence: this key >
+   media URLs carry a short-lived signed grant (`exp`/`sig`) scoped to one
+   camera and one surface — live (1 h), thumbnail (1 h) or HLS (6 h) — never
+   the relay password. Precedence: this key >
    `ENEVERRE_ZAGUAN_PUBLIC_URL` > `""`.
  * **sync_interval:** How often the inventory is rebuilt and republished. The
    snapshot is also what refreshes connectivity and availability in the hub
    (this integration sends no per-state events). Values shorter than `1s` fall
    back to `30s`.
+ * **legacy_media_auth:** `false` by default. Set `true` for one release only
+   if a hub has cached media URLs from before the signed grants: it re-enables
+   the old `user`/`pass` relay pair on the media endpoints. New links are
+   always signed, so no client change is required to migrate.
 
 Each camera becomes a device (`eneverre:<camera-id>`) with one `camera`
 entity (`eneverre:<camera-id>/camera`); the camera's `location` becomes an
 area. The entity state is `streaming` while the NVR has the camera and `idle`
 otherwise, and it is marked unavailable while the camera is disabled, in
 privacy, outside its recording schedule, or disconnected. The entity accepts
-only the `snapshot` command (the media pipeline runs continuously, so there is
-no stream to start or stop). The attributes include the live MSE URL and a
-last-hour HLS VOD playlist; Eneverre has no HLS live mode. See
-[`ZAGUAN.md`](../ZAGUAN.md) for the mapping and the media details.
+the `snapshot` and PTZ commands the camera actually supports (the media
+pipeline runs continuously, so there is no stream to start or stop). The
+attributes include the live MSE URL, the thumbnail and a last-hour HLS VOD
+playlist; links are omitted while the camera is paused or disabled. Eneverre
+has no HLS live mode. See [`ZAGUAN.md`](../ZAGUAN.md) for the mapping and the
+media details.
 
 ---
 
@@ -465,8 +485,9 @@ journalctl -u eneverre -f
 On its first start the service creates the admin user with a random password
 and logs it once — read it with `journalctl -u eneverre | grep 'generated
 password'`. The seeded admin is flagged **must change password**, so the first
-web login walks you through setting a new one before the app opens (the
-bootstrap password is only ever meant to get you in once). To set a known
+login walks you through setting a new one before the app opens (the bootstrap
+password is only ever meant to get you in once; the API blocks it until the
+change). To set a known
 password instead, add `ENEVERRE_ADMIN_PASS` (and optionally
 `ENEVERRE_ADMIN_USER`) via a drop-in (`systemctl edit eneverre`) before the
 first start — that admin is still prompted to change it on first login. Notes:
@@ -485,6 +506,10 @@ first start — that admin is still prompted to change it on first login. Notes:
    by the transient user (mode `0644`). If `eneverre.ini` holds secrets on a
    multi-user host, switch to a dedicated `eneverre` account instead — the unit
    file's header comment shows how.
+ * **State permissions.** The unit sets `UMask=0077`; the SQLite file itself is
+   also chmod'd to `0600` by the server. It holds session tokens, camera
+   credentials and the media/relay signing material, so keep backups of
+   `/var/lib/eneverre` equally private.
  * **Override without editing the unit.** Use a drop-in:
    `sudo systemctl edit eneverre` (e.g. to change the port, log level, or admin
    env vars).
@@ -653,7 +678,8 @@ from the UI afterwards.
  * **home_x / home_y:** PTZ position the camera returns to on "home" /
     when privacy is disabled, in **degrees** (pan, tilt). The server
     converts to firmware x/y at move time using the calibration below. Unset
-    → `-1` (no auto-move).
+    → `-1` (no auto-move); `/ptz/home` then answers 409 and Zaguán does not
+    advertise the `ptz_home` command.
  * **privacy_x / privacy_y:** PTZ position the camera moves to when privacy
     is enabled, in **degrees** (pan, tilt). Same conversion as `home_x/y`.
     Unset → `-1` (no auto-move).

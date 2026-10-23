@@ -42,7 +42,8 @@ var schema = []string{
 		created_at INTEGER,
 		device_name TEXT,
 		refresh_token TEXT,
-		refresh_expires_at INTEGER
+		refresh_expires_at INTEGER,
+		role TEXT
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_device_login_user_code ON device_login(user_code)`,
 	`CREATE INDEX IF NOT EXISTS idx_tokens_username ON tokens(username)`,
@@ -66,6 +67,14 @@ var schema = []string{
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		username TEXT NOT NULL,
 		password TEXT NOT NULL,
+		rotated_at INTEGER NOT NULL
+	)`,
+	// Single-row HMAC key for the short-lived HTTP media grants (Zaguán,
+	// HLS players, thumbnails). Kept separate from the stream-auth pair so a
+	// client that knows the RTSP credentials cannot forge a media grant.
+	`CREATE TABLE IF NOT EXISTS media_auth_key (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		secret TEXT NOT NULL,
 		rotated_at INTEGER NOT NULL
 	)`,
 	// Cameras are DB-backed: this table is the source of truth. The per-camera
@@ -133,6 +142,10 @@ var migrations = []string{
 	// enabled was added after the cameras table shipped; existing DBs need
 	// it backfilled to the same default the CREATE TABLE uses (enabled).
 	`ALTER TABLE cameras ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
+	// role scopes a token independently of its user: device-login sessions are
+	// deliberately issued as ordinary users even when an admin approves them.
+	// NULL keeps the historical behavior (the user's current role).
+	`ALTER TABLE tokens ADD COLUMN role TEXT`,
 }
 
 // Open opens the SQLite database at path (creating its directory), enabling WAL
@@ -151,6 +164,12 @@ func Open(path string) (*sql.DB, error) {
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
+	// The DB holds session tokens, camera credentials and the media/relay
+	// signing material. sqlite creates it with the process umask, which is
+	// commonly 0644; tighten the file itself so a multi-user host does not
+	// expose it. (WAL/SHM files inherit the process umask; the example unit
+	// sets UMask=0077 as well.)
+	_ = os.Chmod(path, 0o600)
 	return db, nil
 }
 

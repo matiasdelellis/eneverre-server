@@ -92,6 +92,10 @@ type Camera struct {
 	Playback bool
 	Talk     bool
 	PTZ      bool
+	// PTZHome is true when the camera has a configured absolute home
+	// position. The `ptz_home` command is only advertised then; without it the
+	// firmware would be told to move to the -1 sentinel coordinates.
+	PTZHome bool
 }
 
 // Config configures a Publisher.
@@ -329,7 +333,11 @@ func (p *Publisher) buildSnapshot() sourceapi.Snapshot {
 			commands = append(commands, "snapshot")
 		}
 		if c.PTZ {
-			commands = append(commands, "ptz_move", "ptz_home", "ptz_recalibrate")
+			commands = append(commands, "ptz_move")
+			if c.PTZHome {
+				commands = append(commands, "ptz_home")
+			}
+			commands = append(commands, "ptz_recalibrate")
 		}
 		snap.Entities = append(snap.Entities, sourceapi.Entity{
 			UniqueID:       entityUniqueID(c.ID),

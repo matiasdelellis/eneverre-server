@@ -104,7 +104,9 @@ func logPath(p string) string {
 // secret) among them.
 var secretQueryParams = map[string]bool{
 	"token": true, "refresh_token": true, "password": true, "secret": true, "api_key": true,
-	// The rotating relay credentials the Zaguán media URLs carry.
+	// Signed media grants and the device pairing code are capabilities too.
+	"sig": true, "usercode": true,
+	// The deprecated rotating relay credentials the legacy media URLs carry.
 	"user": true, "pass": true,
 }
 

@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"eneverre/internal/camera"
 	"eneverre/internal/media"
-	"eneverre/internal/streamauth"
+	"eneverre/internal/mediaauth"
 	"eneverre/internal/thingino"
 	"eneverre/internal/zaguan"
 )
@@ -51,28 +52,32 @@ func (a *App) ZaguanCameras(publicURL string) []zaguan.Camera {
 		}
 	}
 
-	// The media endpoints need credentials the hub's web client can use
-	// without an Eneverre login. The rotating relay pair is already handed to
-	// clients in the RTSP URL, so carrying it as query parameters gives MSE,
-	// HLS and thumbnails a single, rotation-aware auth story.
-	var creds streamauth.Creds
-	if a.creds != nil {
-		creds = a.creds.Current()
-	}
-	mediaURL := func(path string, extra url.Values) string {
+	// The media endpoints are for clients that cannot set an Authorization
+	// header (the hub's web client, HLS players, <img>). They carry a
+	// short-lived HMAC grant scoped to one camera and one surface instead of a
+	// reusable password. [zaguan] legacy_media_auth keeps the old user/pass
+	// form for one release so a hub with a cached URL can migrate.
+	mediaURL := func(camID, path, scope string, extra url.Values) string {
 		if base == "" {
 			return ""
 		}
 		q := url.Values{}
-		if creds.Username != "" {
+		switch {
+		case a.mediaAuth != nil:
+			exp, sig := a.mediaAuth.Sign(camID, scope, mediaauth.TTL(scope))
+			q.Set("exp", strconv.FormatInt(exp, 10))
+			q.Set("sig", sig)
+		case a.cfg != nil && a.cfg.ZaguanLegacyMediaAuth() && a.creds != nil:
+			creds := a.creds.Current()
 			q.Set("user", creds.Username)
 			q.Set("pass", creds.Password)
+		default:
+			// No signer and no explicit legacy opt-in: omit the link rather
+			// than publish a reusable password.
+			return ""
 		}
 		for k, v := range extra {
 			q[k] = v
-		}
-		if len(q) == 0 {
-			return base + path
 		}
 		return base + path + "?" + q.Encode()
 	}
@@ -103,14 +108,19 @@ func (a *App) ZaguanCameras(publicURL string) []zaguan.Camera {
 			Snapshot:    view.Capabilities.Thumbnail,
 			Playback:    view.Capabilities.Playback,
 			Talk:        view.Capabilities.Talk,
-			PTZ:         view.Capabilities.PTZ,
+			PTZ:         view.Capabilities.PTZ && view.ThinginoURL != "" && view.ThinginoAPIKey != "",
+			PTZHome:     view.HomeX >= 0 && view.HomeY >= 0,
 		}
-		if features.MSE {
-			zc.MSEURL = mediaURL(camPath+"/live/stream", nil)
-			zc.MSEInfoURL = mediaURL(camPath+"/live/info", nil)
+		if view.LiveMSE != "" {
+			zc.MSEURL = mediaURL(view.ID, camPath+"/live/stream", mediaauth.ScopeLive, nil)
+			zc.MSEInfoURL = mediaURL(view.ID, camPath+"/live/info", mediaauth.ScopeLive, nil)
 		}
-		if view.Capabilities.Thumbnail {
-			zc.SnapshotURL = mediaURL(camPath+"/thumbnail", nil)
+		// Do not hand out a still endpoint while the camera is paused: a
+		// non-Thingino camera's snapshot_url is fetched directly and would
+		// otherwise bypass privacy/schedule (the snapshot command already
+		// refuses in those states).
+		if view.Capabilities.Thumbnail && !view.Privacy && !view.ScheduleOff {
+			zc.SnapshotURL = mediaURL(view.ID, camPath+"/thumbnail", mediaauth.ScopeThumb, nil)
 		}
 		if view.Capabilities.Playback && engine != nil {
 			// HLS is VOD (the engine has no HLS live mode). Publish the last
@@ -126,7 +136,7 @@ func (a *App) ZaguanCameras(publicURL string) []zaguan.Camera {
 					q := url.Values{}
 					q.Set("start", start.UTC().Format(time.RFC3339Nano))
 					q.Set("end", tl.End.UTC().Format(time.RFC3339Nano))
-					zc.HLSURL = mediaURL(camPath+"/recordings/hls/playlist.m3u8", q)
+					zc.HLSURL = mediaURL(view.ID, camPath+"/recordings/hls/playlist.m3u8", mediaauth.ScopeHLS, q)
 				}
 			}
 		}
@@ -146,6 +156,9 @@ func (a *App) CaptureSnapshot(ctx context.Context, id string) error {
 	}
 	if !cam.Enabled {
 		return fmt.Errorf("camera %q is disabled", id)
+	}
+	if a.cameraPaused(cam.ID) {
+		return fmt.Errorf("camera %q is paused", id)
 	}
 	_, _, err := a.cameraSnapshot(ctx, cam)
 	return err
@@ -193,6 +206,9 @@ func (a *App) PTZHome(ctx context.Context, id string) error {
 	cam, err := a.sourcePTZCamera(id)
 	if err != nil {
 		return err
+	}
+	if cam.HomeX < 0 || cam.HomeY < 0 {
+		return fmt.Errorf("camera %q has no configured home position", id)
 	}
 	if _, err := a.moveAbsDegrees(cam, cam.HomeX, cam.HomeY); err != nil {
 		return err

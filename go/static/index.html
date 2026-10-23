@@ -9,26 +9,8 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Eneverre</title>
   <link rel="icon" type="image/svg+xml" href="/eneverre.svg" />
-  <script>
-    (function () {
-      try {
-        var t = localStorage.getItem("eneverre.theme");
-        if (t === "light" || t === "dark") {
-          document.documentElement.dataset.theme = t;
-        }
-      } catch (e) {}
-    })();
-  </script>
+  <script src="/boot.js"></script>
   <link rel="stylesheet" href="style.css" />
-  <script>
-    (function () {
-      try {
-        if (localStorage.getItem("eneverre.token")) {
-          document.documentElement.classList.add("booting");
-        }
-      } catch (e) {}
-    })();
-  </script>
 </head>
 <body>
   <div id="boot" class="boot-overlay">

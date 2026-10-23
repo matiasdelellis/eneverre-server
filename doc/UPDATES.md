@@ -18,7 +18,7 @@ is no config change, restart, or code change needed to add a new one.
 | Method | Path                                  | Auth   | Purpose                                |
 | ------ | -------------------------------------- | ------ | --------------------------------------- |
 | GET    | `/api/app/{track}/update`              | none   | Latest release for `{track}`            |
-| POST   | `/api/admin/app/updates/{track}`       | admin  | Publish a new release to `{track}`      |
+| POST   | `/api/admin/app/updates/{track}`       | publish token | Publish a new release to `{track}` |
 | GET    | `/api/app/updates/{track}/{filename}`  | none   | Download a build file from `{track}`    |
 
 `{track}` may be any lowercase alphanumeric string (`-`/`_` allowed, up to
@@ -524,11 +524,11 @@ a manifest hit).
   to publish. To lock down the download, put the API behind auth and have
   the client send the Bearer token (the `requireUser` gate is not currently
   on the download — easy to add if needed).
-* **No auth on the publish (recommended)**: it is gated by the configured
-  `[updates] publish_token` (Bearer), or by `requireAdmin` (Basic or
-  session Bearer) when the token is not configured. Prefer the token:
-  it is dedicated, can be rotated without affecting user accounts, and a
-  stolen session token cannot publish.
+* **No auth on the publish by default**: it is gated **only** by the
+  configured `[updates] publish_token` (Bearer). If no token is configured the
+  publish endpoint returns 503; there is no fallback to an admin session.
+  Prefer the dedicated token: it can be rotated without affecting user
+  accounts, and a stolen session token cannot publish.
 * **Track names**: validated against a fixed pattern (lowercase
   alphanumeric, `-`/`_`, ≤40 chars) purely to keep them safe as a
   subdirectory name — this is not an authorization boundary. Anyone with a

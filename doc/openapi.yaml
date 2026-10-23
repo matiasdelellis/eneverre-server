@@ -12,6 +12,17 @@ info:
     3. GET /api/camera/{id}/recordings/list
     4. GET /api/camera/{id}/recordings/get
 
+    Most endpoints accept HTTP Basic or a Bearer access token. A session whose
+    user has `must_change_password` receives `403` with
+    `{"code":"password_change_required"}` on every route except
+    `PUT /api/users/me/password`, logout and the session list/revoke endpoints.
+
+    HTTP media endpoints (thumbnail, live MSE, HLS) also accept a short-lived
+    signed grant `?exp=<unix>&sig=<hex>` for clients that cannot set headers;
+    the grants are camera- and surface-scoped and are not valid on the clip
+    export/list/timeline/gaps APIs. The legacy `user`/`pass` relay pair is only
+    accepted when `[zaguan] legacy_media_auth = true`.
+
 servers:
   - url: http://localhost:8080
 
@@ -213,11 +224,12 @@ paths:
                   must_change_password:
                     type: boolean
                     description: >-
-                      When true the client must send the user through the
-                      change-password flow (PUT /api/users/me/password) before
-                      using the app. Set for the seeded initial admin and for
-                      any account an admin flagged; cleared by a successful
-                      self password change.
+                      When true the server rejects every protected route with
+                      `403 {"code":"password_change_required"}` except the
+                      change-password, logout and session-revoke endpoints.
+                      Set for the seeded initial admin and for any account an
+                      admin flagged; cleared by a successful self password
+                      change.
         '401':
           description: Invalid credentials
           content:
@@ -469,7 +481,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Message'
 
-   /api/cameras/probe:
+  /api/cameras/probe:
     post:
       summary: Probe an RTSP source (admin)
       description: >-
@@ -795,6 +807,8 @@ paths:
                     type: number
                     description: New tilt in degrees
                     example: -4.5
+        '409':
+          description: Home position is not configured (home_x/home_y = -1)
         '404':
           $ref: '#/components/responses/NotFound'
         '502':
@@ -989,12 +1003,16 @@ paths:
         firmware snapshot (needs both `thingino_url` and `thingino_api_key`
         configured); for any other camera it proxies the configured
         `snapshot_url` (the camera's own JPEG endpoint). 404 when the camera has
-        neither configured. When `[zaguan]` is configured, the rotating relay
-        credentials are also accepted as `user`/`pass` query parameters (the
-        Zaguán publisher embeds them in `snapshot_url`); otherwise use a normal
-        session.
+        neither configured. First-party clients authenticate with a normal
+        session. Third-party clients that cannot set an Authorization header
+        (the Zaguán publisher, browser `<img>`) use a short-lived signed grant:
+        `exp` + `sig`, scoped to this camera's `thumb` surface. The legacy
+        `user`/`pass` relay pair is accepted only when
+        `[zaguan] legacy_media_auth = true`.
       parameters:
         - $ref: '#/components/parameters/camera_id'
+        - $ref: '#/components/parameters/media_exp'
+        - $ref: '#/components/parameters/media_sig'
       responses:
         '200':
           description: JPEG image
@@ -1005,6 +1023,8 @@ paths:
                 format: binary
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: Camera is disabled or paused (privacy/outside its schedule)
         '502':
           $ref: '#/components/responses/BadGateway'
 
@@ -1046,6 +1066,8 @@ paths:
           description: Switching Protocols — WebSocket established
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PasswordChangeRequired'
         '404':
           description: Two-way audio not available for this camera
         '409':
@@ -1287,13 +1309,15 @@ paths:
         [start, end], for scrubbable timeline playback via hls.js. Gaps are
         collapsed into a continuous timeline; `EXT-X-PROGRAM-DATE-TIME` per
         segment gives wall-clock. The playlist's init/segment URIs are relative
-        and resolve under this same `/recordings/hls/` prefix; every request
-        needs auth (use hls.js `xhrSetup` with a Bearer token). When `[zaguan]`
-        is configured, the rotating relay credentials are also accepted as
-        `user`/`pass` query parameters and the playlist forwards them to its
-        init and segment URIs.
+        and resolve under this same `/recordings/hls/` prefix. Every request
+        needs auth: a Bearer session, or a short-lived signed grant
+        (`exp`/`sig`, `hls` scope) for players that cannot set headers. The
+        playlist forwards `exp`/`sig` (and the deprecated `user`/`pass` pair
+        when `[zaguan] legacy_media_auth = true`) to its init and segment URIs.
       parameters:
         - $ref: '#/components/parameters/camera_id'
+        - $ref: '#/components/parameters/media_exp'
+        - $ref: '#/components/parameters/media_sig'
         - name: start
           in: query
           required: true
@@ -1320,9 +1344,11 @@ paths:
   /api/camera/{camera_id}/recordings/hls/init.mp4:
     get:
       summary: HLS VOD CMAF init segment (embedded engine)
-      description: Referenced by the playlist (`EXT-X-MAP`). Embedded engine only.
+      description: Referenced by the playlist (`EXT-X-MAP`). Embedded engine only. Needs a session or the `exp`/`sig` grant from the playlist.
       parameters:
         - $ref: '#/components/parameters/camera_id'
+        - $ref: '#/components/parameters/media_exp'
+        - $ref: '#/components/parameters/media_sig'
       responses:
         '200':
           description: CMAF init
@@ -1335,9 +1361,11 @@ paths:
   /api/camera/{camera_id}/recordings/hls/segment.m4s:
     get:
       summary: HLS VOD CMAF media segment (embedded engine)
-      description: Referenced by the playlist. Embedded engine only.
+      description: Referenced by the playlist. Embedded engine only. Needs a session or the `exp`/`sig` grant from the playlist.
       parameters:
         - $ref: '#/components/parameters/camera_id'
+        - $ref: '#/components/parameters/media_exp'
+        - $ref: '#/components/parameters/media_sig'
       responses:
         '200':
           description: CMAF media segment
@@ -1354,10 +1382,14 @@ paths:
         Only served when the embedded media engine ([media]) is active; returns
         404 otherwise. Reports whether a live MSE source is available for the
         camera and the codec string the browser needs to build a MediaSource.
-        When `[zaguan]` is configured, the rotating relay credentials are also
-        accepted as `user`/`pass` query parameters.
+        First-party clients use a Bearer session; header-less clients use a
+        short-lived signed grant (`exp`/`sig`, `live` scope). The legacy
+        `user`/`pass` relay pair is accepted only with
+        `[zaguan] legacy_media_auth = true`.
       parameters:
         - $ref: '#/components/parameters/camera_id'
+        - $ref: '#/components/parameters/media_exp'
+        - $ref: '#/components/parameters/media_sig'
       responses:
         '200':
           description: Availability
@@ -1384,11 +1416,15 @@ paths:
       description: |
         Only served when the embedded media engine ([media]) is active; returns
         404 otherwise. Streams the camera's live fragmented-MP4 (init + parts)
-        as chunked HTTP, to be fed into a browser MediaSource SourceBuffer. When
-        `[zaguan]` is configured, the rotating relay credentials are also
-        accepted as `user`/`pass` query parameters.
+        as chunked HTTP, to be fed into a browser MediaSource SourceBuffer.
+        First-party clients use a Bearer session; header-less clients use a
+        short-lived signed grant (`exp`/`sig`, `live` scope). The legacy
+        `user`/`pass` relay pair is accepted only with
+        `[zaguan] legacy_media_auth = true`.
       parameters:
         - $ref: '#/components/parameters/camera_id'
+        - $ref: '#/components/parameters/media_exp'
+        - $ref: '#/components/parameters/media_sig'
       responses:
         '200':
           description: Chunked fMP4 stream
@@ -1533,6 +1569,9 @@ paths:
         The device requests a device_code / user_code pair. The user approves
         the user_code from an authenticated session (POST
         /api/auth/device/verify) while the device polls with the device_code.
+        The issued session is pinned to the ordinary `user` role even when an
+        admin approves it, and carries a refresh token (see the poll response).
+        A user flagged `must_change_password` cannot approve a device.
       security: []
       parameters:
         - name: device_name
@@ -1561,6 +1600,12 @@ paths:
   /api/auth/device/{device_code}:
     get:
       summary: Poll the device status
+      description: >-
+        Unauthenticated by design: the device_code is the bearer secret. When
+        the pairing is approved the response also carries a refresh token; the
+        issued session is pinned to the ordinary `user` role even if an admin
+        approved the device, so it cannot administer users or cameras. A user
+        flagged `must_change_password` cannot complete the pairing.
       security: []
       parameters:
         - name: device_code
@@ -1586,11 +1631,23 @@ paths:
                     type: integer
                     format: int64
                     description: The issued token's expiry (unix seconds). Only present when status = approved.
+                  refresh_token:
+                    type: string
+                    description: >-
+                      Refresh token for the device session (only when approved).
+                      Older TV clients can ignore it and keep re-pairing;
+                      clients that store it may call POST /api/auth/refresh.
+                  refresh_expires_at:
+                    type: integer
+                    format: int64
+                    description: Refresh-token expiry (unix seconds), only when approved.
                   device_name:
                     type: string
                     nullable: true
         '404':
           $ref: '#/components/responses/NotFound'
+        '403':
+          $ref: '#/components/responses/PasswordChangeRequired'
 
   /api/auth/device/verify:
     post:
@@ -2095,6 +2152,28 @@ components:
       schema:
         type: string
       example: "interior"
+    media_exp:
+      name: exp
+      in: query
+      required: false
+      schema:
+        type: integer
+        format: int64
+      description: >-
+        Expiry (unix seconds) of a short-lived signed media grant. Used with
+        `sig` by clients that cannot set an Authorization header (Zaguán,
+        native HLS players, browser `<img>`); first-party clients use the
+        normal Bearer session instead.
+    media_sig:
+      name: sig
+      in: query
+      required: false
+      schema:
+        type: string
+      description: >-
+        HMAC-SHA256 signature (hex) over camera id, media surface and `exp`.
+        Grants are scoped to `live`, `thumb` or `hls`; they are not accepted on
+        the clip/list/timeline/gaps endpoints.
     username:
       name: username
       in: path
@@ -2749,6 +2828,23 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Message'
+
+    PasswordChangeRequired:
+      description: >-
+        The session is valid but the user still carries must_change_password.
+        Only the password-change, logout and session-revoke endpoints are
+        reachable until `PUT /api/users/me/password` clears it.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              detail:
+                type: string
+                example: Password change required
+              code:
+                type: string
+                example: password_change_required
 
     BadGateway:
       description: Camera or upstream unreachable / rejected the request

@@ -16,6 +16,11 @@ import (
 type CurrentUser struct {
 	Username string
 	Role     string
+	// MustChangePassword mirrors users.must_change_password. requireUser
+	// enforces it server-side (the web UI already gates on the login flag); a
+	// seeded admin or an admin-forced reset can only change the password until
+	// the flag clears.
+	MustChangePassword bool
 }
 
 // IsAdmin reports whether the user has the admin role.
@@ -28,9 +33,10 @@ func VerifyBasic(db *sql.DB, r *http.Request) *CurrentUser {
 		return nil
 	}
 	var stored, role string
+	var mustChange bool
 	if err := db.QueryRow(
-		"SELECT password, role FROM users WHERE username = ?", username,
-	).Scan(&stored, &role); err != nil {
+		"SELECT password, role, must_change_password FROM users WHERE username = ?", username,
+	).Scan(&stored, &role, &mustChange); err != nil {
 		// Same cost as a real check, so response time doesn't reveal which
 		// usernames exist.
 		BurnPasswordCheck(password)
@@ -39,7 +45,7 @@ func VerifyBasic(db *sql.DB, r *http.Request) *CurrentUser {
 	if !CheckPasswordHash(stored, password) {
 		return nil
 	}
-	return &CurrentUser{Username: username, Role: role}
+	return &CurrentUser{Username: username, Role: role, MustChangePassword: mustChange}
 }
 
 // dummyPasswordHash has the default algorithm and iteration count, so
@@ -74,19 +80,23 @@ func VerifyToken(db *sql.DB, token string) *CurrentUser {
 	}
 	// One JOINed query instead of tokens-then-users: this runs on every Bearer
 	// request, so the second round-trip was pure hot-path overhead. A token
-	// whose user was deleted matches no row, same as before.
+	// whose user was deleted matches no row, same as before. A non-empty
+	// tokens.role overrides the user's current role (device-login sessions are
+	// pinned to "user" even when an admin approves them); NULL keeps the
+	// historical behavior.
 	var username, role string
 	var expires sql.NullInt64
+	var mustChange bool
 	if err := db.QueryRow(
-		"SELECT t.username, t.expires_at, u.role FROM tokens t "+
-			"JOIN users u ON u.username = t.username WHERE t.token = ?", token,
-	).Scan(&username, &expires, &role); err != nil {
+		"SELECT t.username, t.expires_at, COALESCE(NULLIF(t.role, ''), u.role), u.must_change_password "+
+			"FROM tokens t JOIN users u ON u.username = t.username WHERE t.token = ?", token,
+	).Scan(&username, &expires, &role, &mustChange); err != nil {
 		return nil
 	}
 	if expires.Valid && expires.Int64 != 0 && expires.Int64 < time.Now().Unix() {
 		return nil
 	}
-	return &CurrentUser{Username: username, Role: role}
+	return &CurrentUser{Username: username, Role: role, MustChangePassword: mustChange}
 }
 
 // Current returns the user from Basic or Bearer credentials, preferring Basic.

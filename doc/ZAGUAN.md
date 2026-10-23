@@ -81,20 +81,39 @@ The entity carries these attributes (empty values are omitted):
 
 The links are regenerated on every snapshot, so the hub keeps usable URLs
 across credential rotations. They need a reachable host: `[media] rtsp_host`
-or `[zaguan] public_url` supplies it. The URLs carry the relay's rotating
-username/password as `user`/`pass` query parameters, and the media endpoints
-accept that pair only while `[zaguan]` is configured. It is the same pair
-already embedded in the RTSP URL, so the hub's web client can play MSE, HLS
-and thumbnails without an Eneverre login. Treat the hub store with the same
-care as the Eneverre API: anyone who can read a camera's attributes can read
-its media.
+or `[zaguan] public_url` supplies it. The HTTP media URLs carry a **short-lived
+signed grant** — `exp` (unix seconds) plus `sig` (HMAC-SHA256 over camera id,
+surface and expiry) — scoped to one camera and one surface:
+
+| Link | Scope | Lifetime |
+|---|---|---|
+| `mse_url`, `mse_info_url` | `live` | 1 h |
+| `snapshot_url` | `thumb` | 1 h |
+| `hls_url` (playlist + init/segments) | `hls` | 6 h |
+
+The signing key lives in the Eneverre database (`media_auth_key`) and is
+never the RTSP relay pair, so a leaked RTSP URL cannot mint media grants. The
+grants do **not** authorize the clip/list/timeline/gaps APIs: those remain
+session-only. The playlist propagates `exp`/`sig` to its init and segment URIs.
+
+`[zaguan] legacy_media_auth = true` re-enables the old `user`/`pass` relay
+pair for one release, only for a hub that has cached URLs from an older
+version; new snapshots are always signed. Links are omitted while the camera
+is in privacy or outside its schedule, so a still cannot bypass the pause.
+Treat the hub store with the same care as the Eneverre API: a signed URL is
+still a bearer capability until it expires.
+
+> **Remote deployments:** `rtsp_url` is plain RTSP and carries the global relay
+> pair. For clients outside the LAN, prefer the HTTPS media links (MSE/HLS) or
+> put RTSP behind a VPN/TLS tunnel. Do not expose port 8554 directly to the
+> Internet.
 
 There is **no HLS live** mode in Eneverre: live is MSE (or the RTSP relay), and
 HLS is the VOD playlist of what is already on disk. `hls_url` covers the last
 hour of the camera's timeline and is a normal VOD playlist that any HLS
 player (hls.js, VLC, ExoPlayer, AVPlayer) can open. A player that wants another
 window calls the same endpoint with its own `start`/`end`; the playlist
-propagates the `user`/`pass` pair to its init and segment URIs.
+propagates the grant to its init and segment URIs.
 
 ## Commands
 
@@ -108,9 +127,10 @@ command list, which the hub renders as read-only:
   is enabled, not paused (privacy/schedule) and has a snapshot endpoint; the
   hub applies the confirmed state and attributes to the entity.
 - **`ptz_move`** takes `pan` and `tilt` in degrees, relative to the current
-  position; **`ptz_home`** goes to the configured home position and
-  **`ptz_recalibrate`** runs the motor calibration. They are advertised only
-  for cameras with PTZ and Thingino credentials.
+  position; **`ptz_home`** goes to the configured home position (advertised
+  only when `home_x`/`home_y` are set) and **`ptz_recalibrate`** runs the motor
+  calibration. They are advertised only for cameras with PTZ and Thingino
+  credentials.
 - There is no `stream_start` / `stream_stop`: the embedded engine records and
   relays the camera continuously. Pausing the pipeline is the privacy toggle
   in the Eneverre UI/API, not a per-viewer stream command. Advertising the
@@ -139,7 +159,7 @@ thumbnail URL with the media credentials).
 - No motion events: the hub does not hear about `POST /api/camera/{id}/events`
   yet, so a motion sensor entity is not published.
 - No recording timeline or clip API exposed to the hub: `hls_url` is a
-  ready-to-play last-24h VOD playlist, not a browsable archive.
+  ready-to-play last-hour VOD playlist, not a browsable archive.
 - No privacy switch entity. Privacy is toggled in Eneverre; the hub only
   reflects the resulting availability.
 - No HLS **live**. The live feed is MSE (`mse_url`) or RTSP; HLS is VOD. The

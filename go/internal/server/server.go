@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"eneverre/internal/config"
 	"eneverre/internal/events"
 	"eneverre/internal/media"
+	"eneverre/internal/mediaauth"
 	"eneverre/internal/metrics"
 	"eneverre/internal/schedule"
 	"eneverre/internal/streamauth"
@@ -37,6 +39,12 @@ type App struct {
 	cfg   *config.Config
 	db    *sql.DB
 	creds *streamauth.Store
+	// mediaAuth signs the short-lived HTTP media grants used by clients that
+	// cannot set an Authorization header (Zaguán's web client, HLS players,
+	// browser <img>). It is nil only when the DB/key could not be opened; in
+	// that case the publisher emits no media links instead of falling back to
+	// a reusable password.
+	mediaAuth *mediaauth.Store
 	// camStore is the DB-backed source of truth for cameras. Reads for request
 	// handling go through the in-memory `cameras` snapshot (rebuilt on every
 	// create/delete); camStore is written on create/delete and read at startup.
@@ -271,6 +279,17 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		ptzPos:             make(map[string]ptzPos),
 		startedAt:          time.Now(),
 	}
+	// The HTTP media grants are signed with a server-only key. Create it after
+	// the schema exists (New also creates its table, so tests/embedders that
+	// skip store.Init still work). A failure leaves mediaAuth nil: the Zaguán
+	// publisher then omits media links rather than exposing a reusable password.
+	if db != nil {
+		if ma, err := mediaauth.NewStore(db); err != nil {
+			slog.Error("media signing key unavailable; signed media links disabled", "err", err)
+		} else {
+			a.mediaAuth = ma
+		}
+	}
 	// Precompute the embedded UI (ETag + gzip) so repeat loads revalidate
 	// cheaply instead of re-downloading. Only used when no on-disk dir wins.
 	if staticFS != nil {
@@ -305,6 +324,11 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 // SetVersion records the build version for the admin /api/status endpoint.
 // Called from main after New (mirrors SetMetrics / SetMediaEngine).
 func (a *App) SetVersion(v string) { a.version = v }
+
+// SetMediaAuth wires the media-grant signer. New does this automatically when
+// it has a database; the setter exists for tests and embedders that build App
+// by hand.
+func (a *App) SetMediaAuth(s *mediaauth.Store) { a.mediaAuth = s }
 
 // getCamera returns a copy of the camera with the given id (and true), or a
 // zero Camera and false. Taken under the read lock so it is safe against a
@@ -846,7 +870,9 @@ func (a *App) Handler() http.Handler {
 	// accessLog is outermost so every request (including CORS preflight) is
 	// logged; cors handles OPTIONS before the mux. [server] cors_origins picks
 	// which Origins get credentials (none by default) — see cors.
-	return accessLog(cors(mux, a.cfg.CORSOrigins()), a.proxyTrust)
+	// securityHeaders sets CSP/frame/HSTS on every response; noStoreAPI keeps
+	// API responses (tokens, camera credentials, media grants) out of caches.
+	return securityHeaders(accessLog(cors(noStoreAPI(mux), a.cfg.CORSOrigins()), a.proxyTrust))
 }
 
 // --- response helpers ----------------------------------------------------
@@ -860,6 +886,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // httpError writes the API's standard error body shape: {"detail": "..."}.
 func httpError(w http.ResponseWriter, status int, detail string) {
 	writeJSON(w, status, map[string]string{"detail": detail})
+}
+
+// httpErrorCode is httpError with a stable machine-readable code. Clients can
+// key off it while the human-readable detail stays free to change.
+func httpErrorCode(w http.ResponseWriter, status int, code, detail string) {
+	writeJSON(w, status, map[string]string{"detail": detail, "code": code})
 }
 
 // thinginoError turns a Thingino client error into a 502 with an unambiguous
@@ -888,7 +920,11 @@ func (a *App) unauthorized(w http.ResponseWriter) {
 }
 
 // requireUser enforces Basic-or-Bearer auth, writing 401 (or 429 when the
-// caller is throttled) and returning nil on failure.
+// caller is throttled) and returning nil on failure. A session whose user
+// still carries must_change_password is confined to the password-change and
+// logout/session-management endpoints: the web UI already gates on the flag,
+// but API clients (and the seeded admin's bootstrap password) must be stopped
+// server-side too.
 func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentUser {
 	u, wait, throttled := a.currentUser(r)
 	if throttled {
@@ -899,28 +935,86 @@ func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentU
 		a.unauthorized(w)
 		return nil
 	}
+	if u.MustChangePassword && !passwordChangeAllowed(r) {
+		httpErrorCode(w, http.StatusForbidden, "password_change_required",
+			"Password change required")
+		return nil
+	}
 	return u
 }
 
-// requireMedia authenticates a camera-media request. Besides a normal Eneverre
-// session (Basic or Bearer), it accepts the rotating relay credentials as
-// user/pass query parameters while [zaguan] is configured — the same pair
-// already embedded in the RTSP URL returned by /api/cameras. The Zaguán
-// publisher uses them to hand the hub's web client playable MSE, HLS and
-// thumbnail URLs without an Eneverre login; a missing or wrong pair is a 401
-// and never falls through to the password throttle (these are not user
-// passwords).
-func (a *App) requireMedia(w http.ResponseWriter, r *http.Request) bool {
-	q := r.URL.Query()
-	user, pass := q.Get("user"), q.Get("pass")
-	if user != "" && pass != "" {
-		if a.cfg != nil && a.cfg.ZaguanURL() != "" && a.creds != nil && a.creds.Validate(user, pass) {
-			return true
-		}
-		a.unauthorized(w)
+// passwordChangeAllowed lists the endpoints a flagged user may still reach:
+// the change itself, logout, and the session list/revoke controls (so a
+// borrowed or lost device can be cut off before the password is changed).
+func passwordChangeAllowed(r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodPut && r.URL.Path == "/api/users/me/password":
+		return true
+	case r.Method == http.MethodPost && r.URL.Path == "/api/auth/logout":
+		return true
+	case r.Method == http.MethodGet && r.URL.Path == "/api/users/me/sessions":
+		return true
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/users/me/sessions/"):
+		return true
+	default:
 		return false
 	}
+}
+
+// requireMediaAccess authorizes one camera media surface. First-party clients
+// present a normal session (Bearer/Basic). Third-party clients that cannot set
+// headers — the Zaguán web client, HLS players, browser <img> — use a signed
+// grant from the publisher: exp=<unix>&sig=<hex>, scoped to the camera and the
+// media surface (live, thumb, hls). The old user/pass relay pair is accepted
+// only when [zaguan] legacy_media_auth is explicitly enabled, so upgrading
+// hubs keep working while operators retire the reusable password.
+func (a *App) requireMediaAccess(w http.ResponseWriter, r *http.Request, camID, scope string) bool {
+	q := r.URL.Query()
+	expRaw, sig := q.Get("exp"), q.Get("sig")
+	if expRaw != "" || sig != "" {
+		if expRaw == "" || sig == "" || a.mediaAuth == nil {
+			a.logMediaAuthFailure(r, camID, scope, "media_grant_malformed")
+			httpError(w, http.StatusUnauthorized, "Unauthorized")
+			return false
+		}
+		exp, err := strconv.ParseInt(expRaw, 10, 64)
+		if err != nil {
+			a.logMediaAuthFailure(r, camID, scope, "media_grant_malformed")
+			httpError(w, http.StatusUnauthorized, "Unauthorized")
+			return false
+		}
+		if !a.mediaAuth.Validate(camID, scope, exp, sig) {
+			reason := "media_grant_invalid"
+			if exp <= time.Now().Unix() {
+				reason = "media_grant_expired"
+			}
+			a.logMediaAuthFailure(r, camID, scope, reason)
+			httpError(w, http.StatusUnauthorized, "Unauthorized")
+			return false
+		}
+		return true
+	}
+
+	user, pass := q.Get("user"), q.Get("pass")
+	if user != "" || pass != "" {
+		if a.cfg != nil && a.cfg.ZaguanLegacyMediaAuth() &&
+			a.cfg.ZaguanURL() != "" && a.creds != nil && a.creds.Validate(user, pass) {
+			return true
+		}
+		a.logMediaAuthFailure(r, camID, scope, "legacy_media_auth_failed")
+		httpError(w, http.StatusUnauthorized, "Unauthorized")
+		return false
+	}
+
 	return a.requireUser(w, r) != nil
+}
+
+// logMediaAuthFailure records a rejected media grant in the security log. It
+// deliberately logs only the camera, scope and a reason: the grant signature
+// and any legacy password must never reach a log line.
+func (a *App) logMediaAuthFailure(r *http.Request, camID, scope, reason string) {
+	a.secLog.event(secLogIP(a.proxyTrust.clientIP(r), r), "authentication_failure", "",
+		"media:"+scope+":"+camID, reason)
 }
 
 // currentUser authenticates r via Basic or Bearer, wrapping auth.Current with
@@ -1309,6 +1403,10 @@ func (a *App) handlePTZHome(w http.ResponseWriter, r *http.Request) {
 	if cam == nil {
 		return
 	}
+	if cam.HomeX < 0 || cam.HomeY < 0 {
+		httpError(w, http.StatusConflict, "Home position not configured for this camera")
+		return
+	}
 	if _, err := a.moveAbsDegrees(*cam, cam.HomeX, cam.HomeY); err != nil {
 		thinginoError(w, err)
 		return
@@ -1453,11 +1551,25 @@ func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 const maxSnapshotBytes = 8 << 20 // 8 MiB
 
 // snapshotClient fetches camera snapshot URLs with a bounded timeout so a slow
-// or hung camera can't tie up the handler goroutine.
-var snapshotClient = &http.Client{Timeout: 10 * time.Second}
+// or hung camera can't tie up the handler goroutine. Redirects are not
+// followed: a configured snapshot URL may carry camera credentials, and a
+// redirecting camera (or anything answering on its address) must not turn the
+// proxy into an SSRF hop or collect the credentials.
+var snapshotClient = &http.Client{
+	Timeout:       10 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// cameraPaused reports whether the camera is manually in privacy or outside
+// its schedule (the same effective pause the engine applies).
+func (a *App) cameraPaused(id string) bool {
+	a.privacyMu.RLock()
+	defer a.privacyMu.RUnlock()
+	return a.privacy[id] || a.schedOff[id]
+}
 
 func (a *App) handleThumbnail(w http.ResponseWriter, r *http.Request) {
-	if !a.requireMedia(w, r) {
+	if !a.requireMediaAccess(w, r, r.PathValue("cam_id"), mediaauth.ScopeThumb) {
 		return
 	}
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
@@ -1467,6 +1579,14 @@ func (a *App) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	if !cam.Enabled {
 		httpError(w, http.StatusConflict, "camera is disabled")
+		return
+	}
+	// A still is live transmission: do not let a stale grant or an already-open
+	// session paint a camera that the operator paused. (For a non-Thingino
+	// camera the configured snapshot_url is fetched directly from the camera,
+	// so nothing else in the pipeline would stop it.)
+	if a.cameraPaused(cam.ID) {
+		httpError(w, http.StatusConflict, "camera is paused")
 		return
 	}
 	content, ct, err := a.cameraSnapshot(r.Context(), cam)
@@ -1519,11 +1639,11 @@ func (a *App) cameraSnapshot(ctx context.Context, cam camera.Camera) ([]byte, st
 func fetchSnapshot(ctx context.Context, url string) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, "", redactURLError(err)
 	}
 	resp, err := snapshotClient.Do(req)
 	if err != nil {
-		return nil, "", err
+		return nil, "", redactURLError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -1533,10 +1653,45 @@ func fetchSnapshot(ctx context.Context, url string) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	// Trust an image/* content-type from the camera; default to JPEG otherwise.
-	ct := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "image/") {
+	// Only raster image types are proxied. A camera (or a compromised one)
+	// answering image/svg+xml would otherwise serve active content with the
+	// NVR's origin if the URL is opened directly; browsers do not execute
+	// scripts in an <img>, but a top-level navigation would.
+	ct := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+	switch ct {
+	case "image/jpeg", "image/png", "image/webp", "image/gif":
+	case "":
+		ct = "image/jpeg"
+	default:
+		if strings.HasPrefix(ct, "image/") {
+			return nil, "", fmt.Errorf("unsupported image content type %q", ct)
+		}
 		ct = "image/jpeg"
 	}
 	return body, ct, nil
+}
+
+// redactURLError strips the query (and userinfo) from a *url.Error before it
+// reaches a log line: camera snapshot URLs may carry credentials, and
+// net/http embeds the full URL in its error messages.
+func redactURLError(err error) error {
+	var ue *neturl.Error
+	if errors.As(err, &ue) {
+		sanitized := *ue
+		sanitized.URL = redactURL(ue.URL)
+		return &sanitized
+	}
+	return err
+}
+
+// redactURL returns raw without userinfo, query or fragment.
+func redactURL(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil || (u.Scheme == "" && u.Host == "") {
+		return "camera endpoint"
+	}
+	u.RawQuery = ""
+	u.User = nil
+	u.Fragment = ""
+	return u.String()
 }

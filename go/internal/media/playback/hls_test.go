@@ -112,4 +112,31 @@ func TestHandleHLSPlaylistBounds(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("signed grants are forwarded to the parts", func(t *testing.T) {
+		req := hlsPlaylistReq("2026-05-04T09:59:00Z", "2026-05-04T10:02:00Z")
+		q := req.URL.Query()
+		q.Set("exp", "1893456000")
+		q.Set("sig", "deadbeef")
+		req.URL.RawQuery = q.Encode()
+		w := httptest.NewRecorder()
+		h.HandleHLSPlaylist(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("playlist = %d, want 200 (body: %s)", w.Code, w.Body.String())
+		}
+		for _, marker := range []string{"init.mp4?", "segment.m4s?"} {
+			found := false
+			for _, line := range strings.Split(w.Body.String(), "\n") {
+				if strings.Contains(line, marker) {
+					found = true
+					if !strings.Contains(line, "exp=1893456000") || !strings.Contains(line, "sig=deadbeef") {
+						t.Errorf("%s line does not carry the signed grant: %s", marker, line)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("no %s line in playlist", marker)
+			}
+		}
+	})
 }

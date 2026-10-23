@@ -13,6 +13,12 @@
 #   - Eneverre (this): 127.0.0.1:8080  - serves the static UI at / and the
 #                       REST API at /api/* (live + recordings included)
 #   - RTSP relay     : 127.0.0.1:8554  - exposed directly, not proxied
+#
+# REMOTE CLIENTS: the API, MSE and HLS links are HTTPS through Caddy. The RTSP
+# relay is plain RTSP (no TLS) and carries the rotating relay pair: keep :8554
+# on the LAN or reach it through a VPN/TLS tunnel. Do not forward it on the
+# Internet. Android/TV clients that need remote live should prefer the HTTPS
+# MSE/HLS links when their player supports them.
 
 # REQUIRED for push-to-talk. Caddy advertises HTTP/3 (`alt-svc: h3=":443"`) by
 # default, and it does not translate WebSocket-over-HTTP/3 (RFC 9220 Extended
@@ -40,13 +46,21 @@ nvr.example.com {
         # If you ever split them, uncomment and tighten the origin:
         # Access-Control-Allow-Origin https://nvr.example.com
         X-Content-Type-Options "nosniff"
-        Referrer-Policy "strict-origin-when-cross-origin"
+        Referrer-Policy "no-referrer"
     }
 
     log {
         output file /var/log/caddy/eneverre.log {
             roll_size 100mb
             roll_keep 5
+        }
+        # Media grants (exp/sig), talk/webhook tokens, the legacy relay
+        # user/pass and the device pairing code travel in the URI. Caddy logs
+        # request>uri verbatim by default; mask the values while keeping the
+        # keys for debugging. (Caddy allows one filter per field: this single
+        # regexp does both the device-code path segment and the query values.)
+        format filter {
+            request>uri regexp "(?i)(/api/auth/device/)[A-Za-z0-9_-]{16,}|([?&](token|refresh_token|password|secret|api_key|usercode|sig|user|pass)=)[^&]*" "${1}${2}REDACTED"
         }
     }
 }

@@ -57,6 +57,8 @@ setup; a proxy on another host must be listed in `[server] trusted_proxies`
 | `authentication_failure` | `basic_auth_failed`   | a wrong HTTP Basic password on any protected API endpoint   |
 | `authentication_failure` | `invalid_current_password` | a wrong current password at `PUT /api/users/me/password` (an authenticated session guessing its own password) |
 | `authentication_failure` | `rtsp_auth_failed` | an RTSP relay reader presenting credentials that match neither the current nor the grace pair (`path="rtsp:<camera-id>"`; the credential-less first request of the RTSP challenge is not logged) |
+| `authentication_failure` | `media_grant_invalid` / `media_grant_expired` / `media_grant_malformed` | a signed media grant rejected on the thumbnail, live MSE or HLS endpoints (`path="media:<scope>:<camera-id>"`; the signature is never logged) |
+| `authentication_failure` | `legacy_media_auth_failed` | the deprecated `user`/`pass` relay pair rejected on a media endpoint (only reachable when `[zaguan] legacy_media_auth = true`) |
 
 Expired Bearer tokens and requests with no credentials are **not** logged: they
 are normal (a lapsed browser session) and banning on them would lock out

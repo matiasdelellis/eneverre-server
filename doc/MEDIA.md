@@ -298,8 +298,14 @@ engine](#why-the-embedded-engine)). A random 8/8 char pair guards the RTSP
 relay; it rotates every `rotate_hours` (default 24, `0` disables), and the
 previous pair stays valid for one interval (grace window) so readers are not
 dropped mid-rotation. The relay validates each RTSP connection against the
-current **and** grace pair. The HTTP live and playback endpoints are
-protected by Eneverre's own user auth (Bearer/Basic), not this pair.
+current **and** grace pair. The pair is **not** a general HTTP media key: live
+MSE, thumbnails and HLS use the normal session (Bearer/Basic) or a short-lived
+signed grant (`exp`/`sig`) issued to a client that cannot set headers. The
+clip/list/timeline/gaps APIs are session-only.
+
+The RTSP relay is plain RTSP (no TLS) and carries the global pair. For clients
+outside the LAN, prefer the HTTPS MSE/HLS surfaces or put RTSP behind a
+VPN/TLS tunnel; do not publish port 8554 on the Internet.
 
 ## Live HTTP endpoints
 
@@ -366,7 +372,8 @@ always spans the full requested window and it is obvious there was no recording
 ## Client integration notes
 
 What a client (web UI, mobile/TV app) consumes. All `/api/*` calls take
-Bearer (or Basic) auth.
+Bearer (or Basic) auth, except the HTTP media surfaces that also accept the
+short-lived signed grants described below.
 
 **Live view**
 - **Web / MSE**: use `camera.live_mse` (`/api/camera/{id}/live/stream`). It is a
@@ -394,14 +401,27 @@ Bearer (or Basic) auth.
   legacy avc1/truncate.
 
 **Auth reminder for HLS**: every playlist/init/segment request needs the Bearer
-token. Use hls.js `xhrSetup` (or Basic-in-URL, e.g. VLC:
-`http://user:pass@host/…/playlist.m3u8`).
+token, a signed grant, or Basic credentials. Use hls.js `xhrSetup` with the
+Bearer token for first-party clients. For players that cannot set headers
+(VLC, ExoPlayer, a hub's browser), prefer a **signed grant**:
+`…/playlist.m3u8?exp=<unix>&sig=<hex>`; the playlist forwards `exp`/`sig` to
+its init and segment URIs. Basic-in-URL still works but puts the account
+password in history/logs — avoid it for remote clients.
 
-When `[zaguan]` is configured, the rotating relay credentials are also accepted
-as `user`/`pass` query parameters on the media endpoints (thumbnail, MSE live
-and recordings/HLS); the playlist forwards them to its init and segment URIs.
-That is how the Zaguán publisher hands a hub's web client playable URLs
-without an Eneverre login — see [`ZAGUAN.md`](ZAGUAN.md).
+When `[zaguan]` is configured, the publisher mints camera- and surface-scoped
+signed grants for the thumbnail, live MSE and HLS links. The old `user`/`pass`
+relay pair is accepted on those media endpoints only when
+`[zaguan] legacy_media_auth = true` (one-release migration aid). The grants do
+not authorize the clip/list/timeline/gaps API — those remain session-only.
+See [`ZAGUAN.md`](ZAGUAN.md).
+
+**Client migration:** if a client used the RTSP `user`/`pass` pair as query
+parameters on HTTP media endpoints, switch to its normal Bearer session (web,
+Android phone) or consume the signed `exp`/`sig` URL the server publishes
+(hub/native player). The clip/list/timeline/gaps endpoints never accept the
+pair. The web UI, MSE player, hls.js and the Android talk client are unchanged;
+the only additive API change is the device-login refresh token and the
+`403 {"code":"password_change_required"}` response.
 
 ## Metrics
 

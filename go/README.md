@@ -161,6 +161,7 @@ internal/auth                 Werkzeug-format hashing + Basic/Bearer auth
 internal/camera               Camera model + DB store + one-time INI seed
 internal/schedule             named recording programs (per-weekday armed windows) + DB store
 internal/streamauth           rotating credential store + RTSP URL builder
+internal/mediaauth            short-lived camera/surface-scoped HMAC media grants
 internal/thingino             PTZ move + JPEG snapshot HTTP calls
 internal/events               event model + record/list/get/delete
 internal/updates              Android auto-update store + per-track registry
@@ -259,16 +260,27 @@ session; when omitted the field is NULL — older clients keep working unchanged
 Clients renew with `POST /api/auth/refresh` (`{"refresh_token": "..."}`), which
 rotates both secrets and slides both expiries **in place on the same row** — so
 the session count tracks logins, not refreshes. Device-login (TV) sessions get
-only an access token (`refresh_token` NULL) and so cannot refresh: they re-pair
-when the access token lapses. A session is shown as alive in
-`/api/users/me/sessions` while its refresh token is valid (`renewable: true`).
+the same access + refresh pair, but the token is pinned to the ordinary
+`user` role even when an admin approves the device; older TVs that ignore the
+new refresh fields keep re-pairing, new ones renew like a phone. A session is
+shown as alive in `/api/users/me/sessions` while its refresh token is valid
+(`renewable: true`). A user carrying `must_change_password` is confined
+server-side to `PUT /api/users/me/password`, logout and session revoke/listing;
+every other protected route answers `403 {"code":"password_change_required"}`.
+
+HTTP media links for clients that cannot set an `Authorization` header (the
+Zaguán hub, native HLS players, `<img>`) use short-lived HMAC grants:
+`?exp=<unix>&sig=<hex>`, scoped to one camera and one surface (`live`, `thumb`,
+`hls`). The key is a server-only row (`media_auth_key`), not the RTSP pair.
+The clip/list/timeline/gaps APIs remain session-only; the deprecated
+`user`/`pass` pair is accepted on media only with `[zaguan] legacy_media_auth`.
 
 Both lifetimes are configurable, with precedence **CLI flag > env > `[auth]`
 section > default**:
 
 ```ini
 [auth]
-access_token_ttl_hours = 24   ; access (Bearer) token life — also the TV session life
+access_token_ttl_hours = 24   ; access (Bearer) token life (also TV access)
 refresh_token_ttl_days = 90   ; refresh-token life; slid forward on every refresh
 ```
 

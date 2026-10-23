@@ -62,6 +62,9 @@ sync_interval = 10s
 	if got := cfg.ZaguanSyncInterval(); got != 10*time.Second {
 		t.Errorf("ZaguanSyncInterval = %s", got)
 	}
+	if cfg.ZaguanLegacyMediaAuth() {
+		t.Error("legacy media auth must be off by default")
+	}
 	token, err := cfg.ZaguanToken()
 	if err != nil {
 		t.Fatalf("ZaguanToken: %v", err)

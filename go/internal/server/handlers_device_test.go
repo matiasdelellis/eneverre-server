@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ func deviceFlowApp(t *testing.T) (*App, string, string) {
 	t.Helper()
 	a := withUsersApp(t)
 	a.accessTTL = 3600
+	a.refreshTTL = 30 * 24 * 3600
 	insertUser(t, a.db, "alice", "pw", "admin")
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/auth/device", nil))
@@ -82,6 +84,82 @@ func TestDeviceFlowApprovesOnce(t *testing.T) {
 	_ = a.db.QueryRow("SELECT COUNT(*) FROM tokens WHERE username = 'alice'").Scan(&n)
 	if n != 1 {
 		t.Errorf("tokens table has %d rows for alice, want 1", n)
+	}
+}
+
+func TestDeviceSessionIsRenewableAndScopedToUser(t *testing.T) {
+	a, deviceCode, userCode := deviceFlowApp(t)
+
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, adminRequest(t, "POST", "/api/auth/device/verify", "alice", "pw", `{"user_code":"`+userCode+`"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("verify = %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/auth/device/"+deviceCode, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("poll = %d: %s", w.Code, w.Body.String())
+	}
+	var approved struct {
+		Status           string `json:"status"`
+		Token            string `json:"token"`
+		RefreshToken     string `json:"refresh_token"`
+		RefreshExpiresAt int64  `json:"refresh_expires_at"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &approved); err != nil {
+		t.Fatalf("decode approved: %v", err)
+	}
+	if approved.Status != "approved" || approved.Token == "" {
+		t.Fatalf("approved = %+v", approved)
+	}
+	// The refresh token is additive: old TVs ignore it and keep re-pairing;
+	// new ones can renew without a new pairing code.
+	if approved.RefreshToken == "" || approved.RefreshExpiresAt <= time.Now().Unix() {
+		t.Fatalf("device refresh token missing/expired: %+v", approved)
+	}
+
+	// The device token is pinned to the ordinary "user" role even though the
+	// approving account is an admin.
+	usersReq := httptest.NewRequest("GET", "/api/users", nil)
+	usersReq.Header.Set("Authorization", "Bearer "+approved.Token)
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, usersReq)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("device token reached /api/users: status %d, want 403", w.Code)
+	}
+
+	camsReq := httptest.NewRequest("GET", "/api/cameras", nil)
+	camsReq.Header.Set("Authorization", "Bearer "+approved.Token)
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, camsReq)
+	if w.Code != http.StatusOK {
+		t.Errorf("device token cannot list cameras: status %d: %s", w.Code, w.Body.String())
+	}
+
+	// The refresh token renews the same device session.
+	body := `{"refresh_token":"` + approved.RefreshToken + `"}`
+	refreshReq := httptest.NewRequest("POST", "/api/auth/refresh", strings.NewReader(body))
+	refreshReq.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, refreshReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("device refresh = %d: %s", w.Code, w.Body.String())
+	}
+	var renewed struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &renewed); err != nil || renewed.Token == "" {
+		t.Fatalf("decode refresh: %v (%s)", err, w.Body.String())
+	}
+
+	// ... and the renewed token keeps the restricted role.
+	usersReq = httptest.NewRequest("GET", "/api/users", nil)
+	usersReq.Header.Set("Authorization", "Bearer "+renewed.Token)
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, usersReq)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("renewed device token reached /api/users: status %d, want 403", w.Code)
 	}
 }
 

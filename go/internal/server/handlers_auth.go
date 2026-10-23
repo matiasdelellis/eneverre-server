@@ -318,27 +318,57 @@ func (a *App) handleCheckDevice(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"status": "expired", "device_name": name})
 			return
 		}
+		// A user flagged to change the password must not be able to hand a
+		// device a working session before doing so. Approval normally can't
+		// happen (requireUser blocks it), but a code approved just before the
+		// flag was set must not mint a bypass.
+		if username.Valid {
+			var mustChange bool
+			if err := a.db.QueryRow(
+				"SELECT must_change_password FROM users WHERE username = ?", username.String,
+			).Scan(&mustChange); err != nil {
+				_, _ = a.db.Exec("UPDATE device_login SET status='approved' WHERE device_code = ? AND status='expired'", deviceCode)
+				httpError(w, http.StatusInternalServerError, "Could not create session")
+				return
+			}
+			if mustChange {
+				httpErrorCode(w, http.StatusForbidden, "password_change_required",
+					"Password change required")
+				return
+			}
+		}
 		token := auth.TokenURLSafe(16)
-		// Device (TV) sessions get an access token with a fixed life and no
-		// refresh_token, so they cannot be extended — the device re-pairs.
+		// Device sessions are ordinary users even when an admin approves them:
+		// a TV needs live/playback/PTZ/privacy, never user or camera
+		// administration. The token-role override keeps that scope even if the
+		// approving account is an admin.
 		tokenExpiresAt := now + a.accessTTL
+		// A refresh token is issued alongside the access token: clients that
+		// understand it can renew without re-pairing (and the session stays
+		// visible/revocable in /api/users/me/sessions). Older TV clients ignore
+		// the extra fields and keep their previous re-pair behavior.
+		refresh := auth.TokenURLSafe(32)
+		refreshExpiresAt := now + a.refreshTTL
 		// A failed INSERT must not consume the device code: the client would
 		// receive a token that doesn't exist and be "logged in" with a dead
 		// session, with re-pairing as the only (undiagnosed) way out. Report
 		// 500 and put the code back to approved so the next poll can retry.
 		if _, err := a.db.Exec(
-			"INSERT INTO tokens (token, username, expires_at, created_at, device_name) VALUES (?, ?, ?, ?, ?)",
-			token, username, tokenExpiresAt, now, deviceName,
+			"INSERT INTO tokens (token, username, expires_at, created_at, device_name, role, refresh_token, refresh_expires_at) "+
+				"VALUES (?, ?, ?, ?, ?, 'user', ?, ?)",
+			token, username, tokenExpiresAt, now, deviceName, refresh, refreshExpiresAt,
 		); err != nil {
 			_, _ = a.db.Exec("UPDATE device_login SET status='approved' WHERE device_code = ? AND status='expired'", deviceCode)
 			httpError(w, http.StatusInternalServerError, "Could not create session")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":      "approved",
-			"token":       token,
-			"expires_at":  tokenExpiresAt,
-			"device_name": name,
+			"status":             "approved",
+			"token":              token,
+			"expires_at":         tokenExpiresAt,
+			"refresh_token":      refresh,
+			"refresh_expires_at": refreshExpiresAt,
+			"device_name":        name,
 		})
 		return
 	}

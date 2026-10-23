@@ -2,6 +2,8 @@ package server
 
 import (
 	"net/http"
+
+	"eneverre/internal/mediaauth"
 )
 
 // handleLiveInfo reports whether the embedded engine has a live source for the
@@ -14,7 +16,7 @@ func (a *App) handleLiveInfo(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
-	if !a.requireMedia(w, r) {
+	if !a.requireMediaAccess(w, r, r.PathValue("cam_id"), mediaauth.ScopeLive) {
 		return
 	}
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
@@ -39,7 +41,7 @@ func (a *App) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
-	if !a.requireMedia(w, r) {
+	if !a.requireMediaAccess(w, r, r.PathValue("cam_id"), mediaauth.ScopeLive) {
 		return
 	}
 	cam, ok := a.getCamera(r.PathValue("cam_id"))

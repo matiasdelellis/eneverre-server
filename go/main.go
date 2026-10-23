@@ -342,6 +342,11 @@ func main() {
 		slog.Info("credential rotation enabled", "every_hours", rotateHours)
 	} else {
 		slog.Info("credential rotation disabled (rotate_hours <= 0)")
+		if zaguanURL != "" {
+			slog.Warn("stream credential rotation is disabled while [zaguan] is enabled; "+
+				"RTSP URLs remain valid until rotation is re-enabled",
+				"hint", "set [media] rotate_hours > 0 for remote deployments")
+		}
 	}
 
 	// Resolve host/port with precedence CLI flag > [server] section > default.

@@ -77,6 +77,10 @@ func TestCORS(t *testing.T) {
 		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://anything.example" {
 			t.Errorf("ACAO = %q, want reflected", got)
 		}
+		// A wildcard is not an opt-in to credentialed cross-origin reads.
+		if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Errorf("wildcard must not allow credentials, got %q", got)
+		}
 	})
 
 	t.Run("preflight OPTIONS short-circuits with 200", func(t *testing.T) {

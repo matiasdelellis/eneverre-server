@@ -50,6 +50,9 @@ DynamicUser=yes
 StateDirectory=eneverre
 WorkingDirectory=/var/lib/eneverre
 Environment=ENEVERRE_DB_PATH=/var/lib/eneverre/eneverre.db
+# The DB carries session tokens, camera credentials and signing material;
+# keep every file the service creates private even on a multi-user host.
+UMask=0077
 
 # Admin user. On first start (empty users table) the service creates an admin
 # with a RANDOM password and logs it once — read it with

@@ -33,7 +33,7 @@ func TestBuildSnapshotMapsCameras(t *testing.T) {
 						MSEInfoURL:  "https://cams.example.com/api/camera/front-door/live/info?user=u&pass=p",
 						HLSURL:      "https://cams.example.com/api/camera/front-door/recordings/hls/playlist.m3u8?start=x&end=y&user=u&pass=p",
 						SnapshotURL: "https://cams.example.com/api/camera/front-door/thumbnail?user=u&pass=p",
-						Snapshot:    true, Playback: true, Talk: true, PTZ: true,
+						Snapshot:    true, Playback: true, Talk: true, PTZ: true, PTZHome: true,
 					},
 					{
 						ID: "garden", Name: "Garden", Location: "Entrance",

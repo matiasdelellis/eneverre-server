@@ -160,6 +160,13 @@ export async function apiFetch(path, opts = {}) {
     if (isTimeoutError(err)) throw new Error("Request timed out");
     throw err;
   }
+  // A session flagged must_change_password is confined server-side to the
+  // password-change/logout/session endpoints. Route to the change screen
+  // instead of showing a generic error (this can happen when an admin flags
+  // an account while it is already logged in).
+  if (r.status === 403 && await passwordChangeRequired(r)) {
+    return r;
+  }
   // The auth endpoints answer 401 as part of their normal contract (wrong
   // password, consumed refresh token) — recovering or logging out on those
   // would loop.
@@ -175,6 +182,25 @@ export async function apiFetch(path, opts = {}) {
     if (r.status === 401) onUnauthorized();
   }
   return r;
+}
+
+// passwordChangeRequired peeks at a 403 body (without consuming the caller's
+// copy) and shows the mandatory change-password screen when the server sent
+// the stable code. Returns true when it handled the response.
+async function passwordChangeRequired(r) {
+  try {
+    const data = await r.clone().json();
+    if (!data || data.code !== "password_change_required") return false;
+    // Do not reset a form the user is already filling from a background poll's
+    // 403 (status/thumbnail timers keep running behind the gate).
+    const screen = document.getElementById("force-pw");
+    if (screen && !screen.hidden) return true;
+    const { showForcePasswordChange } = await import("./views/force-password.js");
+    showForcePasswordChange();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function api(path, opts = {}) {

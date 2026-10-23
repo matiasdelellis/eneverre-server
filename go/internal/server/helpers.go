@@ -36,7 +36,13 @@ func cors(h http.Handler, allowed []string) http.Handler {
 				allow = "*"
 			}
 		case origin != "" && originAllowed(origin, allowed):
-			allow, creds = origin, true
+			allow = origin
+			// A "*" entry opts into any-Origin reads, but never into
+			// credentialed ones: with Access-Control-Allow-Credentials a
+			// foreign page could ride a browser's cached HTTP Basic
+			// credentials. Bearer clients send an explicit header, so they
+			// keep working without credentials mode.
+			creds = !wildcardOrigin(allowed)
 		}
 		if allow != "" {
 			w.Header().Set("Access-Control-Allow-Origin", allow)
@@ -69,6 +75,16 @@ func cors(h http.Handler, allowed []string) http.Handler {
 func originAllowed(origin string, allowed []string) bool {
 	for _, a := range allowed {
 		if a == "*" || strings.EqualFold(a, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+// wildcardOrigin reports whether the allowlist contains the permissive "*".
+func wildcardOrigin(allowed []string) bool {
+	for _, a := range allowed {
+		if a == "*" {
 			return true
 		}
 	}
