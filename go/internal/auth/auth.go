@@ -12,6 +12,61 @@ import (
 	"time"
 )
 
+// Roles are fixed capability sets. ACLs narrow the cameras a principal may
+// touch; roles decide which operations it may perform on those cameras.
+const (
+	RoleAdmin   = "admin"
+	RoleUser    = "user"    // operator: live, playback, PTZ, privacy, talk
+	RoleViewer  = "viewer"  // live + events, but never playback
+	RoleMonitor = "monitor" // status + metrics only
+)
+
+// Capability is one operation a role may or may not perform.
+type Capability string
+
+const (
+	CapStatusRead     Capability = "status:read"
+	CapCamerasRead    Capability = "cameras:read"
+	CapEventsRead     Capability = "events:read"
+	CapRecordingsRead Capability = "recordings:read"
+	CapMetricsRead    Capability = "metrics:read"
+	CapLive           Capability = "live"
+	CapPTZ            Capability = "ptz"
+	CapPrivacy        Capability = "privacy"
+	CapTalk           Capability = "talk"
+	CapSettings       Capability = "settings"
+	CapAdmin          Capability = "admin"
+)
+
+var roleCapabilities = map[string]map[Capability]bool{
+	RoleAdmin: {
+		CapStatusRead: true, CapCamerasRead: true, CapEventsRead: true,
+		CapRecordingsRead: true, CapMetricsRead: true, CapLive: true,
+		CapPTZ: true, CapPrivacy: true, CapTalk: true, CapSettings: true,
+		CapAdmin: true,
+	},
+	RoleUser: {
+		CapCamerasRead: true, CapEventsRead: true, CapRecordingsRead: true,
+		CapLive: true, CapPTZ: true, CapPrivacy: true, CapTalk: true,
+	},
+	// Viewer can watch live and browse events, but has no playback capability
+	// at all (the role the user asked for when recordings must stay private).
+	RoleViewer: {
+		CapCamerasRead: true, CapEventsRead: true, CapLive: true,
+	},
+	// Monitor only sees operational state and aggregate metrics; it cannot
+	// list cameras, watch live or open a recording.
+	RoleMonitor: {
+		CapStatusRead: true, CapMetricsRead: true,
+	},
+}
+
+// ValidRole reports whether role is one of the fixed roles.
+func ValidRole(role string) bool {
+	_, ok := roleCapabilities[role]
+	return ok
+}
+
 // CurrentUser is the authenticated principal for a request.
 type CurrentUser struct {
 	Username string
@@ -21,29 +76,23 @@ type CurrentUser struct {
 	// seeded admin or an admin-forced reset can only change the password until
 	// the flag clears.
 	MustChangePassword bool
-	// Service marks a scoped machine token (service_tokens table). Service
-	// principals are rejected by requireUser and only reach the read-only
-	// endpoints that explicitly check one of their Scopes.
+	// Service marks a machine token (service_tokens table). It inherits the
+	// linked user's role and ACL; Service only distinguishes it for personal
+	// account endpoints (password, sessions, logout) and token management.
 	Service bool
-	// Scopes is the service token's read-only scope list; nil for humans.
-	Scopes []string
 }
 
 // IsAdmin reports whether the user has the admin role.
-func (u CurrentUser) IsAdmin() bool { return u.Role == "admin" }
+func (u CurrentUser) IsAdmin() bool { return u.Role == RoleAdmin }
 
-// IsService reports whether the principal is a scoped machine token.
+// IsService reports whether the principal is a machine token.
 func (u CurrentUser) IsService() bool { return u.Service }
 
-// HasScope reports whether a service principal carries scope. Human sessions
-// are not scope-limited by this helper; handlers gate them by role instead.
-func (u CurrentUser) HasScope(scope string) bool {
-	for _, s := range u.Scopes {
-		if s == scope {
-			return true
-		}
-	}
-	return false
+// Can reports whether the role grants capability. ACLs are checked separately
+// because they narrow the camera set, not the operation.
+func (u CurrentUser) Can(cap Capability) bool {
+	caps, ok := roleCapabilities[u.Role]
+	return ok && caps[cap]
 }
 
 // dummyPasswordHash has the default algorithm and iteration count, so

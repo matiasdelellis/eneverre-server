@@ -24,7 +24,8 @@ var schema = []string{
 		first_name TEXT,
 		last_name TEXT,
 		role TEXT NOT NULL,
-		must_change_password INTEGER NOT NULL DEFAULT 0
+		must_change_password INTEGER NOT NULL DEFAULT 0,
+		acl_restricted INTEGER NOT NULL DEFAULT 0
 	)`,
 	`CREATE TABLE IF NOT EXISTS device_login (
 		device_code TEXT PRIMARY KEY,
@@ -52,21 +53,31 @@ var schema = []string{
 	// handleRefresh looks sessions up by refresh_token on every renewal; without
 	// this index that is a full-table scan.
 	`CREATE INDEX IF NOT EXISTS idx_tokens_refresh ON tokens(refresh_token)`,
-	// Scoped read-only tokens for machine integrations (Zabbix, dashboards).
-	// Only a SHA-256 hash of the token is stored; the raw value is shown once
-	// by the create endpoint. scopes is a space-separated list.
+	// Machine tokens linked to a user; the token inherits that user's role and
+	// camera ACL. Only a SHA-256 hash of the token is stored; the raw value is
+	// shown once by the create endpoint. scopes is a legacy column kept so an
+	// upgraded table accepts inserts; it is no longer read.
 	`CREATE TABLE IF NOT EXISTS service_tokens (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
+		username TEXT NOT NULL,
 		prefix TEXT NOT NULL,
 		token_hash TEXT NOT NULL UNIQUE,
-		scopes TEXT NOT NULL,
+		scopes TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL,
 		last_used_at INTEGER NOT NULL DEFAULT 0,
 		revoked_at INTEGER NOT NULL DEFAULT 0
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_service_tokens_revoked ON service_tokens(revoked_at)`,
+	// Per-camera ACL. A user with acl_restricted = 1 is limited to the rows
+	// here; acl_restricted = 0 means all cameras. Admin always bypasses.
+	`CREATE TABLE IF NOT EXISTS camera_acl (
+		username TEXT NOT NULL,
+		camera_id TEXT NOT NULL,
+		PRIMARY KEY (username, camera_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_camera_acl_username ON camera_acl(username)`,
 	`CREATE TABLE IF NOT EXISTS events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		camera_id TEXT NOT NULL,
@@ -163,6 +174,13 @@ var migrations = []string{
 	// revoked) instead of silently minting another pair.
 	`ALTER TABLE tokens ADD COLUMN refresh_prev TEXT`,
 	`ALTER TABLE tokens ADD COLUMN refresh_prev_used_at INTEGER`,
+	// ACLs were added after users shipped. Default 0 keeps every existing
+	// account on "all cameras" until an admin restricts it.
+	`ALTER TABLE users ADD COLUMN acl_restricted INTEGER NOT NULL DEFAULT 0`,
+	// Service tokens became API keys linked to a user. Existing rows get an
+	// empty username and Verify rejects them; mint replacements after the
+	// upgrade.
+	`ALTER TABLE service_tokens ADD COLUMN username TEXT NOT NULL DEFAULT ''`,
 }
 
 // Open opens the SQLite database at path (creating its directory), enabling WAL
@@ -203,9 +221,31 @@ func Init(db *sql.DB) error {
 			return err
 		}
 	}
-	// Created after the migrations: on a pre-existing DB the refresh_prev
-	// column only exists once the ALTER above has run.
+	// Device-token role overrides were historically pinned to "user". Bring
+	// them in line with the account's current role (admin still clamps to user
+	// for a TV) so a demotion to viewer/monitor applies to existing sessions,
+	// not only to new pairings.
+	if _, err := db.Exec(`UPDATE tokens
+		SET role = (
+			SELECT CASE WHEN u.role = 'admin' THEN 'user' ELSE u.role END
+			FROM users u WHERE u.username = tokens.username
+		)
+		WHERE role IS NOT NULL
+		  AND username IN (SELECT username FROM users)`); err != nil {
+		return err
+	}
+	// Service tokens from the first iteration had scopes but no linked user.
+	// They are unusable now; drop them rather than leave orphan rows in the
+	// admin list.
+	if _, err := db.Exec("DELETE FROM service_tokens WHERE username = ''"); err != nil {
+		return err
+	}
+	// Created after the migrations: on a pre-existing DB these columns only
+	// exist once the ALTERs above have run.
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_tokens_refresh_prev ON tokens(refresh_prev)"); err != nil {
+		return err
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_service_tokens_username ON service_tokens(username)"); err != nil {
 		return err
 	}
 	return seedAdmin(db)

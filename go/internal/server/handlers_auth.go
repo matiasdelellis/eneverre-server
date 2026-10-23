@@ -229,16 +229,28 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnauthorized, "Invalid refresh token")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"token":              newToken,
 		"expires_at":         expiresAt,
 		"refresh_token":      newRefresh,
 		"refresh_expires_at": newRefreshExpiresAt,
-	})
+	}
+	// Include the effective role so clients that cache it (web/Android) can
+	// notice a role change without a fresh login. Best-effort: the session was
+	// already rotated successfully.
+	var role string
+	if err := a.db.QueryRow(
+		"SELECT COALESCE(NULLIF(t.role, ''), u.role) FROM tokens t "+
+			"JOIN users u ON u.username = t.username WHERE t.refresh_token = ?", newRefresh,
+	).Scan(&role); err == nil && role != "" {
+		response["role"] = role
+		response["is_admin"] = role == "admin"
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if a.requireUser(w, r) == nil {
+	if a.requireHuman(w, r) == nil {
 		return
 	}
 	if token := auth.BearerToken(r); token != "" {
@@ -352,13 +364,14 @@ func (a *App) handleCheckDevice(w http.ResponseWriter, r *http.Request) {
 		}
 		// A user flagged to change the password must not be able to hand a
 		// device a working session before doing so. Approval normally can't
-		// happen (requireUser blocks it), but a code approved just before the
+		// happen (requireHuman blocks it), but a code approved just before the
 		// flag was set must not mint a bypass.
+		sessionRole := auth.RoleUser
 		if username.Valid {
 			var mustChange bool
 			if err := a.db.QueryRow(
-				"SELECT must_change_password FROM users WHERE username = ?", username.String,
-			).Scan(&mustChange); err != nil {
+				"SELECT role, must_change_password FROM users WHERE username = ?", username.String,
+			).Scan(&sessionRole, &mustChange); err != nil {
 				_, _ = a.db.Exec("UPDATE device_login SET status='approved' WHERE device_code = ? AND status='expired'", deviceCode)
 				httpError(w, http.StatusInternalServerError, "Could not create session")
 				return
@@ -370,10 +383,10 @@ func (a *App) handleCheckDevice(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		token := auth.TokenURLSafe(16)
-		// Device sessions are ordinary users even when an admin approves them:
-		// a TV needs live/playback/PTZ/privacy, never user or camera
-		// administration. The token-role override keeps that scope even if the
-		// approving account is an admin.
+		// Device sessions inherit the user's role, but admin is clamped to
+		// ordinary user: a TV needs live/playback/PTZ/privacy, never user or
+		// camera administration. The token-role override keeps that scope even
+		// if the approving account is an admin.
 		tokenExpiresAt := now + a.accessTTL
 		// A refresh token is issued alongside the access token: clients that
 		// understand it can renew without re-pairing (and the session stays
@@ -385,10 +398,13 @@ func (a *App) handleCheckDevice(w http.ResponseWriter, r *http.Request) {
 		// receive a token that doesn't exist and be "logged in" with a dead
 		// session, with re-pairing as the only (undiagnosed) way out. Report
 		// 500 and put the code back to approved so the next poll can retry.
+		if sessionRole != auth.RoleViewer && sessionRole != auth.RoleMonitor {
+			sessionRole = auth.RoleUser
+		}
 		if _, err := a.db.Exec(
 			"INSERT INTO tokens (token, username, expires_at, created_at, device_name, role, refresh_token, refresh_expires_at) "+
-				"VALUES (?, ?, ?, ?, ?, 'user', ?, ?)",
-			token, username, tokenExpiresAt, now, deviceName, refresh, refreshExpiresAt,
+				"VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			token, username, tokenExpiresAt, now, deviceName, sessionRole, refresh, refreshExpiresAt,
 		); err != nil {
 			_, _ = a.db.Exec("UPDATE device_login SET status='approved' WHERE device_code = ? AND status='expired'", deviceCode)
 			httpError(w, http.StatusInternalServerError, "Could not create session")
@@ -412,7 +428,7 @@ type verifyDeviceRequest struct {
 }
 
 func (a *App) handleVerifyDevice(w http.ResponseWriter, r *http.Request) {
-	user := a.requireUser(w, r)
+	user := a.requireHuman(w, r)
 	if user == nil {
 		return
 	}

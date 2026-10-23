@@ -1,4 +1,4 @@
-import { TOKEN_KEY, REFRESH_KEY, get, set } from "./util/storage.js";
+import { TOKEN_KEY, REFRESH_KEY, USER_KEY, get, set, loadJson, saveJson } from "./util/storage.js";
 import { getState, setCamerasCache } from "./state.js";
 
 /**
@@ -120,6 +120,14 @@ export function refreshSession() {
           const data = await r.json();
           set(TOKEN_KEY, data.token);
           set(REFRESH_KEY, data.refresh_token);
+          if (data.role) {
+            const user = loadJson(USER_KEY);
+            if (user) {
+              user.role = data.role;
+              user.is_admin = data.role === "admin";
+              saveJson(USER_KEY, user);
+            }
+          }
           return true;
         } catch {
           if (attempt === 0) {

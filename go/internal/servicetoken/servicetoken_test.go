@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"eneverre/internal/auth"
 	"eneverre/internal/store"
 )
 
@@ -19,19 +20,26 @@ func newTestStore(t *testing.T) *Store {
 	if err := store.Init(db); err != nil {
 		t.Fatalf("store.Init: %v", err)
 	}
+	if _, err := db.Exec(
+		"INSERT INTO users (username, password, role, must_change_password) VALUES (?, ?, ?, 0)",
+		"monitor", auth.GeneratePasswordHash("pw"), auth.RoleMonitor,
+	); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
 	return NewStore(db)
 }
 
 func TestCreateVerifyListRevoke(t *testing.T) {
 	s := newTestStore(t)
-	raw, created, err := s.Create("zabbix", []string{ScopeStatus}, time.Now().Add(time.Hour).Unix())
+	raw, created, err := s.Create("zabbix", "monitor", time.Now().Add(time.Hour).Unix())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if !strings.HasPrefix(raw, Prefix) {
 		t.Errorf("raw token %q does not carry the service prefix", raw)
 	}
-	if created.ID == 0 || created.Name != "zabbix" || !created.HasScope(ScopeStatus) {
+	if created.ID == 0 || created.Name != "zabbix" || created.Username != "monitor" ||
+		created.Role != auth.RoleMonitor {
 		t.Errorf("created token = %+v", created)
 	}
 
@@ -39,7 +47,7 @@ func TestCreateVerifyListRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if got.ID != created.ID || !got.HasScope(ScopeStatus) {
+	if got.ID != created.ID || got.Username != "monitor" || got.Role != auth.RoleMonitor {
 		t.Errorf("verified token = %+v", got)
 	}
 
@@ -47,7 +55,7 @@ func TestCreateVerifyListRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(list) != 1 || list[0].ID != created.ID || list[0].Scopes[0] != ScopeStatus {
+	if len(list) != 1 || list[0].ID != created.ID || list[0].Username != "monitor" {
 		t.Errorf("List = %+v", list)
 	}
 
@@ -62,9 +70,9 @@ func TestCreateVerifyListRevoke(t *testing.T) {
 	}
 }
 
-func TestVerifyRejectsWrongPrefixUnknownAndExpired(t *testing.T) {
+func TestVerifyRejectsWrongPrefixUnknownExpiredAndOrphan(t *testing.T) {
 	s := newTestStore(t)
-	raw, _, err := s.Create("expired", []string{ScopeStatus}, time.Now().Add(time.Hour).Unix())
+	raw, _, err := s.Create("valid", "monitor", time.Now().Add(time.Hour).Unix())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +83,7 @@ func TestVerifyRejectsWrongPrefixUnknownAndExpired(t *testing.T) {
 		t.Errorf("wrong prefix = %v, want ErrInvalid", err)
 	}
 
-	// Create with the smallest valid future expiry, then wait it out. The
-	// store's check is second-granular, so a one-second expiry is enough.
-	rawShort, _, err := s.Create("short", []string{ScopeStatus}, time.Now().Add(time.Second).Unix())
+	rawShort, _, err := s.Create("short", "monitor", time.Now().Add(time.Second).Unix())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,37 +91,33 @@ func TestVerifyRejectsWrongPrefixUnknownAndExpired(t *testing.T) {
 	if _, err := s.Verify(rawShort); err != ErrInvalid {
 		t.Errorf("expired token = %v, want ErrInvalid", err)
 	}
-	// The first token is still valid.
 	if _, err := s.Verify(raw); err != nil {
 		t.Errorf("long token unexpectedly invalid: %v", err)
 	}
-}
 
-func TestCreateValidatesNameScopesExpiry(t *testing.T) {
-	s := newTestStore(t)
-	future := time.Now().Add(time.Hour).Unix()
-	if _, _, err := s.Create("", []string{ScopeStatus}, future); err == nil {
-		t.Error("empty name accepted")
-	}
-	if _, _, err := s.Create("x", nil, future); err == nil {
-		t.Error("empty scopes accepted")
-	}
-	if _, _, err := s.Create("x", []string{"admin:write"}, future); err == nil {
-		t.Error("unknown scope accepted")
-	}
-	if _, _, err := s.Create("x", []string{ScopeStatus}, time.Now().Add(-time.Minute).Unix()); err == nil {
-		t.Error("past expiry accepted")
-	}
-}
-
-func TestCreateNormalizesScopes(t *testing.T) {
-	s := newTestStore(t)
-	_, tok, err := s.Create("multi", []string{ScopeMetrics, " " + ScopeStatus + " ", ScopeMetrics}, time.Now().Add(time.Hour).Unix())
-	if err != nil {
+	// Deleting the linked user must invalidate every token for it.
+	if _, err := s.db.Exec("DELETE FROM users WHERE username = 'monitor'"); err != nil {
 		t.Fatal(err)
 	}
-	if len(tok.Scopes) != 2 || tok.Scopes[0] != ScopeMetrics || tok.Scopes[1] != ScopeStatus {
-		t.Errorf("scopes = %v, want [%s %s]", tok.Scopes, ScopeMetrics, ScopeStatus)
+	if _, err := s.Verify(raw); err != ErrInvalid {
+		t.Errorf("orphaned token = %v, want ErrInvalid", err)
+	}
+}
+
+func TestCreateValidatesNameUserExpiry(t *testing.T) {
+	s := newTestStore(t)
+	future := time.Now().Add(time.Hour).Unix()
+	if _, _, err := s.Create("", "monitor", future); err == nil {
+		t.Error("empty name accepted")
+	}
+	if _, _, err := s.Create("x", "", future); err == nil {
+		t.Error("empty username accepted")
+	}
+	if _, _, err := s.Create("x", "ghost", future); err != ErrUnknownUser {
+		t.Errorf("unknown user error = %v, want ErrUnknownUser", err)
+	}
+	if _, _, err := s.Create("x", "monitor", time.Now().Add(-time.Minute).Unix()); err == nil {
+		t.Error("past expiry accepted")
 	}
 }
 

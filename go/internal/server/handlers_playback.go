@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"eneverre/internal/auth"
 	"eneverre/internal/camera"
 	"eneverre/internal/mediaauth"
-	"eneverre/internal/servicetoken"
 	"eneverre/internal/timeutil"
 )
 
@@ -90,7 +90,8 @@ func (a *App) handleRecordingPaths(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
-	if a.requireScope(w, r, servicetoken.ScopeRecordings) == nil {
+	u := a.requireCapability(w, r, auth.CapRecordingsRead)
+	if u == nil {
 		return
 	}
 	paths, err := a.engine.Index().Paths()
@@ -98,10 +99,13 @@ func (a *App) handleRecordingPaths(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if paths == nil {
-		paths = []string{}
+	visible := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if a.canAccessCamera(u, path) {
+			visible = append(visible, path)
+		}
 	}
-	writeJSON(w, http.StatusOK, paths)
+	writeJSON(w, http.StatusOK, visible)
 }
 
 // handlePlaybackTimeline reports the recorded extent of a camera: first start,
@@ -184,7 +188,11 @@ func (a *App) playbackGate(w http.ResponseWriter, r *http.Request) *camera.Camer
 	if !a.playbackEnabled(w) {
 		return nil
 	}
-	if a.requireScope(w, r, servicetoken.ScopeRecordings) == nil {
+	u := a.requireCapability(w, r, auth.CapRecordingsRead)
+	if u == nil {
+		return nil
+	}
+	if !a.requireCameraAccess(w, u, r.PathValue("cam_id")) {
 		return nil
 	}
 	return a.playbackCamera(w, r)

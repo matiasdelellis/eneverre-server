@@ -6,6 +6,7 @@ import { alertModal } from "../ui/dialog.js";
 import { icon } from "../ui/icons.js";
 import { registerModalEsc } from "../util/modal-esc.js";
 import { t } from "../i18n.js";
+import { can } from "../util/role.js";
 
 // Per-click pan/tilt step, in degrees. The old STEP=50 was firmware-native
 // steps (which translated to ~8° pan / ~5° tilt on the default gimbal); the
@@ -135,7 +136,7 @@ function ptzFabVisible() {
 function setPtzFab(visible) {
   const fab = $("#ptz-fab");
   if (!fab) return;
-  if (visible) fab.removeAttribute("hidden");
+  if (visible && can("ptz")) fab.removeAttribute("hidden");
   else fab.setAttribute("hidden", "");
 }
 
@@ -186,7 +187,8 @@ function syncPrivacyButton() {
   if (!btn) return;
   const { viewMode, wallFilter, lastPtzCam } = getState();
   const cam = lastPtzCam;
-  const show = viewMode === "live"
+  const show = can("privacy")
+    && viewMode === "live"
     && wallFilter.type === "cam"
     && cam?.capabilities?.privacy === true;
   if (!show) {

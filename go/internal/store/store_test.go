@@ -118,3 +118,45 @@ func TestFreshInstallHasScheduleID(t *testing.T) {
 		t.Fatal("fresh install missing schedule_id")
 	}
 }
+
+// TestMigrationServiceTokensAndACL covers an install that already ran the first
+// service-token schema: the upgrade must add username and the ACL columns
+// without losing the users/tokens tables.
+func TestMigrationServiceTokensAndACL(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "legacy-svc.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := db.Exec(`CREATE TABLE service_tokens (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		prefix TEXT NOT NULL,
+		token_hash TEXT NOT NULL UNIQUE,
+		scopes TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		last_used_at INTEGER NOT NULL DEFAULT 0,
+		revoked_at INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		t.Fatalf("seed legacy service_tokens: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO service_tokens (name, prefix, token_hash, scopes, created_at, expires_at)
+		 VALUES ('old','old-prefix','old-hash','status:read',1,9999999999)`); err != nil {
+		t.Fatalf("seed legacy token: %v", err)
+	}
+	if err := Init(db); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if !columnExists(t, db, "users", "acl_restricted") {
+		t.Error("users.acl_restricted not added")
+	}
+	if !columnExists(t, db, "service_tokens", "username") {
+		t.Error("service_tokens.username not added")
+	}
+	if !tableExists(t, db, "camera_acl") {
+		t.Error("camera_acl table not created")
+	}
+}

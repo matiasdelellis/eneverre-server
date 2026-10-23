@@ -13,17 +13,19 @@ info:
     4. GET /api/camera/{id}/recordings/get
 
     Endpoints require a Bearer credential: a human access token from
-    `POST /api/auth/login` (or the device flow), or a scoped read-only service
-    token created through `POST /api/service-tokens` for machine integrations.
+    `POST /api/auth/login` (or the device flow), or a service token created
+    through `POST /api/service-tokens`. A service token is linked to a user and
+    inherits that user's role and camera ACL.
     HTTP Basic is not accepted. A session whose user has
     `must_change_password` receives `403` with
     `{"code":"password_change_required"}` on every route except
     `PUT /api/users/me/password`, logout and the session list/revoke endpoints.
 
-    Service tokens are only accepted on the read-only endpoints that match
-    their scopes (`status:read`, `cameras:read`, `events:read`,
-    `recordings:read`, `metrics:read`); they are rejected on users, camera
-    administration, PTZ, privacy, talk, schedules, uploads and device login.
+    A service token is linked to a user and inherits that user's role and
+    camera ACL. Roles are `admin` (everything), `user` (live, playback, PTZ,
+    privacy, talk), `viewer` (live and events, but never playback), and
+    `monitor` (status and metrics only). The ACL narrows every role to a set of
+    cameras. Account/token management remains human-only.
 
     HTTP media endpoints (thumbnail, live MSE, HLS) also accept a short-lived
     signed grant `?exp=<unix>&sig=<hex>` for clients that cannot set headers;
@@ -33,7 +35,7 @@ info:
 servers:
   - url: http://localhost:8080
 
-# Bearer access token (human) or a scoped service token (read-only endpoints).
+# Bearer access token (human) or a service token linked to a user (role + ACL).
 security:
   - bearerAuth: []
 
@@ -59,14 +61,14 @@ paths:
 
   /api/status:
     get:
-      summary: Operational status (admin, or status:read service token)
+      summary: Operational status (admin or monitor)
       description: >-
-        Admin-only operational snapshot: per-camera connectivity, recording and
-        privacy state, aggregate counts, and — when recording is enabled — the
-        recording volume's disk headroom. Requires an admin token (403 for a
-        non-admin) or a service token with the `status:read` scope.
-        Camera-side live settings are NOT part of this snapshot — see
-        GET /api/camera/{id}/settings.
+        Operational snapshot: per-camera connectivity, recording and privacy
+        state, aggregate counts, and — when recording is enabled — the recording
+        volume's disk headroom. Requires an admin token (403 for other human
+        roles) or a token linked to a `monitor` user; the camera array is
+        filtered by the principal's ACL. Camera-side live settings are NOT part
+        of this snapshot — see GET /api/camera/{id}/settings.
       responses:
         '200':
           description: Status snapshot
@@ -135,7 +137,7 @@ paths:
       description: >-
         Prometheus text-format metrics. Open to a scraper on loopback without
         auth; any other client must authenticate with a session or a service
-        token carrying `metrics:read`. Enabled by default; when
+        monitor/admin role. Enabled by default; when
         `[server] metrics = false` the endpoint is not mounted and returns 404.
         Camera metrics are aggregate counts with no per-camera id label. See
         doc/MEDIA.md#metrics.
@@ -149,7 +151,7 @@ paths:
         '401':
           description: Missing or invalid token (from a non-loopback client).
         '403':
-          description: Service token lacks metrics:read.
+          description: Role does not include metrics access.
         '404':
           description: Metrics disabled ([server] metrics = false).
 
@@ -158,7 +160,7 @@ paths:
       summary: Metrics (JSON)
       description: >-
         The same metrics as /api/metrics rendered as JSON. Same auth model
-        (loopback bypass, else a session or service token with metrics:read)
+        (loopback bypass, else an admin/monitor principal)
         and same 404 when disabled.
       responses:
         '200':
@@ -306,6 +308,11 @@ paths:
                   refresh_expires_at:
                     type: integer
                     format: int64
+                  role:
+                    type: string
+                    enum: [admin, user, viewer, monitor]
+                  is_admin:
+                    type: boolean
         '401':
           description: Invalid or expired refresh token
           content:
@@ -329,7 +336,7 @@ paths:
 
   /api/cameras:
     get:
-      summary: List cameras (cameras:read for service tokens)
+      summary: List cameras (filtered by the camera ACL)
       responses:
         '200':
           description: List of cameras
@@ -1571,8 +1578,9 @@ paths:
         The device requests a device_code / user_code pair. The user approves
         the user_code from an authenticated session (POST
         /api/auth/device/verify) while the device polls with the device_code.
-        The issued session is pinned to the ordinary `user` role even when an
-        admin approves it, and carries a refresh token (see the poll response).
+        The issued session inherits the user's role (admin is clamped to the
+        ordinary `user` role) and carries a refresh token (see the poll
+        response).
         A user flagged `must_change_password` cannot approve a device.
       security: []
       parameters:
@@ -1605,8 +1613,8 @@ paths:
       description: >-
         Unauthenticated by design: the device_code is the bearer secret. When
         the pairing is approved the response also carries a refresh token; the
-        issued session is pinned to the ordinary `user` role even if an admin
-        approved the device, so it cannot administer users or cameras. A user
+        issued session inherits the user's role (admin is clamped to the
+        ordinary `user` role), so it cannot administer users or cameras. A user
         flagged `must_change_password` cannot complete the pairing.
       security: []
       parameters:
@@ -1710,7 +1718,7 @@ paths:
                   type: string
                 role:
                   type: string
-                  enum: [admin, user]
+                  enum: [admin, user, viewer, monitor]
                   default: user
                 first_name:
                   type: string
@@ -1740,7 +1748,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '422':
-          description: username missing/too long/whitespace, password missing or over 1024 bytes, or role not 'admin'/'user'
+          description: username missing/too long/whitespace, password missing or over 1024 bytes, or role not admin/user/viewer/monitor
           content:
             application/json:
               schema:
@@ -1749,7 +1757,7 @@ paths:
   # --- service tokens -------------------------------------------------------
   /api/service-tokens:
     get:
-      summary: List service tokens (admin)
+      summary: List service tokens (human admin)
       description: >-
         Metadata for every machine token, including revoked/expired ones. The
         raw secret is never returned; it is shown only once at creation.
@@ -1765,11 +1773,12 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
     post:
-      summary: Create a read-only service token (admin)
+      summary: Create a user-linked service token (admin)
       description: >-
-        Mints a scoped machine token. The raw value is returned exactly once
-        in `token`; only its SHA-256 hash is stored. Defaults to the
-        least-privilege `status:read` scope and a 365-day expiry.
+        Mints a machine token linked to an existing user. The token inherits
+        that user's role and camera ACL, so changing either takes effect
+        immediately. The raw value is returned exactly once in `token`; only
+        its SHA-256 hash is stored. Expiry defaults to 365 days.
       requestBody:
         required: true
         content:
@@ -1786,7 +1795,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '422':
-          description: Invalid name, scope or expiry.
+          description: Invalid name, username or expiry.
           content:
             application/json:
               schema:
@@ -1794,7 +1803,7 @@ paths:
 
   /api/service-token/{id}:
     delete:
-      summary: Revoke a service token (admin)
+      summary: Revoke a service token (human admin)
       description: Marks the token unusable immediately. Idempotent calls on an already-revoked token return 404.
       parameters:
         - name: id
@@ -1910,6 +1919,61 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/users/{username}/cameras:
+    get:
+      summary: Get a user's camera ACL (admin)
+      description: >-
+        Returns whether the user is restricted and, if so, the cameras they may
+        access. An unrestricted user (the default) sees every camera. Admin
+        accounts always bypass the ACL.
+      parameters:
+        - $ref: '#/components/parameters/username'
+      responses:
+        '200':
+          description: Camera ACL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraACL'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      summary: Set a user's camera ACL (admin)
+      description: >-
+        Restricts or unrestricts the user's camera scope. With `restricted=true`
+        only the listed camera ids are visible and usable (live, events,
+        recordings, PTZ, ...); an empty list means no cameras. With
+        `restricted=false` the ACL rows are cleared and the user sees all
+        cameras. Service tokens linked to the user inherit the change
+        immediately.
+      parameters:
+        - $ref: '#/components/parameters/username'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CameraACL'
+      responses:
+        '200':
+          description: Updated ACL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraACL'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Unknown camera id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/users/{username}/role:
     put:
       summary: Change a user's role (admin)
@@ -1925,7 +1989,7 @@ paths:
               properties:
                 role:
                   type: string
-                  enum: [admin, user]
+                  enum: [admin, user, viewer, monitor]
       responses:
         '200':
           description: Role updated
@@ -1946,7 +2010,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '422':
-          description: role must be 'admin' or 'user'
+          description: role must be admin, user, viewer or monitor
           content:
             application/json:
               schema:
@@ -2202,8 +2266,8 @@ components:
       scheme: bearer
       description: >-
         Human access token issued by POST /api/auth/login (or the device flow),
-        or a scoped read-only service token created through
-        POST /api/service-tokens.
+        or a service token linked to a user (it inherits that user's role and
+        camera ACL) created through POST /api/service-tokens.
     updateToken:
       type: http
       scheme: bearer
@@ -2785,7 +2849,7 @@ components:
           type: string
         role:
           type: string
-          enum: [admin, user]
+          enum: [admin, user, viewer, monitor]
         first_name:
           type: string
           nullable: true
@@ -2822,11 +2886,12 @@ components:
         prefix:
           type: string
           description: Non-secret display prefix (e.g. `envr_svc_1a2b3c4d`).
-        scopes:
-          type: array
-          items:
-            type: string
-            enum: [status:read, cameras:read, events:read, recordings:read, metrics:read]
+        username:
+          type: string
+          description: Linked user whose role and ACL the token inherits.
+        role:
+          type: string
+          enum: [admin, user, viewer, monitor]
         created_at:
           type: integer
           format: int64
@@ -2841,17 +2906,14 @@ components:
           format: int64
     CreateServiceTokenRequest:
       type: object
-      required: [name]
+      required: [name, username]
       properties:
         name:
           type: string
           maxLength: 120
-        scopes:
-          type: array
-          description: Defaults to [status:read] when omitted.
-          items:
-            type: string
-            enum: [status:read, cameras:read, events:read, recordings:read, metrics:read]
+        username:
+          type: string
+          description: Existing user whose role and camera ACL the token inherits.
         expires_in_days:
           type: integer
           minimum: 1
@@ -2867,6 +2929,20 @@ components:
               type: string
               description: Raw bearer token, shown only in this response.
 
+    CameraACL:
+      type: object
+      properties:
+        username:
+          type: string
+          readOnly: true
+        restricted:
+          type: boolean
+          description: When false the user sees all cameras; when true only camera_ids.
+        camera_ids:
+          type: array
+          items:
+            type: string
+
     UserCreated:
       type: object
       description: >-
@@ -2879,7 +2955,7 @@ components:
           type: string
         role:
           type: string
-          enum: [admin, user]
+          enum: [admin, user, viewer, monitor]
         first_name:
           type: string
           nullable: true

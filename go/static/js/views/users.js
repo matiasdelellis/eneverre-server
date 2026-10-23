@@ -130,18 +130,68 @@ function renderUsers() {
     row.innerHTML = `
       <div class="users-fullname${fullName ? "" : " muted"}" title="${escapeHtml(fullName || "—")}">${escapeHtml(fullName || "—")}</div>
       <div class="users-name" title="${escapeHtml(u.username)}">${escapeHtml(u.username)}${isMe ? ' <span class="muted">' + t("users.you") + '</span>' : ""}</div>
-      <div><span class="role-badge role-${escapeHtml(u.role)}">${escapeHtml(u.role)}</span></div>
+      <div>
+        <select class="role-select" data-role-select ${isLastAdmin ? "disabled" : ""} title="${escapeHtml(t("users.col_role"))}">
+          <option value="admin" ${u.role === "admin" ? "selected" : ""}>${escapeHtml(t("user-edit.role_admin"))}</option>
+          <option value="user" ${u.role === "user" ? "selected" : ""}>${escapeHtml(t("user-edit.role_user"))}</option>
+          <option value="viewer" ${u.role === "viewer" ? "selected" : ""}>${escapeHtml(t("user-edit.role_viewer"))}</option>
+          <option value="monitor" ${u.role === "monitor" ? "selected" : ""}>${escapeHtml(t("user-edit.role_monitor"))}</option>
+        </select>
+      </div>
       <div class="users-actions">
         <button data-act="name" title="${escapeHtml(t("users.edit_name_title", { username: u.username }))}">${t("users.edit_name")}</button>
-        <button data-act="role" data-role="${u.role === "admin" ? "user" : "admin"}">
-          ${u.role === "admin" ? t("users.demote") : t("users.promote")}
-        </button>
+        <button data-act="cameras" title="${escapeHtml(t("users.acl_btn_title", { username: u.username }))}">${t("users.acl_btn")}</button>
         <button data-act="password">${t("users.password_btn")}</button>
         <button data-act="delete" class="danger" ${isMe || isLastAdmin ? "disabled title='" + t("users.delete_disabled") + "'" : ""}>${t("users.delete_btn")}</button>
       </div>
     `;
     row.addEventListener("click", (e) => onUserActionClick(e, u, isLastAdmin));
     wrap.appendChild(row);
+  }
+}
+
+async function onRoleSelectChange(e) {
+  const sel = e.target.closest("select[data-role-select]");
+  if (!sel) return;
+  const row = sel.closest(".users-row");
+  const username = row ? row.dataset.username : null;
+  const u = usersCache ? usersCache.find((x) => x.username === username) : null;
+  if (!u) return;
+  const newRole = sel.value;
+  if (newRole === u.role) return;
+  try {
+    if (newRole === "admin") {
+      const ok = await confirmModal(t("users.promote_confirm", { username: u.username }), {
+        title: t("users.promote_title"),
+        okLabel: t("users.promote_ok"),
+      });
+      if (!ok) {
+        sel.value = u.role;
+        return;
+      }
+    } else if (u.role === "admin") {
+      const typed = await promptModal(t("users.demote_confirm", { username: u.username }), {
+        title: t("users.demote_title"),
+        inputLabel: t("users.col_username"),
+        inputValue: "",
+        mustMatch: u.username,
+        okLabel: t("users.demote_ok"),
+      });
+      if (typed === null || typed !== u.username) {
+        sel.value = u.role;
+        if (typed !== null) setUsersStatus(t("users.demote_mismatch"), "err");
+        return;
+      }
+    }
+    await api(`/api/users/${encodeURIComponent(u.username)}/role`, {
+      method: "PUT",
+      body: JSON.stringify({ role: newRole }),
+    });
+    setUsersStatus(t("users.role_updated", { username: u.username, role: newRole }), "ok");
+    await loadUsers();
+  } catch (err) {
+    sel.value = u.role;
+    setUsersStatus(err && err.message ? err.message : String(err), "err");
   }
 }
 
@@ -175,37 +225,40 @@ async function onUserActionClick(e, u, isLastAdmin) {
       }
       setUsersStatus(t("users.name_updated_status", { username: u.username }), "ok");
       await loadUsers();
-    } else if (act === "role") {
-      const newRole = btn.dataset.role;
-      if (newRole === "admin") {
-        const ok = await confirmModal(t("users.promote_confirm", { username: u.username }), {
-          title: t("users.promote_title"),
-          okLabel: t("users.promote_ok"),
-        });
-        if (!ok) return;
-      } else {
+    } else if (act === "cameras") {
+      const [acl, cameras] = await Promise.all([
+        api(`/api/users/${encodeURIComponent(u.username)}/cameras`),
+        api("/api/cameras"),
+      ]);
+      const available = (Array.isArray(cameras) ? cameras : []).map((c) => c.id).join(", ");
+      const restrict = await confirmModal(
+        t("users.acl_restrict_message", { username: u.username }),
+        { title: t("users.acl_restrict_title"), okLabel: t("users.acl_restrict_ok") }
+      );
+      if (restrict === null) return;
+      let body;
+      if (restrict) {
+        const current = acl && acl.restricted ? (acl.camera_ids || []).join(", ") : "";
         const typed = await promptModal(
-          t("users.demote_confirm", { username: u.username }),
+          t("users.acl_ids_message", { username: u.username, available }),
           {
-            title: t("users.demote_title"),
-            inputLabel: t("users.col_username"),
-            inputValue: "",
-            mustMatch: u.username,
-            okLabel: t("users.demote_ok"),
+            title: t("users.acl_ids_title", { username: u.username }),
+            inputLabel: t("users.acl_ids_label"),
+            inputValue: current,
+            okLabel: t("users.save"),
           }
         );
         if (typed === null) return;
-        if (typed !== u.username) {
-          setUsersStatus(t("users.demote_mismatch"), "err");
-          return;
-        }
+        const ids = typed.split(",").map((x) => x.trim()).filter(Boolean);
+        body = { restricted: true, camera_ids: ids };
+      } else {
+        body = { restricted: false, camera_ids: [] };
       }
-      await api(`/api/users/${encodeURIComponent(u.username)}/role`, {
+      await api(`/api/users/${encodeURIComponent(u.username)}/cameras`, {
         method: "PUT",
-        body: JSON.stringify({ role: newRole }),
+        body: JSON.stringify(body),
       });
-      setUsersStatus(t("users.role_updated", { username: u.username, role: newRole }), "ok");
-      await loadUsers();
+      setUsersStatus(t("users.acl_updated", { username: u.username }), "ok");
     } else if (act === "password") {
       const pw = await promptModal(t("users.new_password_for", { username: u.username }), {
         title: t("users.set_password_title", { username: u.username }),
@@ -476,6 +529,7 @@ export function initUsers() {
   document.getElementById("users-btn")?.addEventListener("click", () => { closeUserMenu(); setOverlay("users"); });
   document.getElementById("users-back")?.addEventListener("click", () => setOverlay(null));
   document.getElementById("users-new")?.addEventListener("click", openUserEditModal);
+  document.getElementById("users-rows")?.addEventListener("change", onRoleSelectChange);
   document.getElementById("user-edit-cancel")?.addEventListener("click", closeUserEditModal);
   document.getElementById("user-edit-form")?.addEventListener("submit", submitNewUser);
   document.getElementById("my-name-btn")?.addEventListener("click", openMyNameModal);

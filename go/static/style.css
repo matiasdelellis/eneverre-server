@@ -1709,7 +1709,7 @@ button.icon-btn {
 .users-table { display: flex; flex-direction: column; gap: 4px; }
 .users-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 90px auto;
+  grid-template-columns: 1fr 1fr 150px auto;
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
@@ -1744,6 +1744,18 @@ button.icon-btn {
 .users-actions button.danger:hover { background: var(--danger); color: white; border-color: var(--danger); }
 .users-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
 .users-actions button:disabled:hover { border-color: var(--border-strong); background: var(--panel); color: var(--fg); }
+
+.role-select {
+  width: 100%;
+  max-width: 190px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 12px;
+}
+.role-select:disabled { opacity: 0.5; }
 
 .role-badge {
   display: inline-block;

@@ -9,7 +9,7 @@ zabbix_export:
       name: 'Eneverre NVR by HTTP'
       description: |
         Monitors an Eneverre NVR through its admin snapshot endpoint
-        GET /api/status (Bearer service token with status:read).
+        GET /api/status (Bearer service token linked to a monitor user).
 
         One HTTP agent master item polls /api/status; everything else is a
         dependent item, so a whole host costs a single request per interval.
@@ -17,9 +17,10 @@ zabbix_export:
 
         Setup:
           1. Link this template to the host running Eneverre.
-          2. As an admin, create a read-only service token with the
-             status:read scope (POST /api/service-tokens) and set it as the
-             {$ENEVERRE.TOKEN} secret macro on the host.
+          2. Create a user with the monitor role, mint a service token linked
+             to it (POST /api/service-tokens), and set the token as the
+             {$ENEVERRE.TOKEN} secret macro on the host. Monitor can read
+             status/metrics but not playback.
           3. Adjust {$ENEVERRE.SCHEME} / {$ENEVERRE.HOST} / {$ENEVERRE.PORT} if
              Eneverre is not reachable at http://{HOST.CONN}:8080 (behind a
              reverse proxy this is usually https / 443).
@@ -51,7 +52,7 @@ zabbix_export:
             what matters.
 
             401 here means the service token is wrong, revoked or expired;
-            403 means it lacks the status:read scope.
+            403 means the linked user is not a monitor/admin.
           tags:
             - tag: component
               value: raw
@@ -587,7 +588,7 @@ zabbix_export:
           description: 'API port. 8080 is the Eneverre default; use 443 behind a proxy.'
         - macro: '{$ENEVERRE.TOKEN}'
           value: ''
-          description: 'Read-only service token with status:read. Override it on the host, as Secret text.'
+          description: 'Service token linked to a monitor user. Override it on the host, as Secret text.'
         - macro: '{$ENEVERRE.STATUS.INTERVAL}'
           value: 1m
           description: 'How often /api/status is polled.'
@@ -653,7 +654,7 @@ zabbix_export:
         No snapshot for {$ENEVERRE.NODATA.TIMEOUT}. Either the service is
         down / unreachable, or the request is being rejected — check the
         master item error: 401 means the service token is wrong/revoked/expired,
-        403 means it lacks the status:read scope.
+        403 means the linked user is not a monitor/admin.
       tags:
         - tag: scope
           value: availability

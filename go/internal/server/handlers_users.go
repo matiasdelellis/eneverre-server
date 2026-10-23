@@ -12,7 +12,7 @@ import (
 	"eneverre/internal/auth"
 )
 
-func validRole(role string) bool { return role == "admin" || role == "user" }
+func validRole(role string) bool { return auth.ValidRole(role) }
 
 // maxUsernameLen bounds a username. Usernames are looked up verbatim and shown
 // in the session/user lists, so we keep them short, non-empty and free of
@@ -36,7 +36,7 @@ func cleanUsername(raw string) (string, bool) {
 // --- admin: list / create -------------------------------------------------
 
 func (a *App) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	rows, err := a.db.Query("SELECT username, role, first_name, last_name, must_change_password FROM users")
@@ -77,7 +77,7 @@ type createUserRequest struct {
 }
 
 func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	var req createUserRequest
@@ -103,7 +103,7 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		req.Role = "user"
 	}
 	if !validRole(req.Role) {
-		httpError(w, http.StatusUnprocessableEntity, "role must be 'admin' or 'user'")
+		httpError(w, http.StatusUnprocessableEntity, "role must be admin, user, viewer or monitor")
 		return
 	}
 	_, err := a.db.Exec(
@@ -133,7 +133,7 @@ type selfUpdatePasswordRequest struct {
 }
 
 func (a *App) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
-	me := a.requireUser(w, r)
+	me := a.requireHuman(w, r)
 	if me == nil {
 		return
 	}
@@ -185,7 +185,7 @@ type updateNameRequest struct {
 }
 
 func (a *App) handleChangeMyName(w http.ResponseWriter, r *http.Request) {
-	me := a.requireUser(w, r)
+	me := a.requireHuman(w, r)
 	if me == nil {
 		return
 	}
@@ -206,7 +206,7 @@ func (a *App) handleChangeMyName(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleListMySessions(w http.ResponseWriter, r *http.Request) {
-	me := a.requireUser(w, r)
+	me := a.requireHuman(w, r)
 	if me == nil {
 		return
 	}
@@ -262,7 +262,7 @@ func (a *App) handleListMySessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleRevokeMySession(w http.ResponseWriter, r *http.Request) {
-	me := a.requireUser(w, r)
+	me := a.requireHuman(w, r)
 	if me == nil {
 		return
 	}
@@ -318,7 +318,7 @@ type updateRoleRequest struct {
 }
 
 func (a *App) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	var req updateRoleRequest
@@ -326,7 +326,7 @@ func (a *App) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validRole(req.Role) {
-		httpError(w, http.StatusUnprocessableEntity, "role must be 'admin' or 'user'")
+		httpError(w, http.StatusUnprocessableEntity, "role must be admin, user, viewer or monitor")
 		return
 	}
 	if req.Role != "admin" && a.isLastAdmin(r.PathValue("username")) {
@@ -353,6 +353,16 @@ func (a *App) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "User not found")
 		return
 	}
+	// Device-login sessions carry a role override so a TV is never admin.
+	// Keep that override in step with the new role (clamped to user when the
+	// account becomes admin); password sessions have a NULL role and follow
+	// the users row automatically.
+	sessionRole := req.Role
+	if sessionRole == auth.RoleAdmin {
+		sessionRole = auth.RoleUser
+	}
+	_, _ = a.db.Exec("UPDATE tokens SET role = ? WHERE username = ? AND role IS NOT NULL",
+		sessionRole, username)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Role updated"})
 }
 
@@ -364,7 +374,7 @@ type updatePasswordRequest struct {
 }
 
 func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	var req updatePasswordRequest
@@ -396,7 +406,7 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleChangeName(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	username := r.PathValue("username")
@@ -425,7 +435,7 @@ func (a *App) handleChangeName(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	username := r.PathValue("username")
@@ -447,7 +457,9 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "User not found")
 		return
 	}
-	// Best-effort cleanup of the deleted user's tokens.
+	// Best-effort cleanup of the deleted user's sessions and machine tokens.
 	_, _ = a.db.Exec("DELETE FROM tokens WHERE username = ?", username)
+	_, _ = a.db.Exec("DELETE FROM service_tokens WHERE username = ?", username)
+	_, _ = a.db.Exec("DELETE FROM camera_acl WHERE username = ?", username)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "User deleted"})
 }

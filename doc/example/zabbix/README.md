@@ -1,9 +1,10 @@
 # Zabbix template
 
 [`eneverre-nvr-by-http.yaml`](eneverre-nvr-by-http.yaml) monitors an Eneverre
-server through its admin snapshot endpoint `GET /api/status`, using a
-read-only **service token** (`status:read`). Everything is configured with
-four macros — host, scheme, port and token — and no agent or script is
+server through its snapshot endpoint `GET /api/status`, using a **service
+token linked to a `monitor` user**. Monitor can read status and metrics but
+cannot list cameras, watch live or open a recording. Everything is configured
+with four macros — host, scheme, port and token — and no agent or script is
 installed on the NVR.
 
 The template is exported in the **7.0** format (validated against Zabbix
@@ -25,19 +26,20 @@ Then link it to the host that runs Eneverre and set the macros
 | `{$ENEVERRE.HOST}`    | `{HOST.CONN}` | Host or IP serving the API — defaults to the interface   |
 | `{$ENEVERRE.PORT}`    | `8080`        | API port (`443` behind a TLS reverse proxy)              |
 | `{$ENEVERRE.SCHEME}`  | `http`        | `http` or `https`                                       |
-| `{$ENEVERRE.TOKEN}`   | *(empty)*     | Service token with `status:read` — set as **Secret text** |
+| `{$ENEVERRE.TOKEN}`   | *(empty)*     | Token linked to a `monitor` user — set as **Secret text** |
 
 Two things to get right:
 
- * **Create a service token, not a user.** As an admin, `POST
-   /api/service-tokens` with `{"name":"zabbix","scopes":["status:read"],
-   "expires_in_days":365}` and copy the `token` value from the response. It is
-   shown exactly once. The token is read-only, scoped to `/api/status`, and
-   can be revoked without touching any user account.
+ * **Create a monitor user and a linked token.** As an admin, create
+   `{"username":"zabbix-monitor","password":"...","role":"monitor"}` (or use
+   an existing monitor), then `POST /api/service-tokens` with
+   `{"name":"zabbix","username":"zabbix-monitor","expires_in_days":365}` and
+   copy the `token` value from the response. It is shown exactly once. The
+   token inherits the monitor role and camera ACL; it cannot play recordings.
  * **A token is not a password.** There is no HTTP Basic and no password
    throttle on this path. `401` means the token is wrong, revoked, or expired;
-   `403` means it lacks `status:read`. Mint a replacement token and update the
-   macro if it expires.
+   `403` means the linked user is not allowed to read status. Mint a
+   replacement token and update the macro if it expires.
 
 Everything else has a working default; the thresholds are
 `{$ENEVERRE.STATUS.INTERVAL}` (poll, `1m`), `{$ENEVERRE.NODATA.TIMEOUT}`

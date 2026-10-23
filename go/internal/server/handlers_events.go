@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"eneverre/internal/auth"
 	"eneverre/internal/events"
-	"eneverre/internal/servicetoken"
 )
 
 func (a *App) eventsPreSeconds() int  { return a.cfg.Events.GetInt("pre_seconds", 5) }
@@ -164,10 +164,14 @@ type listEventsResponse struct {
 }
 
 func (a *App) handleListEvents(w http.ResponseWriter, r *http.Request) {
-	if a.requireScope(w, r, servicetoken.ScopeEvents) == nil {
+	u := a.requireCapability(w, r, auth.CapEventsRead)
+	if u == nil {
 		return
 	}
 	camID := r.PathValue("cam_id")
+	if !a.requireCameraAccess(w, u, camID) {
+		return
+	}
 	if _, ok := a.getCamera(camID); !ok {
 		httpError(w, http.StatusNotFound, "Camera not found")
 		return

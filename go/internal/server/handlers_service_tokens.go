@@ -10,16 +10,16 @@ import (
 	"eneverre/internal/servicetoken"
 )
 
-// Service tokens are scoped, read-only bearer tokens for machine
-// integrations (Zabbix, dashboards, scripts). They are managed by an admin
-// session, shown once at creation, and stored hashed. They can only reach the
-// read-only endpoints that check their scope; requireUser rejects them
-// everywhere else.
+// Service tokens are machine bearer tokens linked to a user. They inherit that
+// user's role and camera ACL, are shown once at creation, and are stored
+// hashed. Account/token management stays human-only; the token itself can use
+// whatever its role allows (a monitor token sees status/metrics, a viewer token
+// can watch live but never playback, etc.).
 
 type createServiceTokenRequest struct {
-	Name          string   `json:"name"`
-	Scopes        []string `json:"scopes"`
-	ExpiresInDays int      `json:"expires_in_days"`
+	Name          string `json:"name"`
+	Username      string `json:"username"`
+	ExpiresInDays int    `json:"expires_in_days"`
 }
 
 type createServiceTokenResponse struct {
@@ -29,7 +29,7 @@ type createServiceTokenResponse struct {
 }
 
 func (a *App) handleListServiceTokens(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	if a.serviceTokens == nil {
@@ -48,7 +48,7 @@ func (a *App) handleListServiceTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleCreateServiceToken(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	if a.serviceTokens == nil {
@@ -60,13 +60,14 @@ func (a *App) handleCreateServiceToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
+	req.Username = strings.TrimSpace(req.Username)
 	if req.Name == "" || len(req.Name) > 120 {
 		httpError(w, http.StatusUnprocessableEntity, "name is required (max 120 chars)")
 		return
 	}
-	if len(req.Scopes) == 0 {
-		// Least-privilege default: enough for the Zabbix template.
-		req.Scopes = []string{servicetoken.ScopeStatus}
+	if req.Username == "" {
+		httpError(w, http.StatusUnprocessableEntity, "username is required")
+		return
 	}
 	days := req.ExpiresInDays
 	if days == 0 {
@@ -77,18 +78,22 @@ func (a *App) handleCreateServiceToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expiresAt := time.Now().Add(time.Duration(days) * 24 * time.Hour).Unix()
-	raw, tok, err := a.serviceTokens.Create(req.Name, req.Scopes, expiresAt)
+	raw, tok, err := a.serviceTokens.Create(req.Name, req.Username, expiresAt)
 	if err != nil {
+		if errors.Is(err, servicetoken.ErrUnknownUser) {
+			httpError(w, http.StatusUnprocessableEntity, "Unknown user: "+req.Username)
+			return
+		}
 		httpError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	slog.Info("service token created", "id", tok.ID, "name", tok.Name, "scopes", tok.Scopes,
-		"expires_at", tok.ExpiresAt)
+	slog.Info("service token created", "id", tok.ID, "name", tok.Name,
+		"username", tok.Username, "role", tok.Role, "expires_at", tok.ExpiresAt)
 	writeJSON(w, http.StatusCreated, createServiceTokenResponse{Token: tok, Secret: raw})
 }
 
 func (a *App) handleRevokeServiceToken(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	if a.serviceTokens == nil {

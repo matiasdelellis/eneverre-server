@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"eneverre/internal/auth"
 	"eneverre/internal/camera"
 	"eneverre/internal/schedule"
 )
@@ -152,7 +153,7 @@ func (a *App) scheduleExists(id string) (bool, error) {
 // handleListSchedules returns every recording schedule (any logged-in user, so
 // the UI can resolve a camera's program name).
 func (a *App) handleListSchedules(w http.ResponseWriter, r *http.Request) {
-	if a.requireUser(w, r) == nil {
+	if a.requireCapability(w, r, auth.CapCamerasRead) == nil {
 		return
 	}
 	if a.schedStore == nil {
@@ -170,7 +171,7 @@ func (a *App) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 
 // handleGetSchedule returns one schedule by id.
 func (a *App) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
-	if a.requireUser(w, r) == nil {
+	if a.requireCapability(w, r, auth.CapCamerasRead) == nil {
 		return
 	}
 	if a.schedStore == nil {
@@ -192,7 +193,7 @@ func (a *App) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateSchedule creates a schedule (admin only).
 func (a *App) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	if a.schedStore == nil {
@@ -230,7 +231,7 @@ func (a *App) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 // After a successful update the scheduler re-evaluates immediately so a changed
 // window takes effect without waiting for the next minute tick.
 func (a *App) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	if a.schedStore == nil {
@@ -267,7 +268,7 @@ func (a *App) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 // camera still references it, so a live camera is never stranded pointing at a
 // missing program — the operator reassigns those cameras first.
 func (a *App) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireHumanAdmin(w, r) == nil {
 		return
 	}
 	if a.schedStore == nil {

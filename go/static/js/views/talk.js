@@ -4,6 +4,7 @@ import { alertModal } from "../ui/dialog.js";
 import { createTalkClient } from "../util/talk-client.js";
 import { icon } from "../ui/icons.js";
 import { t } from "../i18n.js";
+import { can } from "../util/role.js";
 
 // Push-to-talk, split into two controls and kept separate from PTZ:
 //   1. A topbar button that ARMS the mic — it requests the microphone
@@ -36,7 +37,7 @@ function topBtn() { return $("#talk-toggle"); }
 function renderTopButton() {
   const btn = topBtn();
   if (!btn) return;
-  btn.hidden = !currentCam;
+  btn.hidden = !currentCam || !can("talk");
   btn.classList.toggle("active", armed);
   // Same mic glyph in both states; the .active class fills the stroke so
   // the user gets the standard "armed" visual without a second icon.

@@ -163,7 +163,7 @@ All code lives under `go/` (module `eneverre`).
   come from `config.go` (Unix) and `paths_windows.go` (Windows, which
   rewrites the slices in `init()` to `%ProgramData%\Eneverre\...`).
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
-  (`users`, `device_login`, `tokens`, `service_tokens`, `events`,
+  (`users`, `device_login`, `tokens`, `service_tokens`, `camera_acl`, `events`,
   `media_auth_key`, `cameras`, `schedules`) plus a short list of idempotent
   `ALTER TABLE` migrations (`Init` swallows a "duplicate column" so re-running
   is safe — this is how `cameras.schedule_id` and the token role were
@@ -181,14 +181,14 @@ All code lives under `go/` (module `eneverre`).
   user's role, which is how TV sessions stay ordinary users) and rejects
   expired tokens. It exposes `must_change_password`; `requireUser` confines a
   flagged session to the password-change, logout and session-revoke endpoints
-  with a `403 {"code":"password_change_required"}`.
-- `go/internal/servicetoken` — scoped, read-only machine tokens for
-  integrations such as Zabbix. The raw token (`envr_svc_<hex>`) is shown once
-  by `POST /api/service-tokens`; only its SHA-256 hash is stored in
-  `service_tokens`. Supported scopes are `status:read`, `cameras:read`,
-  `events:read`, `recordings:read` and `metrics:read`. `Store.Verify` checks
-  prefix, hash, expiry and revocation, and refreshes `last_used_at` at most
-  once a minute. Admin endpoints list/create/revoke; no token rotation (mint a
+  with a `403 {"code":"password_change_required"}`. `CurrentUser.Can` maps the
+  effective role (`admin`, `user`, `viewer`, `monitor`) to a capability.
+- `go/internal/servicetoken` — machine tokens linked to a user. The raw token
+  (`envr_svc_<hex>`) is shown once by `POST /api/service-tokens`; only its
+  SHA-256 hash is stored in `service_tokens`. `Store.Verify` joins the linked
+  user, so the token inherits the user's current role and camera ACL; it checks
+  prefix, hash, expiry and revocation and refreshes `last_used_at` at most once
+  a minute. Admin endpoints list/create/revoke; no token rotation (mint a
   replacement and revoke the old one).
 - `go/internal/mediaauth` — short-lived HMAC grants for the HTTP media
   surfaces a client cannot authenticate with a header (`live`, `thumb`,
@@ -507,20 +507,34 @@ see request query strings and the more verbose media-engine traces
   treated as theft and deletes the row (`refresh_token_reuse` in the security
   log). Lookups never cross columns: `VerifyBearer` matches `WHERE token = ?`,
   refresh matches `WHERE refresh_token = ?`, so the two are not interchangeable.
-- **Service tokens (machine integrations).** `POST /api/service-tokens` (admin)
-  mints a token prefixed `envr_svc_` with one or more read-only scopes
-  (`status:read`, `cameras:read`, `events:read`, `recordings:read`,
-  `metrics:read`). The raw value is returned once; only its SHA-256 hash is
-  stored in `service_tokens`. `GET /api/service-tokens` lists metadata and
-  `DELETE /api/service-token/{id}` revokes immediately. `currentUser` resolves
-  the prefix into a `Service` principal; `requireUser` rejects it, and only
-  `requireScope`/`requireAdminOrScope` accept it on the matching read-only
-  routes. There is no HTTP Basic: Zabbix and scripts use a service token.
-- **Device (TV) sessions are renewable and limited to the `user` role**: the
-  device-login flow issues an access token plus a refresh token
+- **Roles and capabilities.** `users.role` is `admin` (everything), `user`
+  (live, playback, PTZ, privacy, talk), `viewer` (live and events, **never
+  playback**) or `monitor` (status and metrics only). `auth.CurrentUser.Can`
+  maps the role to a capability; `requireCapability` gates handlers. Account,
+  service-token and camera-ACL management is human-admin-only
+  (`requireHumanAdmin`), even for an admin-linked token.
+- **Camera ACL.** `users.acl_restricted` plus the `camera_acl` table scope
+  every role to a camera set. `0` means all cameras (the default); `1` means
+  only the table rows (empty = none). Admin bypasses it. `filterCameras` narrows
+  the camera list and status snapshot; `canAccessCamera`/`requireCameraAccess`
+  return 404 for out-of-scope single-camera endpoints (live, events, playback,
+  PTZ, privacy, talk). The admin API is `GET/PUT /api/users/{username}/cameras`.
+  Service tokens inherit the linked user's ACL immediately.
+- **Service tokens (machine integrations).** `POST /api/service-tokens` (human
+  admin) mints a token prefixed `envr_svc_` linked to an existing `username`;
+  the token inherits that user's role and ACL (so a `monitor` user gives Zabbix
+  status/metrics but no camera list, live or playback). The raw value is
+  returned once; only its SHA-256 hash is stored. `GET /api/service-tokens`
+  lists metadata and `DELETE /api/service-token/{id}` revokes immediately.
+  `currentUser` resolves the prefix into a `Service` principal with the linked
+  user's username/role. There is no HTTP Basic.
+- **Device (TV) sessions are renewable and never admin**: the device-login
+  flow issues an access token plus a refresh token
   (`refresh_token`/`refresh_expires_at` in the approved poll response) and
-  stores `tokens.role = 'user'` even when an admin approves the device, so a TV
-  can live/playback/PTZ/talk but cannot administer users or cameras. Older TV
+  stores the user's current role in `tokens.role`, clamped to `user` when the
+  account is an admin; a viewer/monitor account gives the TV that reduced role.
+  A TV can live/playback/PTZ/talk according to its role but cannot administer
+  users or cameras. Older TV
   clients can ignore the refresh fields and keep re-pairing; new ones call
   `/api/auth/refresh` like a phone. A user flagged
   `must_change_password` cannot approve a device (and an already-approved code
@@ -654,13 +668,13 @@ see request query strings and the more verbose media-engine traces
 - Register the route in `server.go`'s `Handler()` with a method+pattern
   (`mux.HandleFunc("GET /api/...", a.handleX)`); read wildcards with
   `r.PathValue("...")`.
-- Gate auth at the top of the handler: `a.requireUser(w, r)` for a human
-  Bearer session, `a.requireAdmin(w, r)` for admin-only endpoints, or
-  `a.requireScope(w, r, scope)` on the read-only endpoints that also accept a
-  service token (`status:read`, `cameras:read`, `events:read`,
-  `recordings:read`, `metrics:read`). `requireUser` deliberately rejects
-  service tokens so they cannot reach PTZ, privacy, talk, users or uploads.
-  All gates write the 401/403 and return nil on failure.
+- Gate auth at the top of the handler with a capability:
+  `a.requireCapability(w, r, auth.Cap...)` for role-gated operations,
+  `a.requireAdmin(w, r)` for admin-only operations, `a.requireHuman(w, r)` for
+  personal account actions and `a.requireHumanAdmin(w, r)` for account/token/
+  ACL management. For a single camera, follow with
+  `a.requireCameraAccess(w, u, camID)` (404 when outside the ACL). Do not read
+  `users.role` directly; the capability map is the single source of truth.
 - Respond with `writeJSON(w, status, v)` and `httpError(w, status, detail)`
   (the standard `{"detail": "..."}` error shape).
 - For camera responses, marshal `camera.Camera` (credentials are already
@@ -753,6 +767,12 @@ path, not the normal way to manage cameras. To seed via INI on a fresh install:
   dblclick) can cancel it before the zoom fires. The zoom is one-way — only
   Escape walks the filter back out (camera → its location → all), so a click
   never has a history-dependent destination.
+- **Roles & camera ACL** (`js/util/role.js`, `js/views/users.js`): the user
+  table's role select offers `admin`, `user`, `viewer` and `monitor`; the
+  "Cameras" action edits the ACL through
+  `GET/PUT /api/users/{username}/cameras`. `role.js` mirrors the server's
+  capability matrix so the UI hides playback for `viewer`, and PTZ/privacy/
+  talk for `viewer`/`monitor`; the server still enforces every request.
 - **Admin status view** (`js/views/status.js`): a `GET /api/status` overlay
   (version, uptime, per-camera connected/recording/privacy, totals, and —
   when recording is enabled — storage headroom) plus a persistent low-disk

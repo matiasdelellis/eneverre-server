@@ -832,6 +832,8 @@ func (a *App) Handler() http.Handler {
 	// users
 	mux.HandleFunc("GET /api/users", a.handleListUsers)
 	mux.HandleFunc("POST /api/users", a.handleCreateUser)
+	mux.HandleFunc("GET /api/users/{username}/cameras", a.handleGetUserCameras)
+	mux.HandleFunc("PUT /api/users/{username}/cameras", a.handlePutUserCameras)
 	mux.HandleFunc("GET /api/service-tokens", a.handleListServiceTokens)
 	mux.HandleFunc("POST /api/service-tokens", a.handleCreateServiceToken)
 	mux.HandleFunc("DELETE /api/service-token/{id}", a.handleRevokeServiceToken)
@@ -910,23 +912,16 @@ func (a *App) unauthorized(w http.ResponseWriter) {
 	httpError(w, http.StatusUnauthorized, "Unauthorized")
 }
 
-// requireUser enforces a human Bearer session, writing 401 and returning nil
-// on failure. Service tokens are deliberately rejected here: they only reach
-// the read-only integration endpoints that call requireScope/requireAdminOrScope.
-// A session whose user still carries must_change_password is confined to the
-// password-change and logout/session-management endpoints: the web UI already
-// gates on the flag, but API clients (and the seeded admin's bootstrap
-// password) must be stopped server-side too.
+// requireUser enforces a Bearer credential (human session or machine token)
+// and the must-change-password gate, writing 401/403 and returning nil on
+// failure. Role and camera-ACL checks happen in requireCapability and the
+// per-camera helpers.
 func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentUser {
 	u := a.currentUser(r)
 	if u == nil {
 		a.unauthorized(w)
 		return nil
 	}
-	if u.IsService() {
-		httpError(w, http.StatusForbidden, "Service tokens are only accepted on read-only integration endpoints")
-		return nil
-	}
 	if u.MustChangePassword && !passwordChangeAllowed(r) {
 		httpErrorCode(w, http.StatusForbidden, "password_change_required",
 			"Password change required")
@@ -935,48 +930,56 @@ func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentU
 	return u
 }
 
-// requireScope accepts a human session or a service token carrying scope. It
-// is the gate for the read-only integration endpoints (status, cameras,
-// events, recordings, metrics); service tokens are rejected everywhere else.
-func (a *App) requireScope(w http.ResponseWriter, r *http.Request, scope string) *auth.CurrentUser {
-	u := a.currentUser(r)
+// requireHuman is requireUser plus "not a machine token". It guards personal
+// account actions (password, name, sessions, logout) and human-only flows such
+// as approving a TV pairing code.
+func (a *App) requireHuman(w http.ResponseWriter, r *http.Request) *auth.CurrentUser {
+	u := a.requireUser(w, r)
 	if u == nil {
-		a.unauthorized(w)
 		return nil
 	}
 	if u.IsService() {
-		if !u.HasScope(scope) {
-			httpError(w, http.StatusForbidden, "Missing scope: "+scope)
-			return nil
-		}
-		return u
-	}
-	if u.MustChangePassword && !passwordChangeAllowed(r) {
-		httpErrorCode(w, http.StatusForbidden, "password_change_required",
-			"Password change required")
+		httpError(w, http.StatusForbidden, "Machine tokens cannot perform this action")
 		return nil
 	}
 	return u
 }
 
-// requireAdminOrScope keeps /api/status admin-only for humans while allowing a
-// service token with the status:read scope.
-func (a *App) requireAdminOrScope(w http.ResponseWriter, r *http.Request, scope string) *auth.CurrentUser {
-	u := a.currentUser(r)
+// requireCapability accepts any principal whose role grants cap. The camera
+// ACL is checked separately by the camera handlers (a role may allow playback
+// but only for the cameras the principal is allowed to see).
+func (a *App) requireCapability(w http.ResponseWriter, r *http.Request, cap auth.Capability) *auth.CurrentUser {
+	u := a.requireUser(w, r)
 	if u == nil {
-		a.unauthorized(w)
 		return nil
 	}
-	if u.IsService() {
-		if !u.HasScope(scope) {
-			httpError(w, http.StatusForbidden, "Missing scope: "+scope)
-			return nil
-		}
-		return u
+	if !u.Can(cap) {
+		httpError(w, http.StatusForbidden, "Missing capability: "+string(cap))
+		return nil
 	}
-	if u.MustChangePassword && !passwordChangeAllowed(r) {
-		httpErrorCode(w, http.StatusForbidden, "password_change_required",
-			"Password change required")
+	return u
+}
+
+// requireAdmin enforces the admin role. A service token linked to an admin
+// inherits it (treat such a token with the same care as an admin password).
+func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request) *auth.CurrentUser {
+	u := a.requireUser(w, r)
+	if u == nil {
+		return nil
+	}
+	if !u.IsAdmin() {
+		httpError(w, http.StatusForbidden, "Admin required")
+		return nil
+	}
+	return u
+}
+
+// requireHumanAdmin is requireAdmin plus "not a machine token". Account,
+// service-token and camera-ACL management stay human-only even for an
+// admin-linked token.
+func (a *App) requireHumanAdmin(w http.ResponseWriter, r *http.Request) *auth.CurrentUser {
+	u := a.requireHuman(w, r)
+	if u == nil {
 		return nil
 	}
 	if !u.IsAdmin() {
@@ -1037,7 +1040,30 @@ func (a *App) requireMediaAccess(w http.ResponseWriter, r *http.Request, camID, 
 		return true
 	}
 
-	return a.requireUser(w, r) != nil
+	return a.requireMediaSession(w, r, camID, scope)
+}
+
+// requireMediaSession is the session/service-token leg of requireMediaAccess.
+// Signed grants are already camera-scoped and bypass it. A live/thumbnail
+// surface needs the live capability; HLS is playback and needs playback.
+func (a *App) requireMediaSession(w http.ResponseWriter, r *http.Request, camID, scope string) bool {
+	u := a.requireUser(w, r)
+	if u == nil {
+		return false
+	}
+	cap := auth.CapLive
+	if scope == mediaauth.ScopeHLS {
+		cap = auth.CapRecordingsRead
+	}
+	if !u.Can(cap) {
+		httpError(w, http.StatusForbidden, "Missing capability: "+string(cap))
+		return false
+	}
+	if !a.canAccessCamera(u, camID) {
+		httpError(w, http.StatusNotFound, "Camera not found")
+		return false
+	}
+	return true
 }
 
 // logMediaAuthFailure records a rejected media grant in the security log. It
@@ -1048,10 +1074,10 @@ func (a *App) logMediaAuthFailure(r *http.Request, camID, scope, reason string) 
 		"media:"+scope+":"+camID, reason)
 }
 
-// currentUser authenticates a Bearer access token or a scoped service token.
+// currentUser authenticates a Bearer access token or a user-linked service token.
 // There is no HTTP Basic path: browsers, the Android clients and scripts all
-// use Bearer (machine scripts mint a service token). Service tokens are
-// resolved here and then accepted only by requireScope/requireAdminOrScope.
+// use Bearer. A service token resolves to its linked user, inheriting that
+// user's role and camera ACL.
 func (a *App) currentUser(r *http.Request) *auth.CurrentUser {
 	raw := auth.BearerToken(r)
 	if raw == "" {
@@ -1067,10 +1093,10 @@ func (a *App) currentUser(r *http.Request) *auth.CurrentUser {
 			return nil
 		}
 		return &auth.CurrentUser{
-			Username: "service:" + st.Name,
-			Role:     "service",
-			Service:  true,
-			Scopes:   st.Scopes,
+			Username:           st.Username,
+			Role:               st.Role,
+			Service:            true,
+			MustChangePassword: st.MustChangePassword,
 		}
 	}
 	return auth.VerifyBearer(a.db, r)
@@ -1082,7 +1108,7 @@ func (a *App) currentUser(r *http.Request) *auth.CurrentUser {
 // the reverse proxy is treated as remote and must authenticate.
 func (a *App) gateMetrics(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isLocalRequest(r) && a.requireScope(w, r, servicetoken.ScopeMetrics) == nil {
+		if !isLocalRequest(r) && a.requireCapability(w, r, auth.CapMetricsRead) == nil {
 			return
 		}
 		h.ServeHTTP(w, r)
@@ -1106,19 +1132,6 @@ func isLocalRequest(r *http.Request) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-// requireAdmin enforces auth plus the admin role.
-func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request) *auth.CurrentUser {
-	u := a.requireUser(w, r)
-	if u == nil {
-		return nil
-	}
-	if !u.IsAdmin() {
-		httpError(w, http.StatusForbidden, "Admin required")
-		return nil
-	}
-	return u
 }
 
 // --- simple handlers -----------------------------------------------------
@@ -1199,11 +1212,12 @@ type statusStorage struct {
 // there disk left?" without needing the Prometheus endpoint. Admin-gated
 // because it exposes each camera's live state by id.
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdminOrScope(w, r, servicetoken.ScopeStatus) == nil {
+	u := a.requireCapability(w, r, auth.CapStatusRead)
+	if u == nil {
 		return
 	}
 
-	cams := a.listCameras()
+	cams := a.filterCameras(u, a.listCameras())
 	nameByID := make(map[string]string, len(cams))
 	for _, c := range cams {
 		nameByID[c.ID] = c.Name
@@ -1297,7 +1311,8 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
-	if a.requireScope(w, r, servicetoken.ScopeCameras) == nil {
+	u := a.requireCapability(w, r, auth.CapCamerasRead)
+	if u == nil {
 		return
 	}
 	// Project each camera through publicCamera — the single source of truth for
@@ -1305,7 +1320,7 @@ func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
 	// credentials, live privacy applied, talk codecs attached). Keeping the
 	// per-camera POST/PUT responses and this list on the same projection means
 	// they can't drift.
-	cams := a.listCameras()
+	cams := a.filterCameras(u, a.listCameras())
 	out := make([]camera.Camera, len(cams))
 	for i, c := range cams {
 		out[i] = a.publicCamera(c, r.Host)
@@ -1318,10 +1333,15 @@ func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
 // the error. Single source of truth for the preamble the PTZ proxy handlers
 // share, so they can't drift apart (mirrors playbackGate).
 func (a *App) ptzGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
-	if a.requireUser(w, r) == nil {
+	u := a.requireCapability(w, r, auth.CapPTZ)
+	if u == nil {
 		return nil
 	}
-	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	camID := r.PathValue("cam_id")
+	if !a.requireCameraAccess(w, u, camID) {
+		return nil
+	}
+	cam, ok := a.getCamera(camID)
 	if !ok || !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
 		httpError(w, http.StatusNotFound, "PTZ not available")
 		return nil
@@ -1504,10 +1524,15 @@ func (a *App) privacyOp(camID string) *sync.Mutex {
 // privacy position. Available for every camera whose `privacy` capability is on
 // (INI `privacy != false`).
 func (a *App) handlePrivacy(w http.ResponseWriter, r *http.Request) {
-	if a.requireUser(w, r) == nil {
+	u := a.requireCapability(w, r, auth.CapPrivacy)
+	if u == nil {
 		return
 	}
-	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	camID := r.PathValue("cam_id")
+	if !a.requireCameraAccess(w, u, camID) {
+		return
+	}
+	cam, ok := a.getCamera(camID)
 	if !ok || !cam.Capabilities.Privacy {
 		httpError(w, http.StatusNotFound, "Privacy not available")
 		return

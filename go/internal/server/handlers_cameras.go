@@ -459,6 +459,9 @@ func (a *App) handleDeleteCamera(w http.ResponseWriter, r *http.Request) {
 	} else if n > 0 {
 		slog.Info("delete camera: events removed", "id", id, "count", n)
 	}
+	// Drop stale ACL rows so a future camera with the same id does not inherit
+	// access grants from the deleted one.
+	_, _ = a.db.Exec("DELETE FROM camera_acl WHERE camera_id = ?", id)
 	a.removeCamera(id)
 	a.dropCameraState(id)
 

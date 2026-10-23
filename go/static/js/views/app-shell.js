@@ -13,6 +13,7 @@ import {
 } from "../state.js";
 import { closeUserMenu, refreshUserMenu } from "../ui/user-menu.js";
 import { showLogin } from "./login.js";
+import { can } from "../util/role.js";
 
 const PB_DEFAULT_INTERVAL = 6 * 60 * 60 * 1000; // timeline window: 6 hours
 
@@ -25,12 +26,16 @@ export function backLabel() {
 }
 
 export function setViewMode(mode) {
+  // Roles without playback never enter that mode, even from a restored URL
+  // or the old persisted session value.
+  if (mode === "playback" && !can("playback")) mode = "live";
   setViewModeState(mode);
   sessionSet(VIEW_KEY, mode);
   $("#wall").hidden = mode !== "live" && mode !== "playback";
   $("#playback-bar").hidden = mode !== "playback";
   const liveTab = $("#view-live");
   const pbTab = $("#view-playback");
+  if (pbTab) pbTab.hidden = !can("playback");
   liveTab.classList.toggle("active", mode === "live");
   pbTab.classList.toggle("active", mode === "playback");
   // Mirror the visual state to assistive tech: role="tab" needs aria-selected
@@ -407,6 +412,8 @@ export function closeOverlayViews() {
 }
 
 function initTopbar() {
+  const pbTab = $("#view-playback");
+  if (pbTab) pbTab.hidden = !can("playback");
   $("#view-live").addEventListener("click", () => setViewMode("live"));
   $("#view-playback").addEventListener("click", () => setViewMode("playback"));
   $("#viewer-toggle").addEventListener("click", () => {

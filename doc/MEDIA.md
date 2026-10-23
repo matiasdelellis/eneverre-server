@@ -427,9 +427,15 @@ always spans the full requested window and it is obvious there was no recording
 ## Client integration notes
 
 What a client (web UI, mobile/TV app) consumes. All `/api/*` calls take a
-Bearer credential — a human access token, or a scoped read-only service token
-for machine integrations — except the HTTP media surfaces that also accept the
+Bearer credential — a human access token, or a service token linked to a user
+(role + camera ACL) for machine integrations — except the HTTP media surfaces that also accept the
 short-lived signed grants described below. HTTP Basic is not accepted.
+
+Roles are `admin`, `user` (live, playback, PTZ, privacy, talk), `viewer`
+(live and events, never playback) and `monitor` (status/metrics only). Every
+role is narrowed by the camera ACL; a camera outside it answers `404` (not
+`403`) on single-camera endpoints. Service tokens inherit the linked user's
+role and ACL.
 
 **Live view**
 - **Web / MSE**: use `camera.live_mse` (`/api/camera/{id}/live/stream`). It is a
@@ -489,8 +495,8 @@ Two endpoints expose service instrumentation:
 
 **Access.** Both are open **without credentials only to a genuinely local
 client** — a Prometheus scraping the service directly over loopback. Every other
-caller must authenticate (Bearer access token, or a service token with the
-`metrics:read` scope), the same as the rest of the API, so the endpoints are
+caller must authenticate (a Bearer session or service token whose role is
+`admin` or `monitor`), the same as the rest of the API, so the endpoints are
 not exposed publicly through the reverse proxy. The local
 bypass keys off the real socket peer being loopback **and** the absence of any
 `X-Forwarded-For` / `X-Real-IP` header: those headers are client-supplied and
@@ -502,6 +508,10 @@ directly (not through Caddy), or give it credentials.
 are counts across all cameras; there is deliberately no `id` label, so the
 endpoint answers "how many cameras are recording / in privacy", not "what is
 camera X doing". It is not a per-camera surveillance map.
+
+Because the counters are global, a camera ACL narrows `/api/status` and the
+camera list but does not change these aggregate totals. Use `/api/status` when
+the consumer must see only its allowed cameras.
 
 | Metric | Meaning |
 |---|---|

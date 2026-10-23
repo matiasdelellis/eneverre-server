@@ -145,16 +145,19 @@ func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 		a.unauthorized(w)
 		return
 	}
-	if u.IsService() {
-		httpError(w, http.StatusForbidden, "Service tokens are not allowed on this endpoint")
-		return
-	}
 	if u.MustChangePassword {
 		httpErrorCode(w, http.StatusForbidden, "password_change_required", "Password change required")
 		return
 	}
-
-	cam, ok := a.getCamera(r.PathValue("cam_id"))
+	if !u.Can(auth.CapTalk) {
+		httpError(w, http.StatusForbidden, "Missing capability: "+string(auth.CapTalk))
+		return
+	}
+	camID := r.PathValue("cam_id")
+	if !a.requireCameraAccess(w, u, camID) {
+		return
+	}
+	cam, ok := a.getCamera(camID)
 	talkURL := ""
 	if ok {
 		talkURL = a.backchannelURL(cam)

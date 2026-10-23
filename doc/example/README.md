@@ -150,23 +150,49 @@ Token lifetimes and session hygiene. Every key is optional.
 
 ## Service tokens (machine integrations)
 
-HTTP Basic is not accepted. Zabbix, dashboards and scripts use a scoped,
-read-only **service token** instead of a user password. An admin mints one
-after logging in with a normal Bearer access token:
+HTTP Basic is not accepted. Zabbix, dashboards and scripts use a **service
+token** linked to a user; the token inherits that user's role and camera ACL.
+An admin creates the user (if needed) and mints the token with a normal Bearer
+access token:
 
 ```bash
+# One-time: a monitoring account. Monitor = status + metrics only.
+curl -sS -X POST http://localhost:8080/api/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"zabbix-monitor","password":"a-long-random-password","role":"monitor"}'
+
+# Mint the token. Copy the returned "token": "envr_svc_..." now.
 curl -sS -X POST http://localhost:8080/api/service-tokens \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"zabbix","scopes":["status:read"],"expires_in_days":365}'
+  -d '{"name":"zabbix","username":"zabbix-monitor","expires_in_days":365}'
 ```
 
-The response carries `"token": "envr_svc_..."` **once**; only its SHA-256 hash
-is stored, so copy it now. Supported scopes are `status:read`,
-`cameras:read`, `events:read`, `recordings:read` and `metrics:read`; the
-default is `status:read`. The token can only reach the matching read-only
-endpoints — it is rejected on users, camera administration, PTZ, privacy,
-talk, schedules, uploads and device login.
+The raw token is shown **once**; only its SHA-256 hash is stored. The roles:
+
+| Role | Can do |
+|---|---|
+| `admin` | Everything, including account/token management (human only). |
+| `user` | Live, PTZ, privacy, talk, playback, events. |
+| `viewer` | Live and events; **never playback**. |
+| `monitor` | `/api/status` and `/api/metrics` only; no camera list, live or playback. |
+
+The ACL narrows any role to a set of cameras (admin bypasses it):
+
+```bash
+curl -sS -X PUT http://localhost:8080/api/users/zabbix-monitor/cameras \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"restricted":true,"camera_ids":["front","garden"]}'
+```
+
+An unrestricted user sees every camera (the default). A restricted user with
+an empty list sees none. Service tokens inherit the user's role and ACL
+immediately, so changing either applies to every token for that user.
+
+`monitor` accounts are intended for integrations (Zabbix/metrics); the web and
+Android UIs expect at least `viewer` to show the camera wall.
 
 ```bash
 curl -sS -H "Authorization: Bearer envr_svc_..." http://localhost:8080/api/status
@@ -176,6 +202,12 @@ curl -sS -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
 ```
 
 Revocation is immediate; to rotate, mint a replacement and revoke the old id.
+Account, token and ACL management remain human-admin-only; a token cannot mint
+more tokens.
+
+> **Upgrading from the first service-token build?** Those tokens carried
+> standalone scopes and had no linked user, so they stop working after the
+> upgrade. The old rows are removed on startup; mint new user-linked tokens.
 
 ## `[media]`
 
