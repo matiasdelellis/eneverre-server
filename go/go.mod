@@ -6,7 +6,6 @@ require (
 	github.com/abema/go-mp4 v1.7.2
 	github.com/bluenviron/gortsplib/v5 v5.6.5
 	github.com/bluenviron/mediacommon/v2 v2.9.4
-	github.com/getzaguan/zaguan-sourceapi v0.1.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/rtcp v1.2.17

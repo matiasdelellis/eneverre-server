@@ -12,9 +12,8 @@
 // username/password to reuse.
 //
 // Grants are meant for clients that cannot set an Authorization header
-// (browser <img>, HLS players) and for third-party integrations such as the
-// Zaguán hub. First-party clients keep using their normal session Bearer
-// token.
+// (browser <img>, HLS players). First-party clients keep using their normal
+// session Bearer token.
 package mediaauth
 
 import (

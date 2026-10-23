@@ -465,16 +465,15 @@ role and ACL.
 
 **Auth reminder for HLS**: every playlist/init/segment request needs a Bearer
 session or the signed grant. Use hls.js `xhrSetup` with the Bearer token for
-first-party clients. For players that cannot set headers (VLC, ExoPlayer, a
-hub's browser), use the **signed grant**:
+first-party clients. For players that cannot set headers (VLC, ExoPlayer),
+use the **signed grant**:
 `…/playlist.m3u8?exp=<unix>&sig=<hex>`; the playlist forwards `exp`/`sig` to
 its init and segment URIs.
 
-When `[zaguan]` is configured, the publisher mints camera- and surface-scoped
-signed grants for the thumbnail, live MSE and HLS links. The relay `user`/`pass`
-pair is **not** accepted on HTTP media. The grants do not authorize the
-clip/list/timeline/gaps API — those remain session-only.
-See [`ZAGUAN.md`](ZAGUAN.md).
+Grants are minted server-side with the media-auth key and scoped to one camera
+and one surface; the relay `user`/`pass` pair is **not** accepted on HTTP media.
+They do not authorize the clip/list/timeline/gaps API — those remain
+session-only.
 
 **Client migration:** the RTSP `user`/`pass` pair is no longer an HTTP media
 credential. Use the normal Bearer session (web, Android phone) or consume the

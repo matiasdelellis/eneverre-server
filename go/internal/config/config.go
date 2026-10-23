@@ -84,7 +84,6 @@ type Config struct {
 	Events  Section // nil if there is no [events] section
 	Auth    Section // nil if there is no [auth] section
 	Updates Section // nil if there is no [updates] section
-	Zaguan  Section // nil if there is no [zaguan] section (Source API publisher)
 }
 
 // LoadOptions are the path overrides a caller can pass to Load. Precedence:
@@ -228,9 +227,6 @@ func Load(opts LoadOptions) (*Config, error) {
 	}
 	if f.HasSection("updates") {
 		c.Updates = sectionMap(f, "updates")
-	}
-	if f.HasSection("zaguan") {
-		c.Zaguan = sectionMap(f, "zaguan")
 	}
 	return c, nil
 }
@@ -452,93 +448,6 @@ func (c *Config) UpdatesSection() Section {
 		return Section{}
 	}
 	return c.Updates
-}
-
-// ZaguanSection returns the [zaguan] section or an empty Section. Safe to
-// call when the section is missing (returns a non-nil Section that yields
-// defaults).
-func (c *Config) ZaguanSection() Section {
-	if c.Zaguan == nil {
-		return Section{}
-	}
-	return c.Zaguan
-}
-
-// ZaguanURL resolves the address of the Zaguán hub the cameras are published
-// to. An empty result disables the integration.
-// Precedence: [zaguan] url > ENEVERRE_ZAGUAN_URL > "" (disabled).
-func (c *Config) ZaguanURL() string {
-	if v := strings.TrimSpace(c.ZaguanSection().Get("url", "")); v != "" {
-		return v
-	}
-	return strings.TrimSpace(os.Getenv("ENEVERRE_ZAGUAN_URL"))
-}
-
-// ZaguanToken resolves the Source API token created in the hub. The token
-// identifies this server as one source; the hub stores only its hash.
-// Precedence: [zaguan] token_file > ENEVERRE_ZAGUAN_TOKEN_FILE > [zaguan]
-// token > ENEVERRE_ZAGUAN_TOKEN > "". The file form is recommended so the
-// secret stays out of the INI (mode 0600); an unreadable or empty file is an
-// error and never falls back to the inline token, so a broken secret mount is
-// visible instead of silently publishing with the wrong credential.
-func (c *Config) ZaguanToken() (string, error) {
-	path := strings.TrimSpace(c.ZaguanSection().Get("token_file", ""))
-	if path == "" {
-		path = strings.TrimSpace(os.Getenv("ENEVERRE_ZAGUAN_TOKEN_FILE"))
-	}
-	if path != "" {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("zaguan: reading the token file: %w", err)
-		}
-		token := strings.TrimSpace(string(data))
-		if token == "" {
-			return "", fmt.Errorf("zaguan: the token file %s is empty", path)
-		}
-		return token, nil
-	}
-	if v := strings.TrimSpace(c.ZaguanSection().Get("token", "")); v != "" {
-		return v, nil
-	}
-	return strings.TrimSpace(os.Getenv("ENEVERRE_ZAGUAN_TOKEN")), nil
-}
-
-// ZaguanName is the name the source shows in the hub's Sources page.
-// Precedence: [zaguan] name > "Eneverre".
-func (c *Config) ZaguanName() string {
-	if v := strings.TrimSpace(c.ZaguanSection().Get("name", "")); v != "" {
-		return v
-	}
-	return "Eneverre"
-}
-
-// ZaguanPublicURL is the base URL of this server as the hub and its clients
-// reach it. It is used to build the absolute media links published in the
-// camera entity attributes; empty means the attributes carry no links.
-// Precedence: [zaguan] public_url > ENEVERRE_ZAGUAN_PUBLIC_URL > "".
-func (c *Config) ZaguanPublicURL() string {
-	if v := strings.TrimSpace(c.ZaguanSection().Get("public_url", "")); v != "" {
-		return v
-	}
-	return strings.TrimSpace(os.Getenv("ENEVERRE_ZAGUAN_PUBLIC_URL"))
-}
-
-// ZaguanSyncInterval is how often the publisher rebuilds the camera inventory
-// and republishes it. The first snapshot is immediate; the periodic one is
-// what refreshes connectivity and availability in the hub. Invalid or
-// shorter-than-one-second values fall back to 30s.
-// Precedence: [zaguan] sync_interval > 30s.
-func (c *Config) ZaguanSyncInterval() time.Duration {
-	const def = 30 * time.Second
-	raw := strings.TrimSpace(c.ZaguanSection().Get("sync_interval", ""))
-	if raw == "" {
-		return def
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil || d < time.Second {
-		return def
-	}
-	return d
 }
 
 // HumanSize formats a byte count using the largest K/M/G unit (base 1024)

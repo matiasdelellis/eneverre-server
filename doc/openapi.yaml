@@ -1023,7 +1023,7 @@ paths:
         `snapshot_url` (the camera's own JPEG endpoint). 404 when the camera has
         neither configured. First-party clients authenticate with a normal
         session. Third-party clients that cannot set an Authorization header
-        (the Zaguán publisher, browser `<img>`) use a short-lived signed grant:
+        (browser `<img>`) use a short-lived signed grant:
         `exp` + `sig`, scoped to this camera's `thumb` surface. The relay
         `user`/`pass` pair is not accepted here.
       parameters:
@@ -2296,8 +2296,8 @@ components:
         format: int64
       description: >-
         Expiry (unix seconds) of a short-lived signed media grant. Used with
-        `sig` by clients that cannot set an Authorization header (Zaguán,
-        native HLS players, browser `<img>`); first-party clients use the
+        `sig` by clients that cannot set an Authorization header (native HLS
+        players, browser `<img>`); first-party clients use the
         normal Bearer session instead.
     media_sig:
       name: sig
