@@ -57,7 +57,7 @@ func insertSegment(t *testing.T, a *App, start time.Time, durationSec float64) {
 func doPlayback(t *testing.T, a *App, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, adminRequest(t, http.MethodGet, target, "alice", "alicepw", ""))
+	a.Handler().ServeHTTP(w, adminRequest(t, a, http.MethodGet, target, "alice", "alicepw", ""))
 	return w
 }
 

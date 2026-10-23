@@ -48,7 +48,7 @@ func TestDeleteEventIsAdminOnly(t *testing.T) {
 	path := fmt.Sprintf("/api/camera/cam1/events/%d", id)
 
 	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, adminRequest(t, http.MethodDelete, path, "bob", "bobpw", ""))
+	a.Handler().ServeHTTP(w, adminRequest(t, a, http.MethodDelete, path, "bob", "bobpw", ""))
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("non-admin delete = %d, want 403", w.Code)
 	}
@@ -57,7 +57,7 @@ func TestDeleteEventIsAdminOnly(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, adminRequest(t, http.MethodDelete, path, "admin", "adminpw", ""))
+	a.Handler().ServeHTTP(w, adminRequest(t, a, http.MethodDelete, path, "admin", "adminpw", ""))
 	if w.Code != http.StatusOK {
 		t.Fatalf("admin delete = %d, want 200", w.Code)
 	}
@@ -68,7 +68,7 @@ func TestDeleteEventIsAdminOnly(t *testing.T) {
 func TestDeleteCameraRemovesEvents(t *testing.T) {
 	a, _ := deleteTestApp(t)
 	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, adminRequest(t, http.MethodDelete, "/api/camera/cam1", "admin", "adminpw", ""))
+	a.Handler().ServeHTTP(w, adminRequest(t, a, http.MethodDelete, "/api/camera/cam1", "admin", "adminpw", ""))
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete camera = %d: %s", w.Code, w.Body.String())
 	}

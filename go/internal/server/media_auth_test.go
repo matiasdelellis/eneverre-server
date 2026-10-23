@@ -69,8 +69,7 @@ func TestRequireMediaAccessSignedGrants(t *testing.T) {
 func TestRequireMediaAccessFallsBackToSession(t *testing.T) {
 	a := mediaAuthTestApp(t)
 
-	r := httptest.NewRequest(http.MethodGet, "/api/camera/front/live/stream", nil)
-	r.SetBasicAuth("alice", "pw")
+	r := adminRequest(t, a, http.MethodGet, "/api/camera/front/live/stream", "alice", "pw", "")
 	w := httptest.NewRecorder()
 	if !a.requireMediaAccess(w, r, "front", mediaauth.ScopeLive) {
 		t.Fatalf("valid session was rejected: %d", w.Code)

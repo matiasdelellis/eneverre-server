@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"eneverre/internal/auth"
 	"eneverre/internal/config"
@@ -15,8 +16,9 @@ import (
 
 // withUsersApp builds an App backed by a fresh temp-file SQLite database with
 // the real schema applied but no seeded users, so each test controls exactly
-// which accounts (and passwords) exist. Handlers authenticate these tests via
-// HTTP Basic (auth.VerifyBasic), which is why the inserted passwords are known.
+// which accounts (and passwords) exist. Requests authenticate with Bearer
+// tokens (see adminRequest); the Basic path is exercised separately where
+// relevant.
 func withUsersApp(t *testing.T) *App {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -48,15 +50,24 @@ func insertUser(t *testing.T, db *sql.DB, username, password, role string) {
 	}
 }
 
-func adminRequest(t *testing.T, method, target, admin, pass, body string) *http.Request {
+func adminRequest(t *testing.T, a *App, method, target, admin, pass, body string) *http.Request {
 	t.Helper()
+	_ = pass // passwords are only used by the login/change-password tests
 	var r *http.Request
 	if body != "" {
 		r = httptest.NewRequest(method, target, strings.NewReader(body))
 	} else {
 		r = httptest.NewRequest(method, target, nil)
 	}
-	r.SetBasicAuth(admin, pass)
+	token := "test-" + admin
+	if _, err := a.db.Exec(
+		"INSERT INTO tokens (token, username, expires_at, created_at) VALUES (?, ?, ?, 0) "+
+			"ON CONFLICT(token) DO UPDATE SET username = excluded.username, expires_at = excluded.expires_at",
+		token, admin, time.Now().Add(time.Hour).Unix(),
+	); err != nil {
+		t.Fatalf("insert test token for %q: %v", admin, err)
+	}
+	r.Header.Set("Authorization", "Bearer "+token)
 	return r
 }
 
@@ -122,7 +133,7 @@ func TestCreateUserValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			a.handleCreateUser(w, adminRequest(t, http.MethodPost, "/api/users", "admin", "adminpw", tc.body))
+			a.handleCreateUser(w, adminRequest(t, a, http.MethodPost, "/api/users", "admin", "adminpw", tc.body))
 			if w.Code != tc.want {
 				t.Errorf("status = %d, want %d (body: %s)", w.Code, tc.want, w.Body.String())
 			}
@@ -135,7 +146,7 @@ func TestLastAdminProtection(t *testing.T) {
 		a := withUsersApp(t)
 		insertUser(t, a.db, "admin", "adminpw", "admin")
 		w := httptest.NewRecorder()
-		r := adminRequest(t, http.MethodDelete, "/api/users/admin", "admin", "adminpw", "")
+		r := adminRequest(t, a, http.MethodDelete, "/api/users/admin", "admin", "adminpw", "")
 		r.SetPathValue("username", "admin")
 		a.handleDeleteUser(w, r)
 		if w.Code != http.StatusBadRequest {
@@ -152,7 +163,7 @@ func TestLastAdminProtection(t *testing.T) {
 		a := withUsersApp(t)
 		insertUser(t, a.db, "admin", "adminpw", "admin")
 		w := httptest.NewRecorder()
-		r := adminRequest(t, http.MethodPut, "/api/users/admin/role", "admin", "adminpw", `{"role":"user"}`)
+		r := adminRequest(t, a, http.MethodPut, "/api/users/admin/role", "admin", "adminpw", `{"role":"user"}`)
 		r.SetPathValue("username", "admin")
 		a.handleUpdateRole(w, r)
 		if w.Code != http.StatusBadRequest {
@@ -170,7 +181,7 @@ func TestLastAdminProtection(t *testing.T) {
 		insertUser(t, a.db, "admin", "adminpw", "admin")
 		insertUser(t, a.db, "admin2", "pw", "admin")
 		w := httptest.NewRecorder()
-		r := adminRequest(t, http.MethodDelete, "/api/users/admin2", "admin", "adminpw", "")
+		r := adminRequest(t, a, http.MethodDelete, "/api/users/admin2", "admin", "adminpw", "")
 		r.SetPathValue("username", "admin2")
 		a.handleDeleteUser(w, r)
 		if w.Code != http.StatusOK {
@@ -192,7 +203,7 @@ func TestAdminPasswordChangeRevokesSessions(t *testing.T) {
 		}
 	}
 	w := httptest.NewRecorder()
-	r := adminRequest(t, http.MethodPut, "/api/users/bob/password", "admin", "adminpw", `{"password":"newpw"}`)
+	r := adminRequest(t, a, http.MethodPut, "/api/users/bob/password", "admin", "adminpw", `{"password":"newpw"}`)
 	r.SetPathValue("username", "bob")
 	a.handleChangePassword(w, r)
 	if w.Code != http.StatusOK {

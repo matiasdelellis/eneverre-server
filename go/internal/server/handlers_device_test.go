@@ -48,7 +48,7 @@ func TestDeviceFlowApprovesOnce(t *testing.T) {
 
 	verify := func() string {
 		w := httptest.NewRecorder()
-		a.Handler().ServeHTTP(w, adminRequest(t, "POST", "/api/auth/device/verify", "alice", "pw", `{"user_code":"`+userCode+`"}`))
+		a.Handler().ServeHTTP(w, adminRequest(t, a, "POST", "/api/auth/device/verify", "alice", "pw", `{"user_code":"`+userCode+`"}`))
 		st, _ := deviceStatus(t, w)
 		return st
 	}
@@ -81,7 +81,7 @@ func TestDeviceFlowApprovesOnce(t *testing.T) {
 		t.Errorf("concurrent polls minted %d tokens, want exactly 1", tokens)
 	}
 	var n int
-	_ = a.db.QueryRow("SELECT COUNT(*) FROM tokens WHERE username = 'alice'").Scan(&n)
+	_ = a.db.QueryRow("SELECT COUNT(*) FROM tokens WHERE username = 'alice' AND token NOT LIKE 'test-%'").Scan(&n)
 	if n != 1 {
 		t.Errorf("tokens table has %d rows for alice, want 1", n)
 	}
@@ -91,7 +91,7 @@ func TestDeviceSessionIsRenewableAndScopedToUser(t *testing.T) {
 	a, deviceCode, userCode := deviceFlowApp(t)
 
 	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, adminRequest(t, "POST", "/api/auth/device/verify", "alice", "pw", `{"user_code":"`+userCode+`"}`))
+	a.Handler().ServeHTTP(w, adminRequest(t, a, "POST", "/api/auth/device/verify", "alice", "pw", `{"user_code":"`+userCode+`"}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("verify = %d: %s", w.Code, w.Body.String())
 	}

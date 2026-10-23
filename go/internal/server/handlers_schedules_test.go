@@ -33,7 +33,7 @@ func TestScheduleCRUD(t *testing.T) {
 	// Create.
 	body := `{"id":"business","name":"Business hours","days":{"mon":["14:00-18:00","08:00-12:00"]}}`
 	w := httptest.NewRecorder()
-	a.handleCreateSchedule(w, adminRequest(t, http.MethodPost, "/api/schedules", "admin", "adminpw", body))
+	a.handleCreateSchedule(w, adminRequest(t, a, http.MethodPost, "/api/schedules", "admin", "adminpw", body))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create: status = %d, body = %s", w.Code, w.Body.String())
 	}
@@ -48,7 +48,7 @@ func TestScheduleCRUD(t *testing.T) {
 
 	// List sees it.
 	w = httptest.NewRecorder()
-	a.handleListSchedules(w, adminRequest(t, http.MethodGet, "/api/schedules", "admin", "adminpw", ""))
+	a.handleListSchedules(w, adminRequest(t, a, http.MethodGet, "/api/schedules", "admin", "adminpw", ""))
 	var list []schedule.Schedule
 	_ = json.Unmarshal(w.Body.Bytes(), &list)
 	if len(list) != 1 || list[0].ID != "business" {
@@ -57,7 +57,7 @@ func TestScheduleCRUD(t *testing.T) {
 
 	// Get one by id.
 	w = httptest.NewRecorder()
-	r := adminRequest(t, http.MethodGet, "/api/schedule/business", "admin", "adminpw", "")
+	r := adminRequest(t, a, http.MethodGet, "/api/schedule/business", "admin", "adminpw", "")
 	r.SetPathValue("id", "business")
 	a.handleGetSchedule(w, r)
 	if w.Code != http.StatusOK {
@@ -70,7 +70,7 @@ func TestScheduleCRUD(t *testing.T) {
 
 	// Get a missing schedule is 404.
 	w = httptest.NewRecorder()
-	r = adminRequest(t, http.MethodGet, "/api/schedule/ghost", "admin", "adminpw", "")
+	r = adminRequest(t, a, http.MethodGet, "/api/schedule/ghost", "admin", "adminpw", "")
 	r.SetPathValue("id", "ghost")
 	a.handleGetSchedule(w, r)
 	if w.Code != http.StatusNotFound {
@@ -79,7 +79,7 @@ func TestScheduleCRUD(t *testing.T) {
 
 	// Update.
 	w = httptest.NewRecorder()
-	r = adminRequest(t, http.MethodPut, "/api/schedule/business", "admin", "adminpw", `{"name":"New name","days":{"sat":["09:00-13:00"]}}`)
+	r = adminRequest(t, a, http.MethodPut, "/api/schedule/business", "admin", "adminpw", `{"name":"New name","days":{"sat":["09:00-13:00"]}}`)
 	r.SetPathValue("id", "business")
 	a.handleUpdateSchedule(w, r)
 	if w.Code != http.StatusOK {
@@ -88,7 +88,7 @@ func TestScheduleCRUD(t *testing.T) {
 
 	// Update with a malformed window is 422 (validation runs before the store).
 	w = httptest.NewRecorder()
-	r = adminRequest(t, http.MethodPut, "/api/schedule/business", "admin", "adminpw", `{"name":"x","days":{"mon":["8-18"]}}`)
+	r = adminRequest(t, a, http.MethodPut, "/api/schedule/business", "admin", "adminpw", `{"name":"x","days":{"mon":["8-18"]}}`)
 	r.SetPathValue("id", "business")
 	a.handleUpdateSchedule(w, r)
 	if w.Code != http.StatusUnprocessableEntity {
@@ -97,7 +97,7 @@ func TestScheduleCRUD(t *testing.T) {
 
 	// Update a missing schedule is 404.
 	w = httptest.NewRecorder()
-	r = adminRequest(t, http.MethodPut, "/api/schedule/ghost", "admin", "adminpw", `{"name":"x","days":{}}`)
+	r = adminRequest(t, a, http.MethodPut, "/api/schedule/ghost", "admin", "adminpw", `{"name":"x","days":{}}`)
 	r.SetPathValue("id", "ghost")
 	a.handleUpdateSchedule(w, r)
 	if w.Code != http.StatusNotFound {
@@ -114,7 +114,7 @@ func TestScheduleValidation(t *testing.T) {
 	}
 	for _, c := range cases {
 		w := httptest.NewRecorder()
-		a.handleCreateSchedule(w, adminRequest(t, http.MethodPost, "/api/schedules", "admin", "adminpw", c.body))
+		a.handleCreateSchedule(w, adminRequest(t, a, http.MethodPost, "/api/schedules", "admin", "adminpw", c.body))
 		if w.Code != http.StatusUnprocessableEntity {
 			t.Errorf("%s: status = %d, want 422 (body %s)", c.name, w.Code, w.Body.String())
 		}
@@ -123,12 +123,12 @@ func TestScheduleValidation(t *testing.T) {
 	// Duplicate id is 409.
 	dup := `{"id":"dup","days":{}}`
 	w := httptest.NewRecorder()
-	a.handleCreateSchedule(w, adminRequest(t, http.MethodPost, "/api/schedules", "admin", "adminpw", dup))
+	a.handleCreateSchedule(w, adminRequest(t, a, http.MethodPost, "/api/schedules", "admin", "adminpw", dup))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("first create: %d", w.Code)
 	}
 	w = httptest.NewRecorder()
-	a.handleCreateSchedule(w, adminRequest(t, http.MethodPost, "/api/schedules", "admin", "adminpw", dup))
+	a.handleCreateSchedule(w, adminRequest(t, a, http.MethodPost, "/api/schedules", "admin", "adminpw", dup))
 	if w.Code != http.StatusConflict {
 		t.Errorf("duplicate create: status = %d, want 409", w.Code)
 	}
@@ -147,7 +147,7 @@ func TestScheduleDeleteInUse(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	r := adminRequest(t, http.MethodDelete, "/api/schedule/nightly", "admin", "adminpw", "")
+	r := adminRequest(t, a, http.MethodDelete, "/api/schedule/nightly", "admin", "adminpw", "")
 	r.SetPathValue("id", "nightly")
 	a.handleDeleteSchedule(w, r)
 	if w.Code != http.StatusConflict {
@@ -159,7 +159,7 @@ func TestScheduleDeleteInUse(t *testing.T) {
 		t.Fatalf("delete camera: %v", err)
 	}
 	w = httptest.NewRecorder()
-	r = adminRequest(t, http.MethodDelete, "/api/schedule/nightly", "admin", "adminpw", "")
+	r = adminRequest(t, a, http.MethodDelete, "/api/schedule/nightly", "admin", "adminpw", "")
 	r.SetPathValue("id", "nightly")
 	a.handleDeleteSchedule(w, r)
 	if w.Code != http.StatusOK {
@@ -168,7 +168,7 @@ func TestScheduleDeleteInUse(t *testing.T) {
 
 	// Deleting it again (now gone) is 404.
 	w = httptest.NewRecorder()
-	r = adminRequest(t, http.MethodDelete, "/api/schedule/nightly", "admin", "adminpw", "")
+	r = adminRequest(t, a, http.MethodDelete, "/api/schedule/nightly", "admin", "adminpw", "")
 	r.SetPathValue("id", "nightly")
 	a.handleDeleteSchedule(w, r)
 	if w.Code != http.StatusNotFound {
@@ -179,7 +179,7 @@ func TestScheduleDeleteInUse(t *testing.T) {
 func TestScheduleRequiresAdmin(t *testing.T) {
 	a := withSchedulesApp(t)
 	w := httptest.NewRecorder()
-	a.handleCreateSchedule(w, adminRequest(t, http.MethodPost, "/api/schedules", "bob", "bobpw", `{"id":"s","days":{}}`))
+	a.handleCreateSchedule(w, adminRequest(t, a, http.MethodPost, "/api/schedules", "bob", "bobpw", `{"id":"s","days":{}}`))
 	if w.Code != http.StatusForbidden {
 		t.Errorf("non-admin create: status = %d, want 403", w.Code)
 	}

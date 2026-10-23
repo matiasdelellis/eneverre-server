@@ -177,8 +177,8 @@ All code lives under `go/` (module `eneverre`).
 - `go/internal/auth` — `CheckPasswordHash`/`GeneratePasswordHash` (Werkzeug
   format) plus Basic/Bearer verification and `CurrentUser`. Bearer reads the
   `tokens` table (a non-empty `tokens.role` overrides the user's role, which is
-  how TV sessions stay ordinary users) and rejects expired tokens. Both paths
-  expose `must_change_password`; `requireUser` confines a flagged session to
+  how TV sessions stay ordinary users) and rejects expired tokens. It exposes
+  `must_change_password`; `requireUser` confines a flagged session to
   the password-change, logout and session-revoke endpoints with a
   `403 {"code":"password_change_required"}`.
 - `go/internal/mediaauth` — short-lived HMAC grants for the HTTP media

@@ -24,21 +24,17 @@ func TestMustChangePasswordIsEnforcedAtTheAPI(t *testing.T) {
 	insertUserMustChange(t, a, "bob", "oldpw", "user")
 
 	request := func(method, path, body string) *httptest.ResponseRecorder {
-		var r *http.Request
-		if body == "" {
-			r = httptest.NewRequest(method, path, nil)
-		} else {
-			r = httptest.NewRequest(method, path, strings.NewReader(body))
+		r := adminRequest(t, a, method, path, "bob", "oldpw", body)
+		if body != "" {
 			r.Header.Set("Content-Type", "application/json")
 		}
-		r.SetBasicAuth("bob", "oldpw")
 		w := httptest.NewRecorder()
 		a.Handler().ServeHTTP(w, r)
 		return w
 	}
 
 	// Everything except the change/logout/session endpoints is blocked, even
-	// though the bootstrap/basic credentials are valid.
+	// though the session token is valid.
 	w := request(http.MethodGet, "/api/cameras", "")
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("flagged user reached /api/cameras: %d: %s", w.Code, w.Body.String())
@@ -54,10 +50,7 @@ func TestMustChangePasswordIsEnforcedAtTheAPI(t *testing.T) {
 		t.Fatalf("change password = %d: %s", w.Code, w.Body.String())
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/api/cameras", nil)
-	r.SetBasicAuth("bob", "newpw")
-	w = httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, r)
+	w = request(http.MethodGet, "/api/cameras", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("after change /api/cameras = %d: %s", w.Code, w.Body.String())
 	}

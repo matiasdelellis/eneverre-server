@@ -91,7 +91,7 @@ func TestHandleStatus(t *testing.T) {
 
 	t.Run("non-admin is forbidden", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		a.handleStatus(w, adminRequest(t, http.MethodGet, "/api/status", "bob", "bobpw", ""))
+		a.handleStatus(w, adminRequest(t, a, http.MethodGet, "/api/status", "bob", "bobpw", ""))
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403", w.Code)
 		}
@@ -99,7 +99,7 @@ func TestHandleStatus(t *testing.T) {
 
 	t.Run("admin gets a snapshot", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		a.handleStatus(w, adminRequest(t, http.MethodGet, "/api/status", "admin", "adminpw", ""))
+		a.handleStatus(w, adminRequest(t, a, http.MethodGet, "/api/status", "admin", "adminpw", ""))
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
 		}
@@ -149,7 +149,7 @@ func TestHandleSetCameraSettings(t *testing.T) {
 
 	t.Run("non-admin is forbidden", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		a.handleSetCameraSettings(w, adminRequest(t, http.MethodPut, "/api/camera/plain/settings", "bob", "bobpw", `{"motion_enabled":true}`))
+		a.handleSetCameraSettings(w, adminRequest(t, a, http.MethodPut, "/api/camera/plain/settings", "bob", "bobpw", `{"motion_enabled":true}`))
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403", w.Code)
 		}
@@ -157,7 +157,7 @@ func TestHandleSetCameraSettings(t *testing.T) {
 
 	t.Run("camera without the settings capability is 404", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		a.handleSetCameraSettings(w, adminRequest(t, http.MethodPut, "/api/camera/plain/settings", "admin", "adminpw", `{"motion_enabled":true}`))
+		a.handleSetCameraSettings(w, adminRequest(t, a, http.MethodPut, "/api/camera/plain/settings", "admin", "adminpw", `{"motion_enabled":true}`))
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", w.Code)
 		}
@@ -172,7 +172,7 @@ func TestHandleSetCameraSettings(t *testing.T) {
 		// rebuild it so the gate matches what production computes.
 		a.cameras[0].Capabilities.Settings = true
 		w := httptest.NewRecorder()
-		req := adminRequest(t, http.MethodPut, "/api/camera/t/settings", "admin", "adminpw", `{}`)
+		req := adminRequest(t, a, http.MethodPut, "/api/camera/t/settings", "admin", "adminpw", `{}`)
 		a.Handler().ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400 (body: %s)", w.Code, w.Body.String())
@@ -189,7 +189,7 @@ func TestHandleGetCameraSettings(t *testing.T) {
 
 	t.Run("non-admin is forbidden", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req := adminRequest(t, http.MethodGet, "/api/camera/t/settings", "bob", "bobpw", "")
+		req := adminRequest(t, a, http.MethodGet, "/api/camera/t/settings", "bob", "bobpw", "")
 		a.Handler().ServeHTTP(w, req)
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403", w.Code)
@@ -198,7 +198,7 @@ func TestHandleGetCameraSettings(t *testing.T) {
 
 	t.Run("no cached state yet is 404", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req := adminRequest(t, http.MethodGet, "/api/camera/t/settings", "admin", "adminpw", "")
+		req := adminRequest(t, a, http.MethodGet, "/api/camera/t/settings", "admin", "adminpw", "")
 		a.Handler().ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404 (body: %s)", w.Code, w.Body.String())
@@ -211,7 +211,7 @@ func TestHandleGetCameraSettings(t *testing.T) {
 				At: time.Unix(12345, 0)},
 		}
 		w := httptest.NewRecorder()
-		req := adminRequest(t, http.MethodGet, "/api/camera/t/settings", "admin", "adminpw", "")
+		req := adminRequest(t, a, http.MethodGet, "/api/camera/t/settings", "admin", "adminpw", "")
 		a.Handler().ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())

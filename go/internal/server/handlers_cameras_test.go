@@ -229,7 +229,7 @@ func TestPrivacyRejectsDisabledCamera(t *testing.T) {
 		Capabilities: camera.Capabilities{Privacy: true},
 	}}
 
-	req := adminRequest(t, http.MethodPost, "/api/camera/cam1/privacy?enable=true", "admin", "adminpw", "")
+	req := adminRequest(t, a, http.MethodPost, "/api/camera/cam1/privacy?enable=true", "admin", "adminpw", "")
 	req.SetPathValue("cam_id", "cam1")
 	w := httptest.NewRecorder()
 	a.handlePrivacy(w, req)
@@ -307,7 +307,7 @@ func TestUpdateCameraReseedsRuntimeState(t *testing.T) {
 		body := fmt.Sprintf(`{"name":"Cam","source":"rtsp://x/y","privacy":true,`+
 			`"thingino_url":%q,"thingino_api_key":"k","enabled":%t}`, srv.URL, enabled)
 		w := httptest.NewRecorder()
-		a.Handler().ServeHTTP(w, adminRequest(t, http.MethodPut, "/api/camera/cam1", "admin", "adminpw", body))
+		a.Handler().ServeHTTP(w, adminRequest(t, a, http.MethodPut, "/api/camera/cam1", "admin", "adminpw", body))
 		if w.Code != http.StatusOK {
 			t.Fatalf("update = %d, want 200 (body: %s)", w.Code, w.Body.String())
 		}
@@ -406,7 +406,7 @@ func TestUpdateCameraKeepsManualPrivacy(t *testing.T) {
 
 	body := `{"name":"Renamed","source":"rtsp://x/y","privacy":true,"enabled":true}`
 	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, adminRequest(t, http.MethodPut, "/api/camera/cam1", "admin", "adminpw", body))
+	a.Handler().ServeHTTP(w, adminRequest(t, a, http.MethodPut, "/api/camera/cam1", "admin", "adminpw", body))
 	if w.Code != http.StatusOK {
 		t.Fatalf("update = %d, want 200 (body: %s)", w.Code, w.Body.String())
 	}

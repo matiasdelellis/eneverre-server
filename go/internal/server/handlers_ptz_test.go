@@ -34,7 +34,7 @@ func ptzTestApp(t *testing.T, thinginoSrv *httptest.Server, cam camera.Camera) *
 func doPTZ(t *testing.T, a *App, method, target, user, pass string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, adminRequest(t, method, target, user, pass, ""))
+	a.Handler().ServeHTTP(w, adminRequest(t, a, method, target, user, pass, ""))
 	return w
 }
 
