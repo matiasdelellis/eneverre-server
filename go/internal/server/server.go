@@ -1008,10 +1008,11 @@ func passwordChangeAllowed(r *http.Request) bool {
 }
 
 // requireMediaAccess authorizes one camera media surface. First-party clients
-// present a normal Bearer session. Clients that cannot set headers (HLS
-// players, browser <img>) may present a signed grant minted with the media-auth
-// key — exp=<unix>&sig=<hex>, scoped to the camera and the media surface (live,
-// thumb, hls). There is no reusable password form.
+// present a normal Bearer session. Third-party clients that cannot
+// set headers — the Zaguán web client, HLS players, browser <img> — use a
+// signed grant from the publisher: exp=<unix>&sig=<hex>, scoped to the camera
+// and the media surface (live, thumb, hls). There is no reusable password
+// form.
 func (a *App) requireMediaAccess(w http.ResponseWriter, r *http.Request, camID, scope string) bool {
 	q := r.URL.Query()
 	expRaw, sig := q.Get("exp"), q.Get("sig")
@@ -1673,8 +1674,8 @@ var errNoSnapshot = errors.New("camera has no snapshot endpoint")
 // cameraSnapshot fetches one camera's current still. Thingino cameras use
 // their firmware API; any other camera with a snapshot_url is proxied
 // verbatim. No decode/transcode — the camera already produced the image.
-// Callers decide how to map a failure to an HTTP status; the thumbnail
-// endpoint uses this path.
+// Callers decide how to map a failure to an HTTP status; both the thumbnail
+// endpoint and the Zaguán `snapshot` command share this path.
 func (a *App) cameraSnapshot(ctx context.Context, cam camera.Camera) ([]byte, string, error) {
 	switch {
 	case cam.ThinginoURL != "" && cam.ThinginoAPIKey != "":

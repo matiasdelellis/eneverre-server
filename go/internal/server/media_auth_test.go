@@ -3,10 +3,12 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"testing"
 	"time"
 
+	"eneverre/internal/camera"
 	"eneverre/internal/config"
 	"eneverre/internal/mediaauth"
 )
@@ -69,5 +71,57 @@ func TestRequireMediaAccessFallsBackToSession(t *testing.T) {
 
 	if ok, w := requireMedia(t, a, "/api/camera/front/live/stream", "front", mediaauth.ScopeLive); ok || w.Code != http.StatusUnauthorized {
 		t.Errorf("anonymous request accepted: ok=%v status=%d", ok, w.Code)
+	}
+}
+
+func TestZaguanCamerasPublishesSignedGrants(t *testing.T) {
+	a := mediaAuthTestApp(t)
+	a.cameras = []camera.Camera{{
+		ID: "front", Name: "Front", Enabled: true,
+		MSE: true, Relay: true, Record: true,
+		Capabilities: camera.Capabilities{Thumbnail: true, Playback: true},
+	}}
+
+	got := a.ZaguanCameras("https://cams.example.com")
+	if len(got) != 1 {
+		t.Fatalf("cameras = %d", len(got))
+	}
+	c := got[0]
+	if c.MSEURL == "" || c.SnapshotURL == "" {
+		t.Fatalf("missing media links: %+v", c)
+	}
+	for _, raw := range []string{c.MSEURL, c.SnapshotURL} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		q := u.Query()
+		if q.Get("user") != "" || q.Get("pass") != "" {
+			t.Errorf("link still carries the relay password: %s", raw)
+		}
+		exp, err := strconv.ParseInt(q.Get("exp"), 10, 64)
+		if err != nil || q.Get("sig") == "" {
+			t.Errorf("link is not a signed grant: %s", raw)
+		}
+		if exp <= time.Now().Unix() {
+			t.Errorf("grant already expired: %s", raw)
+		}
+	}
+
+	// A paused camera publishes no live or still URL; the grant would work
+	// against the handler otherwise and bypass privacy/schedule.
+	a.privacy["front"] = true
+	c = a.ZaguanCameras("https://cams.example.com")[0]
+	if c.MSEURL != "" || c.SnapshotURL != "" || c.RTSP != "" {
+		t.Errorf("paused camera leaked media links: %+v", c)
+	}
+
+	// Without a signer the links are omitted rather than falling back to a
+	// reusable password.
+	a.mediaAuth = nil
+	a.privacy["front"] = false
+	c = a.ZaguanCameras("https://cams.example.com")[0]
+	if c.MSEURL != "" || c.SnapshotURL != "" {
+		t.Errorf("no signer still published a media link: %+v", c)
 	}
 }

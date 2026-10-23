@@ -35,6 +35,7 @@ everything below.
 | `[media]`   | The embedded media engine: live, relay, recording, retention | no   |
 | `[events]`  | The motion webhook                                         | only to accept motion events |
 | `[updates]` | The Android OTA update server                              | only to serve app updates |
+| `[zaguan]`  | Publish the cameras to a Zaguán home hub                   | only to integrate with Zaguán |
 
 ---
 
@@ -395,6 +396,65 @@ deleted, so disk usage is bounded by the current release. See
 [`UPDATES.md`](../UPDATES.md) for the wire protocol, the multi-POST
 `finalize=false` flow, and the client-side rules.
 
+## `[zaguan]`
+
+Publish the cameras to a [Zaguán](https://github.com/matiasdelellis/zaguan)
+hub through its Source API. The hub owns the devices of the home; Eneverre is
+one provider, so the family app lists the cameras next to the lights and the
+sensors. **Off by default:** with no `url`, nothing is published.
+
+```ini
+[zaguan]
+url = http://192.168.1.20:8081        ; address of the hub
+token_file = /etc/eneverre/zaguan.token ; source token, mode 0600
+;token = zsrc_kid_secret               ; inline alternative
+;name = Eneverre                       ; source name in the hub
+;public_url = https://cams.example.com  ; base for the media links
+;sync_interval = 30s                    ; inventory refresh
+```
+
+ * **url:** Address of the hub, with or without a scheme. Create the source in
+   the hub UI (**Sources → New**, kind `eneverre`); it shows the `zsrc_...`
+   token once. Precedence: this key > `ENEVERRE_ZAGUAN_URL` > `""` (disabled).
+ * **token_file / token:** The Source API token. `token_file` is recommended so
+   the secret stays out of the INI and out of backups of it; an unreadable or
+   empty file is an error and never falls back to the inline token. The file
+   must be readable by the Eneverre user: preferably run a dedicated
+   `eneverre` account and keep it `0600`/`0640 root:eneverre`. With the
+   example unit's `DynamicUser=yes` the transient user cannot read a
+   root-only file; in that case use `0644` only on a single-user host, or put
+   the token inline in a `0640` `eneverre.ini`. Precedence:
+   `token_file` > `ENEVERRE_ZAGUAN_TOKEN_FILE` > `token` >
+   `ENEVERRE_ZAGUAN_TOKEN`.
+ * **name:** Name shown in the hub's Sources page. Default `Eneverre`.
+ * **public_url:** Base URL the hub's clients use to reach this server. It
+   builds the absolute `mse_url`, `mse_info_url`, `hls_url` and `snapshot_url`
+   attributes and, when `[media] rtsp_host` is unset, the host of the RTSP
+   relay URL. Optional: with no base the attributes carry no links, and the
+   relay URL is still published when `rtsp_host` is configured. The HTTP
+   media URLs carry a short-lived signed grant (`exp`/`sig`) scoped to one
+   camera and one surface — live (1 h), thumbnail (1 h) or HLS (6 h) — never
+   the relay password. Precedence: this key >
+   `ENEVERRE_ZAGUAN_PUBLIC_URL` > `""`.
+ * **sync_interval:** How often the inventory is rebuilt and republished. The
+   snapshot is also what refreshes connectivity and availability in the hub
+   (this integration sends no per-state events). Values shorter than `1s` fall
+   back to `30s`.
+
+Each camera becomes a device (`eneverre:<camera-id>`) with one `camera`
+entity (`eneverre:<camera-id>/camera`); the camera's `location` becomes an
+area. The entity state is `streaming` while the NVR has the camera and `idle`
+otherwise, and it is marked unavailable while the camera is disabled, in
+privacy, outside its recording schedule, or disconnected. The entity accepts
+the `snapshot` and PTZ commands the camera actually supports (the media
+pipeline runs continuously, so there is no stream to start or stop). The
+attributes include the live MSE URL, the thumbnail and a last-hour HLS VOD
+playlist; links are omitted while the camera is paused or disabled. Eneverre
+has no HLS live mode. See [`ZAGUAN.md`](../ZAGUAN.md) for the mapping and the
+media details.
+
+---
+
 ## Command-line flags
 
 Everything above can also be pointed at from the command line; run
@@ -428,7 +488,7 @@ flag of its own:
  * **Paths, log level and the two token lifetimes** — the settings with a flag —
    resolve **CLI flag > env var > INI key > built-in default**.
  * **Everything else** (`read_timeout`, the `[auth]` cleanup keys,
-   `security_log`, all `[updates]` keys) resolves **INI key >
+   `security_log`, all `[updates]` and `[zaguan]` keys) resolves **INI key >
    env var > built-in default**: the config file wins, and the env var is the
    fallback for containerized installs that ship no `eneverre.ini`.
 
@@ -452,6 +512,10 @@ flag of its own:
 | `ENEVERRE_UPDATES_PUBLIC_BASE_URL` | `[updates] public_base_url` | |
 | `ENEVERRE_UPDATES_PUBLISH_TOKEN` | `[updates] publish_token` | |
 | `ENEVERRE_UPDATES_MAX_BUILD_SIZE` | `[updates] max_build_size` | |
+| `ENEVERRE_ZAGUAN_URL` | `[zaguan] url` | empty disables the integration |
+| `ENEVERRE_ZAGUAN_TOKEN_FILE` | `[zaguan] token_file` | wins over the inline token |
+| `ENEVERRE_ZAGUAN_TOKEN` | `[zaguan] token` | inline fallback |
+| `ENEVERRE_ZAGUAN_PUBLIC_URL` | `[zaguan] public_url` | base for the published links |
 
 ## Running as a systemd service
 
@@ -674,7 +738,8 @@ from the UI afterwards.
  * **home_x / home_y:** PTZ position the camera returns to on "home" /
     when privacy is disabled, in **degrees** (pan, tilt). The server
     converts to firmware x/y at move time using the calibration below. Unset
-    → `-1` (no auto-move); `/ptz/home` then answers 409.
+    → `-1` (no auto-move); `/ptz/home` then answers 409 and Zaguán does not
+    advertise the `ptz_home` command.
  * **privacy_x / privacy_y:** PTZ position the camera moves to when privacy
     is enabled, in **degrees** (pan, tilt). Same conversion as `home_x/y`.
     Unset → `-1` (no auto-move).

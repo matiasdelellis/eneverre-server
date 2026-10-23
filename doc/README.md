@@ -71,9 +71,11 @@ That covers a minimal, no-config install. Everything below goes further.
 
 - 📖 [`example/README.md`](example/README.md) — the complete configuration
   reference: every `eneverre.ini` key (`[server]`, `[auth]`, `[media]`,
-  `[events]`, `[updates]`), the CLI flags and `ENEVERRE_*` env
+  `[events]`, `[updates]`, `[zaguan]`), the CLI flags and `ENEVERRE_*` env
   vars, running as a systemd service behind a Caddyfile for TLS, and — last —
   preloading cameras from `cameras.d/*.ini` on a fresh install.
+- 🏠 [`ZAGUAN.md`](ZAGUAN.md) — publishing the cameras to a Zaguán home hub
+  (Source API): setup, mapping, attributes, commands and limitations.
 - 🎥 [`MEDIA.md`](MEDIA.md) — the embedded media engine: codecs, recording
   layout, MSE live streams, and RTSP relaying.
 - 📖 [`openapi.yaml`](openapi.yaml) — the wire-protocol contract for client

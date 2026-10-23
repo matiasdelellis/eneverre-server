@@ -199,7 +199,7 @@ func (a *App) playbackGate(w http.ResponseWriter, r *http.Request) *camera.Camer
 }
 
 // hlsGate authenticates the HLS VOD surface. It accepts a normal session or a
-// camera-scoped signed grant (native HLS players); the grant is
+// camera-scoped signed grant (the Zaguán hub, native HLS players); the grant is
 // forwarded to the playlist's init/segment URIs by hlsAuthQuery.
 func (a *App) hlsGate(w http.ResponseWriter, r *http.Request) *camera.Camera {
 	if !a.playbackEnabled(w) {

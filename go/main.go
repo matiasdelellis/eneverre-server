@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -27,6 +28,7 @@ import (
 	"eneverre/internal/server"
 	"eneverre/internal/store"
 	"eneverre/internal/updates"
+	"eneverre/internal/zaguan"
 )
 
 // version is set at build time via -ldflags "-X main.version=...". The
@@ -280,6 +282,58 @@ func main() {
 		slog.Info("metrics disabled", "reason", "[server] metrics = false")
 	}
 
+	// Zaguán: publish the camera inventory to a home hub as one source. The
+	// integration is off unless [zaguan] url and a token are configured. It
+	// starts after the engine and the App so the first snapshot already has
+	// the live privacy state and the relay credentials. Cancelling it in the
+	// shutdown cleanup stops the command long poll before the DB closes.
+	zaguanURL := cfg.ZaguanURL()
+	var zaguanCancel context.CancelFunc
+	var zaguanDone chan struct{}
+	if zaguanURL != "" {
+		token, tokenErr := cfg.ZaguanToken()
+		switch {
+		case tokenErr != nil:
+			slog.Error("zaguan disabled", "err", tokenErr)
+		case token == "":
+			slog.Error("zaguan disabled: no source token configured",
+				"reason", "set [zaguan] token or token_file (or ENEVERRE_ZAGUAN_TOKEN)")
+		default:
+			publicURL := cfg.ZaguanPublicURL()
+			publisher, pubErr := zaguan.New(zaguan.Config{
+				BaseURL:        zaguanURL,
+				Token:          token,
+				Name:           cfg.ZaguanName(),
+				Version:        version,
+				Logger:         slog.Default().With("component", "zaguan"),
+				SyncInterval:   cfg.ZaguanSyncInterval(),
+				Cameras:        func() []zaguan.Camera { return app.ZaguanCameras(publicURL) },
+				Snapshot:       app.CaptureSnapshot,
+				PTZMove:        app.PTZMove,
+				PTZHome:        app.PTZHome,
+				PTZRecalibrate: app.PTZRecalibrate,
+			})
+			if pubErr != nil {
+				slog.Error("zaguan disabled", "err", pubErr)
+			} else {
+				pubCtx, cancel := context.WithCancel(context.Background())
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					if err := publisher.Run(pubCtx); err != nil {
+						slog.Error("zaguan publisher stopped", "err", err)
+					}
+				}()
+				zaguanCancel, zaguanDone = cancel, done
+				slog.Info("zaguan source enabled",
+					"url", zaguanURL,
+					"name", cfg.ZaguanName(),
+					"public_url", publicURL,
+					"sync_interval", cfg.ZaguanSyncInterval())
+			}
+		}
+	}
+
 	// Resolve host/port with precedence CLI flag > [server] section > default.
 	host := opts.host
 	if host == "" {
@@ -320,6 +374,10 @@ func main() {
 	// shutdown so a stop doesn't drop the recording since the last segment
 	// rotation.
 	cleanup := func() {
+		if zaguanCancel != nil {
+			zaguanCancel()
+			<-zaguanDone
+		}
 		app.CloseAllTalk()
 		engine.Close()
 		db.Close()

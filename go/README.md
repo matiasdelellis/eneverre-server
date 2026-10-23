@@ -162,6 +162,7 @@ internal/mediaauth            short-lived camera/surface-scoped HMAC media + RTS
 internal/thingino             PTZ move + JPEG snapshot HTTP calls
 internal/events               event model + record/list/get/delete
 internal/updates              Android auto-update store + per-track registry
+internal/zaguan               Zaguán Source API publisher (camera inventory -> home hub)
 internal/backchannel          ONVIF Profile T backchannel + G.711/RTP (push-to-talk)
 internal/diskfree             shared statfs wrapper (Available/Total), unix + Windows
 internal/timeutil             shared unix-or-RFC3339 timestamp parsing
@@ -190,6 +191,7 @@ internal/server               HTTP routes + handlers
   handlers_talk.go            push-to-talk WebSocket -> backchannel (see doc/TALK.md)
   handlers_users.go           self + admin user CRUD, sessions
   handlers_updates.go         Android auto-update publish + download
+  zaguan.go                   Zaguán camera inventory + snapshot command bridge
   logging.go                  access log + client-IP resolution (trusted_proxies)
   seclog.go                   auth-failure security log (fail2ban/CrowdSec format)
   ratelimit.go                failed-auth throttle, keyed per client IP and per username
@@ -284,8 +286,8 @@ a token cannot mint more tokens. HTTP Basic is no longer accepted anywhere —
 Zabbix and other machine integrations use a service token (a `monitor` user
 gives status/metrics but no camera list, live or playback).
 
-HTTP media links for clients that cannot set an `Authorization` header (native
-HLS players, `<img>`) use short-lived HMAC grants:
+HTTP media links for clients that cannot set an `Authorization` header (the
+Zaguán hub, native HLS players, `<img>`) use short-lived HMAC grants:
 `?exp=<unix>&sig=<hex>`, scoped to one camera and one surface (`live`, `thumb`,
 `hls`). The same key signs the RTSP path token
 (`/<camera-id>/<exp>.<sig>`). The clip/list/timeline/gaps APIs accept a
