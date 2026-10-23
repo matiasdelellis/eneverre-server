@@ -7,8 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"eneverre/internal/camera"
 	"eneverre/internal/media"
 	"eneverre/internal/streamauth"
+	"eneverre/internal/thingino"
 	"eneverre/internal/zaguan"
 )
 
@@ -147,6 +149,73 @@ func (a *App) CaptureSnapshot(ctx context.Context, id string) error {
 	}
 	_, _, err := a.cameraSnapshot(ctx, cam)
 	return err
+}
+
+// sourcePTZCamera returns a camera the Source API can move. It mirrors the
+// HTTP ptzGate, without the user session: the source token is the caller.
+func (a *App) sourcePTZCamera(id string) (camera.Camera, error) {
+	cam, ok := a.getCamera(id)
+	if !ok {
+		return camera.Camera{}, fmt.Errorf("camera %q not found", id)
+	}
+	if !cam.Enabled {
+		return camera.Camera{}, fmt.Errorf("camera %q is disabled", id)
+	}
+	if !cam.Capabilities.PTZ || cam.ThinginoURL == "" || cam.ThinginoAPIKey == "" {
+		return camera.Camera{}, fmt.Errorf("camera %q has no PTZ", id)
+	}
+	return cam, nil
+}
+
+// PTZMove applies a relative pan/tilt move requested by the Zaguán source.
+func (a *App) PTZMove(ctx context.Context, id string, pan, tilt float64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cam, err := a.sourcePTZCamera(id)
+	if err != nil {
+		return err
+	}
+	x, y := cam.PTZDeltaToSteps(pan, tilt)
+	body, err := thingino.Move(cam.ThinginoURL, cam.ThinginoAPIKey, x, y)
+	if err != nil {
+		return err
+	}
+	a.updatePTZPos(cam, body)
+	return ctx.Err()
+}
+
+// PTZHome returns the camera to its configured home position.
+func (a *App) PTZHome(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cam, err := a.sourcePTZCamera(id)
+	if err != nil {
+		return err
+	}
+	if _, err := a.moveAbsDegrees(cam, cam.HomeX, cam.HomeY); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+// PTZRecalibrate runs the motor calibration and caches its settled position.
+func (a *App) PTZRecalibrate(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cam, err := a.sourcePTZCamera(id)
+	if err != nil {
+		return err
+	}
+	if _, err := thingino.Recalibrate(cam.ThinginoURL, cam.ThinginoAPIKey); err != nil {
+		return err
+	}
+	if x, y, err := thingino.Position(cam.ThinginoURL, cam.ThinginoAPIKey); err == nil {
+		a.setPTZPos(cam, x, y)
+	}
+	return ctx.Err()
 }
 
 // hostFromPublicURL returns the host (with its port, if any) of an absolute

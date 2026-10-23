@@ -295,14 +295,17 @@ func main() {
 		default:
 			publicURL := cfg.ZaguanPublicURL()
 			publisher, pubErr := zaguan.New(zaguan.Config{
-				BaseURL:      zaguanURL,
-				Token:        token,
-				Name:         cfg.ZaguanName(),
-				Version:      version,
-				Logger:       slog.Default().With("component", "zaguan"),
-				SyncInterval: cfg.ZaguanSyncInterval(),
-				Cameras:      func() []zaguan.Camera { return app.ZaguanCameras(publicURL) },
-				Snapshot:     app.CaptureSnapshot,
+				BaseURL:        zaguanURL,
+				Token:          token,
+				Name:           cfg.ZaguanName(),
+				Version:        version,
+				Logger:         slog.Default().With("component", "zaguan"),
+				SyncInterval:   cfg.ZaguanSyncInterval(),
+				Cameras:        func() []zaguan.Camera { return app.ZaguanCameras(publicURL) },
+				Snapshot:       app.CaptureSnapshot,
+				PTZMove:        app.PTZMove,
+				PTZHome:        app.PTZHome,
+				PTZRecalibrate: app.PTZRecalibrate,
 			})
 			if pubErr != nil {
 				slog.Error("zaguan disabled", "err", pubErr)

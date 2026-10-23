@@ -118,6 +118,12 @@ type Config struct {
 	// (or when the camera has no snapshot endpoint) the `snapshot` command
 	// answers with an error instead of pretending it worked.
 	Snapshot func(ctx context.Context, cameraID string) error
+	// PTZMove issues a relative pan/tilt move in degrees. The three PTZ
+	// callbacks are optional and are only advertised for cameras with the
+	// ptz capability.
+	PTZMove        func(ctx context.Context, cameraID string, pan, tilt float64) error
+	PTZHome        func(ctx context.Context, cameraID string) error
+	PTZRecalibrate func(ctx context.Context, cameraID string) error
 }
 
 // Publisher keeps a Zaguán hub up to date with the cameras of this server.
@@ -322,6 +328,9 @@ func (p *Publisher) buildSnapshot() sourceapi.Snapshot {
 		if c.Snapshot {
 			commands = append(commands, "snapshot")
 		}
+		if c.PTZ {
+			commands = append(commands, "ptz_move", "ptz_home", "ptz_recalibrate")
+		}
 		snap.Entities = append(snap.Entities, sourceapi.Entity{
 			UniqueID:       entityUniqueID(c.ID),
 			DeviceUniqueID: deviceUniqueID(c.ID),
@@ -362,7 +371,7 @@ func stateOf(c Camera) string {
 // capabilitiesOf advertises only what the camera can actually serve. The hub
 // uses the list to grey out what the camera does not have.
 func capabilitiesOf(c Camera) []string {
-	caps := make([]string, 0, 3)
+	caps := make([]string, 0, 4)
 	if c.Live {
 		caps = append(caps, "live")
 	}
@@ -371,6 +380,9 @@ func capabilitiesOf(c Camera) []string {
 	}
 	if c.Record {
 		caps = append(caps, "recording")
+	}
+	if c.PTZ {
+		caps = append(caps, "ptz")
 	}
 	return caps
 }
@@ -457,22 +469,32 @@ func (p *Publisher) commandLoop(ctx context.Context) {
 	}
 }
 
-// execute runs one command and answers it. The camera domain only offers
-// `snapshot`: the pipeline runs continuously, so there is no stream to start
-// or stop from the hub.
+// execute runs one command and answers it. The camera domain offers snapshot
+// and PTZ; the stream itself runs continuously.
 func (p *Publisher) execute(ctx context.Context, command sourceapi.Command) {
 	cam, ok := p.cameraByEntity(command.EntityUniqueID)
 	if !ok {
 		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "unknown camera"})
 		return
 	}
-	if command.Command != "snapshot" {
+	switch command.Command {
+	case "snapshot":
+		p.executeSnapshot(ctx, command, cam)
+	case "ptz_move":
+		p.executePTZMove(ctx, command, cam)
+	case "ptz_home":
+		p.executePTZ(ctx, command, cam, "the camera could not go home", p.cfg.PTZHome)
+	case "ptz_recalibrate":
+		p.executePTZ(ctx, command, cam, "the camera could not recalibrate", p.cfg.PTZRecalibrate)
+	default:
 		p.answer(ctx, command, sourceapi.CommandResult{
 			OK:    false,
 			Error: fmt.Sprintf("unsupported command %q", command.Command),
 		})
-		return
 	}
+}
+
+func (p *Publisher) executeSnapshot(ctx context.Context, command sourceapi.Command, cam *Camera) {
 	switch {
 	case !cam.Enabled:
 		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "the camera is disabled"})
@@ -501,11 +523,83 @@ func (p *Publisher) execute(ctx context.Context, command sourceapi.Command) {
 		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "the camera did not return a snapshot"})
 		return
 	}
+	p.answerCamera(ctx, command, cam)
+}
+
+func (p *Publisher) executePTZMove(ctx context.Context, command sourceapi.Command, cam *Camera) {
+	pan, okPan := numberArg(command.Args, "pan")
+	tilt, okTilt := numberArg(command.Args, "tilt")
+	if !okPan || !okTilt {
+		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "pan and tilt are required"})
+		return
+	}
+	if !cam.Enabled {
+		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "the camera is disabled"})
+		return
+	}
+	if !cam.PTZ {
+		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "the camera has no PTZ"})
+		return
+	}
+	if p.cfg.PTZMove == nil {
+		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "PTZ is not configured"})
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	err := p.cfg.PTZMove(callCtx, cam.ID, pan, tilt)
+	cancel()
+	if err != nil {
+		p.log.Warn("the camera PTZ move failed", "camera", cam.ID, "err", err)
+		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "the camera could not move"})
+		return
+	}
+	p.answerCamera(ctx, command, cam)
+}
+
+func (p *Publisher) executePTZ(ctx context.Context, command sourceapi.Command, cam *Camera, failure string, action func(context.Context, string) error) {
+	if !cam.Enabled {
+		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "the camera is disabled"})
+		return
+	}
+	if !cam.PTZ {
+		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "the camera has no PTZ"})
+		return
+	}
+	if action == nil {
+		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: "PTZ is not configured"})
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	err := action(callCtx, cam.ID)
+	cancel()
+	if err != nil {
+		p.log.Warn("the camera PTZ command failed", "camera", cam.ID, "command", command.Command, "err", err)
+		p.answer(ctx, command, sourceapi.CommandResult{OK: false, Error: failure})
+		return
+	}
+	p.answerCamera(ctx, command, cam)
+}
+
+func (p *Publisher) answerCamera(ctx context.Context, command sourceapi.Command, cam *Camera) {
 	p.answer(ctx, command, sourceapi.CommandResult{
 		OK:         true,
 		State:      stateOf(*cam),
 		Attributes: attributesOf(*cam),
 	})
+}
+
+func numberArg(args map[string]any, name string) (float64, bool) {
+	switch value := args[name].(type) {
+	case float64:
+		return value, true
+	case float32:
+		return float64(value), true
+	case int:
+		return float64(value), true
+	case int64:
+		return float64(value), true
+	}
+	return 0, false
 }
 
 // cameraByEntity finds the camera behind an entity unique id.

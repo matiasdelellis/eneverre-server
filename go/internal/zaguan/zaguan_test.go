@@ -74,10 +74,18 @@ func TestBuildSnapshotMapsCameras(t *testing.T) {
 	if front.Available == nil || !*front.Available {
 		t.Errorf("front available = %v", front.Available)
 	}
-	if len(front.Commands) != 1 || front.Commands[0] != "snapshot" {
-		t.Errorf("commands = %v", front.Commands)
+	wantCommands := []string{"snapshot", "ptz_move", "ptz_home", "ptz_recalibrate"}
+	if len(front.Commands) != len(wantCommands) {
+		t.Errorf("commands = %v, want %v", front.Commands, wantCommands)
+	} else {
+		for i := range wantCommands {
+			if front.Commands[i] != wantCommands[i] {
+				t.Errorf("commands = %v, want %v", front.Commands, wantCommands)
+				break
+			}
+		}
 	}
-	wantCaps := []string{"live", "snapshot", "recording"}
+	wantCaps := []string{"live", "snapshot", "recording", "ptz"}
 	if len(front.Capabilities) != len(wantCaps) {
 		t.Errorf("capabilities = %v, want %v", front.Capabilities, wantCaps)
 	} else {
@@ -312,6 +320,80 @@ func TestRunPublishesAndAnswersSnapshot(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not stop after cancel")
+	}
+}
+
+// TestExecutePTZCommands checks that the source passes the three PTZ
+// commands to the server callbacks and answers the hub.
+func TestExecutePTZCommands(t *testing.T) {
+	hub, srv := newFakeHub(t)
+	moved := make(chan [2]float64, 1)
+	home := make(chan string, 1)
+	recalibrated := make(chan string, 1)
+	p, err := New(Config{
+		BaseURL: srv.URL,
+		Token:   "zsrc_kid_secret",
+		Logger:  testLogger(),
+		Cameras: func() []Camera {
+			return []Camera{{ID: "cam", Name: "Cam", Enabled: true, Connected: true, PTZ: true}}
+		},
+		PTZMove: func(_ context.Context, id string, pan, tilt float64) error {
+			if id != "cam" {
+				t.Errorf("PTZ camera = %q", id)
+			}
+			moved <- [2]float64{pan, tilt}
+			return nil
+		},
+		PTZHome: func(_ context.Context, id string) error {
+			home <- id
+			return nil
+		},
+		PTZRecalibrate: func(_ context.Context, id string) error {
+			recalibrated <- id
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	p.execute(ctx, sourceapi.Command{ID: "move", EntityUniqueID: "eneverre:cam/camera", Command: "ptz_move", Args: map[string]any{"pan": float64(-10), "tilt": float64(5)}})
+	select {
+	case got := <-moved:
+		if got != [2]float64{-10, 5} {
+			t.Errorf("move = %v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ptz_move did not reach the server")
+	}
+	p.execute(ctx, sourceapi.Command{ID: "home", EntityUniqueID: "eneverre:cam/camera", Command: "ptz_home"})
+	select {
+	case got := <-home:
+		if got != "cam" {
+			t.Errorf("home camera = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ptz_home did not reach the server")
+	}
+	p.execute(ctx, sourceapi.Command{ID: "recalibrate", EntityUniqueID: "eneverre:cam/camera", Command: "ptz_recalibrate"})
+	select {
+	case got := <-recalibrated:
+		if got != "cam" {
+			t.Errorf("recalibrate camera = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ptz_recalibrate did not reach the server")
+	}
+
+	waitFor(t, "the three command results", func() bool { return hub.resultCount() == 3 })
+	hub.mu.Lock()
+	results := append([]sourceapi.CommandResult(nil), hub.results...)
+	hub.mu.Unlock()
+	for _, result := range results {
+		if !result.OK || result.State != "streaming" {
+			t.Errorf("result = %+v", result)
+		}
 	}
 }
 

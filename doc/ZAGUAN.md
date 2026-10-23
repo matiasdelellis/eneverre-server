@@ -64,6 +64,7 @@ Capabilities are published only when the camera has them:
 | `live` | the camera has live MSE or the RTSP relay enabled |
 | `snapshot` | it has a Thingino key or a `snapshot_url` |
 | `recording` | recording is enabled for the camera |
+| `ptz` | the camera exposes PTZ motor control |
 
 The entity carries these attributes (empty values are omitted):
 
@@ -97,15 +98,19 @@ propagates the `user`/`pass` pair to its init and segment URIs.
 
 ## Commands
 
-The `camera` domain in the Zaguán catalog offers `snapshot`, `stream_start`
-and `stream_stop`, but Eneverre only advertises **`snapshot`**, and only when
-the camera can actually produce a still. A camera without a snapshot endpoint
-publishes an explicit empty command list, which the hub renders as read-only:
+The `camera` domain in the Zaguán catalog offers `snapshot`, `stream_start`,
+`stream_stop` and the PTZ commands. Eneverre advertises only what the camera
+can actually do; a camera without snapshot or PTZ publishes an explicit empty
+command list, which the hub renders as read-only:
 
 - **`snapshot`** asks the NVR to fetch a fresh still from the camera (the same
   path as `GET /api/camera/{id}/thumbnail`). It succeeds only when the camera
   is enabled, not paused (privacy/schedule) and has a snapshot endpoint; the
   hub applies the confirmed state and attributes to the entity.
+- **`ptz_move`** takes `pan` and `tilt` in degrees, relative to the current
+  position; **`ptz_home`** goes to the configured home position and
+  **`ptz_recalibrate`** runs the motor calibration. They are advertised only
+  for cameras with PTZ and Thingino credentials.
 - There is no `stream_start` / `stream_stop`: the embedded engine records and
   relays the camera continuously. Pausing the pipeline is the privacy toggle
   in the Eneverre UI/API, not a per-viewer stream command. Advertising the
@@ -138,6 +143,6 @@ thumbnail URL with the media credentials).
 - No privacy switch entity. Privacy is toggled in Eneverre; the hub only
   reflects the resulting availability.
 - No HLS **live**. The live feed is MSE (`mse_url`) or RTSP; HLS is VOD. The
-  Zaguán camera view plays MSE, refreshes the still and opens the HLS
-  recording link. PTZ and talk are advertised as flags but are not operated
-  from the Zaguán PWA yet.
+  Zaguán camera view plays MSE, refreshes the still, opens the HLS recording
+  link and operates the PTZ pad when the camera has PTZ. Talk is still only
+  advertised as a flag.
