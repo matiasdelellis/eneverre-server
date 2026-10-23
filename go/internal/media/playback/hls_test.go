@@ -87,4 +87,29 @@ func TestHandleHLSPlaylistBounds(t *testing.T) {
 			t.Errorf("playlist missing segment lines:\n%s", body)
 		}
 	})
+
+	t.Run("media credentials are forwarded to the parts", func(t *testing.T) {
+		req := hlsPlaylistReq("2026-05-04T09:59:00Z", "2026-05-04T10:02:00Z")
+		q := req.URL.Query()
+		q.Set("user", "stream-user")
+		q.Set("pass", "p&ss")
+		req.URL.RawQuery = q.Encode()
+		w := httptest.NewRecorder()
+		h.HandleHLSPlaylist(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("playlist = %d, want 200 (body: %s)", w.Code, w.Body.String())
+		}
+		body := w.Body.String()
+		// Both the EXT-X-MAP (init) and every segment URI need the query, or
+		// the player's follow-up requests arrive unauthenticated.
+		for _, marker := range []string{"init.mp4?", "segment.m4s?"} {
+			for _, line := range strings.Split(body, "\n") {
+				if strings.Contains(line, marker) {
+					if !strings.Contains(line, "user=stream-user") || !strings.Contains(line, "pass=p%26ss") {
+						t.Errorf("%s line does not carry the credentials: %s", marker, line)
+					}
+				}
+			}
+		}
+	})
 }

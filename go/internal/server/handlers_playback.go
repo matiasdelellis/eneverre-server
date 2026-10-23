@@ -162,7 +162,7 @@ func (a *App) playbackGate(w http.ResponseWriter, r *http.Request) *camera.Camer
 		httpError(w, http.StatusNotFound, "Not Found")
 		return nil
 	}
-	if a.requireUser(w, r) == nil {
+	if !a.requireMedia(w, r) {
 		return nil
 	}
 	cam, ok := a.getCamera(r.PathValue("cam_id"))

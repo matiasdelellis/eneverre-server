@@ -102,7 +102,11 @@ func logPath(p string) string {
 // secretQueryParams are query parameters that carry credentials: the talk
 // WebSocket's ?token= (an access token) and the webhook's ?token= (the shared
 // secret) among them.
-var secretQueryParams = map[string]bool{"token": true, "refresh_token": true, "password": true, "secret": true, "api_key": true}
+var secretQueryParams = map[string]bool{
+	"token": true, "refresh_token": true, "password": true, "secret": true, "api_key": true,
+	// The rotating relay credentials the Zaguán media URLs carry.
+	"user": true, "pass": true,
+}
 
 // logQuery renders the query string for the DEBUG access log with credential
 // values replaced.

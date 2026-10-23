@@ -14,7 +14,7 @@ func (a *App) handleLiveInfo(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
-	if a.requireUser(w, r) == nil {
+	if !a.requireMedia(w, r) {
 		return
 	}
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
@@ -39,7 +39,7 @@ func (a *App) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
-	if a.requireUser(w, r) == nil {
+	if !a.requireMedia(w, r) {
 		return
 	}
 	cam, ok := a.getCamera(r.PathValue("cam_id"))

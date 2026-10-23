@@ -48,6 +48,23 @@ func (s *splitWriter) Write(p []byte) (int, error) {
 // playlist line per segment ever recorded.
 const maxPlaylistSpan = 7 * 24 * time.Hour
 
+// hlsAuthQuery forwards the media credentials of the playlist request to the
+// init and segment URIs. Only the known media auth keys travel; the rest of
+// each URI is built here.
+func hlsAuthQuery(r *http.Request) string {
+	q := r.URL.Query()
+	var b strings.Builder
+	for _, key := range []string{"user", "pass"} {
+		if v := q.Get(key); v != "" {
+			b.WriteByte('&')
+			b.WriteString(key)
+			b.WriteByte('=')
+			b.WriteString(url.QueryEscape(v))
+		}
+	}
+	return b.String()
+}
+
 // HandleHLSPlaylist serves a VOD playlist: GET /hls/playlist.m3u8?path=&from=&to=
 // Each recorded segment becomes an HLS fMP4 (CMAF) segment. Gaps are collapsed
 // into a continuous timeline; EXT-X-PROGRAM-DATE-TIME preserves wall-clock.
@@ -98,9 +115,15 @@ func (h *Handler) HandleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("#EXT-X-PLAYLIST-TYPE:VOD\n")
 	b.WriteString(fmt.Sprintf("#EXT-X-TARGETDURATION:%d\n", int(math.Ceil(maxDur))))
 
+	// The player fetches the init and media segments as separate requests and
+	// cannot attach the query the playlist carried. Forward the media
+	// credentials (the rotating relay pair the Zaguán publisher puts in the
+	// playlist URL) so an authenticated playlist yields playable parts.
+	auth := hlsAuthQuery(r)
+
 	// init segment (track config) taken from the first segment of the range
 	initURL := "init.mp4?path=" + url.QueryEscape(path) +
-		"&start=" + url.QueryEscape(segs[0].Start.Format(time.RFC3339Nano))
+		"&start=" + url.QueryEscape(segs[0].Start.Format(time.RFC3339Nano)) + auth
 	b.WriteString(fmt.Sprintf("#EXT-X-MAP:URI=%q\n", initURL))
 
 	base := 0.0 // cumulative presentation time (gaps collapsed)
@@ -118,7 +141,7 @@ func (h *Handler) HandleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 		}
 		segURL := "segment.m4s?path=" + url.QueryEscape(path) +
 			"&start=" + url.QueryEscape(s.Start.Format(time.RFC3339Nano)) +
-			"&base=" + strconv.FormatFloat(base, 'f', -1, 64)
+			"&base=" + strconv.FormatFloat(base, 'f', -1, 64) + auth
 		b.WriteString("#EXT-X-PROGRAM-DATE-TIME:" + s.Start.Format(time.RFC3339Nano) + "\n")
 		b.WriteString(fmt.Sprintf("#EXTINF:%.6f,\n", s.Duration))
 		b.WriteString(segURL + "\n")

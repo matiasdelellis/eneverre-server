@@ -30,6 +30,10 @@ and the same seamless experience—everywhere.
 - 🔔 **Motion Event Ingestion:** A simple, generic webhook endpoint lets any
   ONVIF or motion detection source push alerts directly to your application
   timeline.
+- 🏠 **Zaguán Integration:** Publish the cameras to a
+  [Zaguán](https://github.com/matiasdelellis/zaguan) home hub as one source,
+  so the family app lists them next to the lights and the sensors. Off by
+  default; see [doc/ZAGUAN.md](doc/ZAGUAN.md).
 - 🚀 **OTA Update Server for clients:** Publish an APK once, and Eneverre will
   automatically handle updates for all your connected Android devices.
 

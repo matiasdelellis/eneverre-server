@@ -989,7 +989,10 @@ paths:
         firmware snapshot (needs both `thingino_url` and `thingino_api_key`
         configured); for any other camera it proxies the configured
         `snapshot_url` (the camera's own JPEG endpoint). 404 when the camera has
-        neither configured.
+        neither configured. When `[zaguan]` is configured, the rotating relay
+        credentials are also accepted as `user`/`pass` query parameters (the
+        Zaguán publisher embeds them in `snapshot_url`); otherwise use a normal
+        session.
       parameters:
         - $ref: '#/components/parameters/camera_id'
       responses:
@@ -1285,7 +1288,10 @@ paths:
         collapsed into a continuous timeline; `EXT-X-PROGRAM-DATE-TIME` per
         segment gives wall-clock. The playlist's init/segment URIs are relative
         and resolve under this same `/recordings/hls/` prefix; every request
-        needs the Bearer token (use hls.js `xhrSetup`).
+        needs auth (use hls.js `xhrSetup` with a Bearer token). When `[zaguan]`
+        is configured, the rotating relay credentials are also accepted as
+        `user`/`pass` query parameters and the playlist forwards them to its
+        init and segment URIs.
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - name: start
@@ -1348,6 +1354,8 @@ paths:
         Only served when the embedded media engine ([media]) is active; returns
         404 otherwise. Reports whether a live MSE source is available for the
         camera and the codec string the browser needs to build a MediaSource.
+        When `[zaguan]` is configured, the rotating relay credentials are also
+        accepted as `user`/`pass` query parameters.
       parameters:
         - $ref: '#/components/parameters/camera_id'
       responses:
@@ -1376,7 +1384,9 @@ paths:
       description: |
         Only served when the embedded media engine ([media]) is active; returns
         404 otherwise. Streams the camera's live fragmented-MP4 (init + parts)
-        as chunked HTTP, to be fed into a browser MediaSource SourceBuffer.
+        as chunked HTTP, to be fed into a browser MediaSource SourceBuffer. When
+        `[zaguan]` is configured, the rotating relay credentials are also
+        accepted as `user`/`pass` query parameters.
       parameters:
         - $ref: '#/components/parameters/camera_id'
       responses:

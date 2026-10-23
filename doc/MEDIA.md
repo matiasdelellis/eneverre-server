@@ -397,6 +397,12 @@ Bearer (or Basic) auth.
 token. Use hls.js `xhrSetup` (or Basic-in-URL, e.g. VLC:
 `http://user:pass@host/…/playlist.m3u8`).
 
+When `[zaguan]` is configured, the rotating relay credentials are also accepted
+as `user`/`pass` query parameters on the media endpoints (thumbnail, MSE live
+and recordings/HLS); the playlist forwards them to its init and segment URIs.
+That is how the Zaguán publisher hands a hub's web client playable URLs
+without an Eneverre login — see [`ZAGUAN.md`](ZAGUAN.md).
+
 ## Metrics
 
 Two endpoints expose service instrumentation:

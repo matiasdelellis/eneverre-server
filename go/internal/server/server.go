@@ -902,6 +902,27 @@ func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentU
 	return u
 }
 
+// requireMedia authenticates a camera-media request. Besides a normal Eneverre
+// session (Basic or Bearer), it accepts the rotating relay credentials as
+// user/pass query parameters while [zaguan] is configured — the same pair
+// already embedded in the RTSP URL returned by /api/cameras. The Zaguán
+// publisher uses them to hand the hub's web client playable MSE, HLS and
+// thumbnail URLs without an Eneverre login; a missing or wrong pair is a 401
+// and never falls through to the password throttle (these are not user
+// passwords).
+func (a *App) requireMedia(w http.ResponseWriter, r *http.Request) bool {
+	q := r.URL.Query()
+	user, pass := q.Get("user"), q.Get("pass")
+	if user != "" && pass != "" {
+		if a.cfg != nil && a.cfg.ZaguanURL() != "" && a.creds != nil && a.creds.Validate(user, pass) {
+			return true
+		}
+		a.unauthorized(w)
+		return false
+	}
+	return a.requireUser(w, r) != nil
+}
+
 // currentUser authenticates r via Basic or Bearer, wrapping auth.Current with
 // the failed-password throttle: a throttled Basic attempt is rejected BEFORE
 // the PBKDF2 pass (that cost is the whole point of the cap), and a failed one
@@ -1436,7 +1457,7 @@ const maxSnapshotBytes = 8 << 20 // 8 MiB
 var snapshotClient = &http.Client{Timeout: 10 * time.Second}
 
 func (a *App) handleThumbnail(w http.ResponseWriter, r *http.Request) {
-	if a.requireUser(w, r) == nil {
+	if !a.requireMedia(w, r) {
 		return
 	}
 	cam, ok := a.getCamera(r.PathValue("cam_id"))
@@ -1448,32 +1469,47 @@ func (a *App) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, "camera is disabled")
 		return
 	}
-	switch {
-	case cam.ThinginoURL != "" && cam.ThinginoAPIKey != "":
-		// Thingino: the firmware API serves the JPEG.
-		content, err := thingino.Thumb(cam.ThinginoURL, cam.ThinginoAPIKey)
-		if err != nil {
+	content, ct, err := a.cameraSnapshot(r.Context(), cam)
+	if err != nil {
+		if errors.Is(err, errNoSnapshot) {
+			// Camera exists but offers no snapshot (no Thingino key, no
+			// snapshot_url).
+			httpError(w, http.StatusNotFound, "Camera not found")
+			return
+		}
+		if cam.ThinginoURL != "" && cam.ThinginoAPIKey != "" {
 			thinginoError(w, err)
 			return
 		}
-		w.Header().Set("Content-Type", "image/jpeg")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(content)
-	case cam.SnapshotURL != "":
-		// Any other camera with its own still-JPEG endpoint: proxy it verbatim.
-		// No decode/transcode — the camera already produced the image.
-		content, ct, err := fetchSnapshot(r.Context(), cam.SnapshotURL)
+		slog.Warn("camera snapshot fetch failed", "camera", cam.ID, "err", err)
+		httpError(w, http.StatusBadGateway, "Snapshot unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
+}
+
+// errNoSnapshot means the camera has no still-JPEG endpoint to proxy.
+var errNoSnapshot = errors.New("camera has no snapshot endpoint")
+
+// cameraSnapshot fetches one camera's current still. Thingino cameras use
+// their firmware API; any other camera with a snapshot_url is proxied
+// verbatim. No decode/transcode — the camera already produced the image.
+// Callers decide how to map a failure to an HTTP status; both the thumbnail
+// endpoint and the Zaguán `snapshot` command share this path.
+func (a *App) cameraSnapshot(ctx context.Context, cam camera.Camera) ([]byte, string, error) {
+	switch {
+	case cam.ThinginoURL != "" && cam.ThinginoAPIKey != "":
+		content, err := thingino.Thumb(cam.ThinginoURL, cam.ThinginoAPIKey)
 		if err != nil {
-			slog.Warn("camera snapshot fetch failed", "camera", cam.ID, "err", err)
-			httpError(w, http.StatusBadGateway, "Snapshot unavailable")
-			return
+			return nil, "", err
 		}
-		w.Header().Set("Content-Type", ct)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(content)
+		return content, "image/jpeg", nil
+	case cam.SnapshotURL != "":
+		return fetchSnapshot(ctx, cam.SnapshotURL)
 	default:
-		// Camera exists but offers no snapshot (no Thingino key, no snapshot_url).
-		httpError(w, http.StatusNotFound, "Camera not found")
+		return nil, "", errNoSnapshot
 	}
 }
 

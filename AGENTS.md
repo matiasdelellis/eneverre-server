@@ -64,6 +64,14 @@ adds `gortsplib` (RTSP client) + `mediacommon` (fMP4) + `pion/*` (RTP/SDP).
   record, with measurements (Firefox offers baseline-only H264 over
   WebRTC; the fleet encodes Main) and the conditions that would reopen
   it.
+- [`doc/PLANS/HOLE-PUNCHING.md`](doc/PLANS/HOLE-PUNCHING.md) — decision
+  record on UDP hole punching / single-port media: which peer could
+  actually punch (the camera cannot — it speaks RTSP only, so this needs
+  thingino-side ICE), why punching is pointless against the server (it is
+  the reachable end), the measured NAT/CGNAT constraints, and the two
+  routes that reach the goal without a new port (playback over the
+  existing HLS/CMAF VOD endpoints; live RTSP tunnelled over the API
+  port's WebSocket). **Investigated, not recommended.**
 - [`doc/PLANS/MOQ.md`](doc/PLANS/MOQ.md) — decision record on
   Media-over-QUIC for browser live: where the current ~1-2s latency
   actually comes from, what MoQ would buy (sub-300ms, G711 audio in the
@@ -73,6 +81,10 @@ adds `gortsplib` (RTSP client) + `mediacommon` (fMP4) + `pion/*` (RTP/SDP).
   along with WebRTC's — browser live latency is not a product goal.
 - [`doc/UPDATES.md`](doc/UPDATES.md) — the auto-update protocol for the
   Android clients.
+- [`doc/ZAGUAN.md`](doc/ZAGUAN.md) — the Zaguán Source API integration: how
+  to create the source token in the hub, the camera-to-device mapping, the
+  published attributes, the `snapshot` command, and the media-auth caveat.
+  Read it before touching `internal/zaguan` or `server.ZaguanCameras`.
 - [`doc/TALK.md`](doc/TALK.md) — the two-way-audio (push-to-talk) WebSocket
   protocol and the Android (Kotlin/OkHttp) client implementation guide. Read
   this before touching `handlers_talk.go` or `internal/backchannel`.
@@ -97,7 +109,11 @@ All code lives under `go/` (module `eneverre`).
   idle client can't hold a goroutine open indefinitely; the long-streaming
   handlers (live MSE, clip download, APK publish/download) lift the write
   deadline per-request via `clearWriteDeadline`. Credential rotation is started when the engine is
-  running (always). SIGINT/SIGTERM trigger a graceful `srv.Shutdown`
+  running (always). When `[zaguan]` is configured, main also starts the
+  camera publisher there (after the engine and the App exist, so the first
+  snapshot has the live privacy state and relay credentials); the shutdown
+  cleanup cancels it and waits for its loops before closing the engine/DB.
+  SIGINT/SIGTERM trigger a graceful `srv.Shutdown`
   (10s) followed by `engine.Close()`, which finalizes each camera's
   in-progress fMP4 segment so a clean stop doesn't lose the tail of a
   recording (in live-only mode the segment has no disk backing — only
@@ -247,6 +263,27 @@ All code lives under `go/` (module `eneverre`).
   `finalize=true`); at commit, APKs that aren't in the new release are
   deleted (rotation is bounded to the current release's APKs). The wire
   protocol lives in `doc/UPDATES.md`.
+- `go/internal/zaguan` — publisher of the camera inventory to a
+  [Zaguán](https://github.com/matiasdelellis/zaguan) hub through its Source
+  API (`github.com/getzaguan/zaguan-sourceapi`, the shared Go binding).
+  One source carries every camera: each camera is a device
+  `eneverre:<id>` with one `camera` entity `eneverre:<id>/camera`, the
+  camera's `location` becomes an area, and the state is `streaming` while
+  the NVR has the camera (else `idle`; unavailable when disabled, in
+  privacy, outside its schedule or disconnected). The entity advertises
+  only `snapshot` (the pipeline runs continuously, so there is no
+  per-viewer stream to start/stop); it asks the server to fetch a fresh
+  still, and the hub applies the confirmed state/attributes. The
+  publisher sends the snapshot immediately, republishes it every
+  `[zaguan] sync_interval` (30s default), heartbeats every 30s and long-
+  polls commands for 25s. It is off unless `[zaguan] url` and a token
+  (`token_file` recommended) are set. Media links in the attributes are
+  absolute only with `[zaguan] public_url`; they carry the rotating relay
+  credentials as `user`/`pass` query parameters, accepted by the media
+  endpoints only while `[zaguan]` is on. The attributes include live MSE
+  (`mse_url` + `mse_info_url`), a last-hour HLS **VOD** playlist (`hls_url`)
+  and the thumbnail. Eneverre has no HLS live mode (live is MSE/RTSP). See
+  `doc/ZAGUAN.md`.
 - `go/internal/media` — **embedded media engine**. Always built and started;
   the optional `[media]` section only tunes it (a missing section behaves
   exactly like a present-but-empty one). One binary, no external streamer.
@@ -519,6 +556,28 @@ see request query strings and the more verbose media-engine traces
   `live_mse`/`rtsp` while off-hours, and `/api/status` reports it per camera.
   Schedule CRUD is admin-gated (`/api/schedules`, `/api/schedule/{id}`); deleting
   a schedule still referenced by a camera is refused (409).
+- **Zaguán integration (opt-in).** `[zaguan] url` + a token turn on a
+  background publisher (`internal/zaguan`) that registers this server as one
+  source in a [Zaguán](https://github.com/matiasdelellis/zaguan) hub: every
+  camera becomes a device + `camera` entity (`eneverre:<id>` /
+  `eneverre:<id>/camera`), `location` proposes an area, and the entity state
+  is `streaming`/`idle` with availability driven by the same
+  privacy/schedule/engine state `/api/cameras` reports. The entity only
+  advertises `snapshot` (it fetches a fresh still through the same
+  `cameraSnapshot` path as `/thumbnail`); `stream_start`/`stream_stop` are
+  deliberately not offered because the pipeline is continuous. The
+  inventory is republished every `[zaguan] sync_interval` (30s) with
+  wall-clock versions, plus a 30s heartbeat and a 25s command long poll; a
+  hub restart is recovered by the next snapshot. The integration is
+  outbound-only and never changes the camera pipeline. Media links in the
+  attributes need `[zaguan] public_url`; they carry the rotating relay
+  credentials (`user`/`pass`) so the hub's web client can play them, and the
+  media handlers accept that pair only while `[zaguan]` is on. They include
+  live MSE (`mse_url` + `mse_info_url`), a last-hour HLS VOD playlist
+  (`hls_url`) and the thumbnail; there is no HLS live. `server.ZaguanCameras`
+  applies the live privacy state and the rotating relay credentials;
+  `App.CaptureSnapshot` backs the command. See
+  [`doc/ZAGUAN.md`](doc/ZAGUAN.md).
 - The embedded engine (live MSE, RTSP relay, recording) is always active for
   any camera with a `source` URL — there is no mode where it's off.
   `[media]` only toggles **recording** (default off) and tunes its
