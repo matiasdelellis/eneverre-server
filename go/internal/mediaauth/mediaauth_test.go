@@ -38,7 +38,13 @@ func TestSignAndValidate(t *testing.T) {
 	if s.Validate("front", ScopeLive, exp+1, sig) {
 		t.Error("grant validated with a tampered expiry")
 	}
-	if s.Validate("front", ScopeLive, exp, sig[:len(sig)-1]+"0") {
+	// Flip the last hex digit to one it certainly is not: appending "0" was a
+	// no-op whenever the signature already ended in 0 (1 in 16 runs).
+	tampered := sig[:len(sig)-1] + "0"
+	if sig[len(sig)-1] == '0' {
+		tampered = sig[:len(sig)-1] + "1"
+	}
+	if s.Validate("front", ScopeLive, exp, tampered) {
 		t.Error("grant validated with a tampered signature")
 	}
 	if s.Validate("front", ScopeLive, time.Now().Add(-time.Second).Unix(), s.SignAt("front", ScopeLive, time.Now().Add(-time.Second).Unix())) {
