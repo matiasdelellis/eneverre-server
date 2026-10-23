@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"eneverre/internal/events"
+	"eneverre/internal/servicetoken"
 )
 
 func (a *App) eventsPreSeconds() int  { return a.cfg.Events.GetInt("pre_seconds", 5) }
@@ -163,7 +164,7 @@ type listEventsResponse struct {
 }
 
 func (a *App) handleListEvents(w http.ResponseWriter, r *http.Request) {
-	if a.requireUser(w, r) == nil {
+	if a.requireScope(w, r, servicetoken.ScopeEvents) == nil {
 		return
 	}
 	camID := r.PathValue("cam_id")

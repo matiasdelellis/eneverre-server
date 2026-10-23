@@ -163,8 +163,9 @@ All code lives under `go/` (module `eneverre`).
   come from `config.go` (Unix) and `paths_windows.go` (Windows, which
   rewrites the slices in `init()` to `%ProgramData%\Eneverre\...`).
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
-  (`users`, `device_login`, `tokens`, `events`, `media_auth_key`, `cameras`,
-  `schedules`) plus a short list of idempotent `ALTER TABLE` migrations (`Init` swallows a "duplicate column" so re-running
+  (`users`, `device_login`, `tokens`, `service_tokens`, `events`,
+  `media_auth_key`, `cameras`, `schedules`) plus a short list of idempotent
+  `ALTER TABLE` migrations (`Init` swallows a "duplicate column" so re-running
   is safe — this is how `cameras.schedule_id` and the token role were
   backfilled onto upgraded installs), chmods the DB file to 0600, and seeds an
   admin when the users table is empty: username from
@@ -175,12 +176,20 @@ All code lives under `go/` (module `eneverre`).
   web UI (the `users.must_change_password` column defaults to 0 for every other
   row).
 - `go/internal/auth` — `CheckPasswordHash`/`GeneratePasswordHash` (Werkzeug
-  format) plus Basic/Bearer verification and `CurrentUser`. Bearer reads the
-  `tokens` table (a non-empty `tokens.role` overrides the user's role, which is
-  how TV sessions stay ordinary users) and rejects expired tokens. It exposes
-  `must_change_password`; `requireUser` confines a flagged session to
-  the password-change, logout and session-revoke endpoints with a
-  `403 {"code":"password_change_required"}`.
+  format), Bearer verification and `CurrentUser`. There is no HTTP Basic path.
+  Bearer reads the `tokens` table (a non-empty `tokens.role` overrides the
+  user's role, which is how TV sessions stay ordinary users) and rejects
+  expired tokens. It exposes `must_change_password`; `requireUser` confines a
+  flagged session to the password-change, logout and session-revoke endpoints
+  with a `403 {"code":"password_change_required"}`.
+- `go/internal/servicetoken` — scoped, read-only machine tokens for
+  integrations such as Zabbix. The raw token (`envr_svc_<hex>`) is shown once
+  by `POST /api/service-tokens`; only its SHA-256 hash is stored in
+  `service_tokens`. Supported scopes are `status:read`, `cameras:read`,
+  `events:read`, `recordings:read` and `metrics:read`. `Store.Verify` checks
+  prefix, hash, expiry and revocation, and refreshes `last_used_at` at most
+  once a minute. Admin endpoints list/create/revoke; no token rotation (mint a
+  replacement and revoke the old one).
 - `go/internal/mediaauth` — short-lived HMAC grants for the HTTP media
   surfaces a client cannot authenticate with a header (`live`, `thumb`,
   `hls`) and for RTSP. The key is a random DB row (`media_auth_key`). HTTP
@@ -412,7 +421,9 @@ All code lives under `go/` (module `eneverre`).
   `ENEVERRE_ADMIN_PASS=devpass ./eneverre` is running — pinning a throwaway
   password so the authed call below is reproducible):
   - `curl localhost:8080/api/health`
-  - `curl -u admin:devpass localhost:8080/api/cameras`
+  - log in with `POST /api/auth/login`, complete the forced password change
+    once, then call `GET /api/cameras` with
+    `Authorization: Bearer <access-token>` (there is no HTTP Basic).
   - open `http://localhost:8080/` for the web UI.
 
 ## Logging
@@ -496,6 +507,15 @@ see request query strings and the more verbose media-engine traces
   treated as theft and deletes the row (`refresh_token_reuse` in the security
   log). Lookups never cross columns: `VerifyBearer` matches `WHERE token = ?`,
   refresh matches `WHERE refresh_token = ?`, so the two are not interchangeable.
+- **Service tokens (machine integrations).** `POST /api/service-tokens` (admin)
+  mints a token prefixed `envr_svc_` with one or more read-only scopes
+  (`status:read`, `cameras:read`, `events:read`, `recordings:read`,
+  `metrics:read`). The raw value is returned once; only its SHA-256 hash is
+  stored in `service_tokens`. `GET /api/service-tokens` lists metadata and
+  `DELETE /api/service-token/{id}` revokes immediately. `currentUser` resolves
+  the prefix into a `Service` principal; `requireUser` rejects it, and only
+  `requireScope`/`requireAdminOrScope` accept it on the matching read-only
+  routes. There is no HTTP Basic: Zabbix and scripts use a service token.
 - **Device (TV) sessions are renewable and limited to the `user` role**: the
   device-login flow issues an access token plus a refresh token
   (`refresh_token`/`refresh_expires_at` in the approved poll response) and
@@ -634,8 +654,13 @@ see request query strings and the more verbose media-engine traces
 - Register the route in `server.go`'s `Handler()` with a method+pattern
   (`mux.HandleFunc("GET /api/...", a.handleX)`); read wildcards with
   `r.PathValue("...")`.
-- Gate auth at the top of the handler: `a.requireUser(w, r)` (Basic or Bearer)
-  or `a.requireAdmin(w, r)`; both write the 401/403 and return nil on failure.
+- Gate auth at the top of the handler: `a.requireUser(w, r)` for a human
+  Bearer session, `a.requireAdmin(w, r)` for admin-only endpoints, or
+  `a.requireScope(w, r, scope)` on the read-only endpoints that also accept a
+  service token (`status:read`, `cameras:read`, `events:read`,
+  `recordings:read`, `metrics:read`). `requireUser` deliberately rejects
+  service tokens so they cannot reach PTZ, privacy, talk, users or uploads.
+  All gates write the 401/403 and return nil on failure.
 - Respond with `writeJSON(w, status, v)` and `httpError(w, status, detail)`
   (the standard `{"detail": "..."}` error shape).
 - For camera responses, marshal `camera.Camera` (credentials are already

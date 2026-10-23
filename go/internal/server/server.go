@@ -29,6 +29,7 @@ import (
 	"eneverre/internal/mediaauth"
 	"eneverre/internal/metrics"
 	"eneverre/internal/schedule"
+	"eneverre/internal/servicetoken"
 	"eneverre/internal/thingino"
 	"eneverre/internal/updates"
 )
@@ -40,6 +41,9 @@ type App struct {
 	// mediaAuth signs the short-lived HTTP media grants and the RTSP path
 	// tokens. Set by main via SetMediaAuth; nil only in isolated tests.
 	mediaAuth *mediaauth.Store
+	// serviceTokens authenticates scoped machine tokens. Always set by New;
+	// nil in tests that build App by hand without store.Init.
+	serviceTokens *servicetoken.Store
 	// camStore is the DB-backed source of truth for cameras. Reads for request
 	// handling go through the in-memory `cameras` snapshot (rebuilt on every
 	// create/delete); camStore is written on create/delete and read at startup.
@@ -272,6 +276,9 @@ func New(cfg *config.Config, db *sql.DB, camStore *camera.Store, schedStore *sch
 		talkCodecs:         make(map[string][]string),
 		ptzPos:             make(map[string]ptzPos),
 		startedAt:          time.Now(),
+	}
+	if db != nil {
+		a.serviceTokens = servicetoken.NewStore(db)
 	}
 	// Precompute the embedded UI (ETag + gzip) so repeat loads revalidate
 	// cheaply instead of re-downloading. Only used when no on-disk dir wins.
@@ -825,6 +832,9 @@ func (a *App) Handler() http.Handler {
 	// users
 	mux.HandleFunc("GET /api/users", a.handleListUsers)
 	mux.HandleFunc("POST /api/users", a.handleCreateUser)
+	mux.HandleFunc("GET /api/service-tokens", a.handleListServiceTokens)
+	mux.HandleFunc("POST /api/service-tokens", a.handleCreateServiceToken)
+	mux.HandleFunc("DELETE /api/service-token/{id}", a.handleRevokeServiceToken)
 	mux.HandleFunc("PUT /api/users/me/password", a.handleChangeMyPassword)
 	mux.HandleFunc("PUT /api/users/me/name", a.handleChangeMyName)
 	mux.HandleFunc("GET /api/users/me/sessions", a.handleListMySessions)
@@ -897,29 +907,80 @@ func thinginoError(w http.ResponseWriter, err error) {
 // --- auth gates ----------------------------------------------------------
 
 func (a *App) unauthorized(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Basic realm="eneverre"`)
 	httpError(w, http.StatusUnauthorized, "Unauthorized")
 }
 
-// requireUser enforces Basic-or-Bearer auth, writing 401 (or 429 when the
-// caller is throttled) and returning nil on failure. A session whose user
-// still carries must_change_password is confined to the password-change and
-// logout/session-management endpoints: the web UI already gates on the flag,
-// but API clients (and the seeded admin's bootstrap password) must be stopped
-// server-side too.
+// requireUser enforces a human Bearer session, writing 401 and returning nil
+// on failure. Service tokens are deliberately rejected here: they only reach
+// the read-only integration endpoints that call requireScope/requireAdminOrScope.
+// A session whose user still carries must_change_password is confined to the
+// password-change and logout/session-management endpoints: the web UI already
+// gates on the flag, but API clients (and the seeded admin's bootstrap
+// password) must be stopped server-side too.
 func (a *App) requireUser(w http.ResponseWriter, r *http.Request) *auth.CurrentUser {
-	u, wait, throttled := a.currentUser(r)
-	if throttled {
-		throttleExceeded(w, wait)
-		return nil
-	}
+	u := a.currentUser(r)
 	if u == nil {
 		a.unauthorized(w)
+		return nil
+	}
+	if u.IsService() {
+		httpError(w, http.StatusForbidden, "Service tokens are only accepted on read-only integration endpoints")
 		return nil
 	}
 	if u.MustChangePassword && !passwordChangeAllowed(r) {
 		httpErrorCode(w, http.StatusForbidden, "password_change_required",
 			"Password change required")
+		return nil
+	}
+	return u
+}
+
+// requireScope accepts a human session or a service token carrying scope. It
+// is the gate for the read-only integration endpoints (status, cameras,
+// events, recordings, metrics); service tokens are rejected everywhere else.
+func (a *App) requireScope(w http.ResponseWriter, r *http.Request, scope string) *auth.CurrentUser {
+	u := a.currentUser(r)
+	if u == nil {
+		a.unauthorized(w)
+		return nil
+	}
+	if u.IsService() {
+		if !u.HasScope(scope) {
+			httpError(w, http.StatusForbidden, "Missing scope: "+scope)
+			return nil
+		}
+		return u
+	}
+	if u.MustChangePassword && !passwordChangeAllowed(r) {
+		httpErrorCode(w, http.StatusForbidden, "password_change_required",
+			"Password change required")
+		return nil
+	}
+	return u
+}
+
+// requireAdminOrScope keeps /api/status admin-only for humans while allowing a
+// service token with the status:read scope.
+func (a *App) requireAdminOrScope(w http.ResponseWriter, r *http.Request, scope string) *auth.CurrentUser {
+	u := a.currentUser(r)
+	if u == nil {
+		a.unauthorized(w)
+		return nil
+	}
+	if u.IsService() {
+		if !u.HasScope(scope) {
+			httpError(w, http.StatusForbidden, "Missing scope: "+scope)
+			return nil
+		}
+		return u
+	}
+	if u.MustChangePassword && !passwordChangeAllowed(r) {
+		httpErrorCode(w, http.StatusForbidden, "password_change_required",
+			"Password change required")
+		return nil
+	}
+	if !u.IsAdmin() {
+		httpError(w, http.StatusForbidden, "Admin required")
 		return nil
 	}
 	return u
@@ -944,7 +1005,7 @@ func passwordChangeAllowed(r *http.Request) bool {
 }
 
 // requireMediaAccess authorizes one camera media surface. First-party clients
-// present a normal session (Bearer or Basic). Third-party clients that cannot
+// present a normal Bearer session. Third-party clients that cannot
 // set headers — the Zaguán web client, HLS players, browser <img> — use a
 // signed grant from the publisher: exp=<unix>&sig=<hex>, scoped to the camera
 // and the media surface (live, thumb, hls). There is no reusable password
@@ -987,30 +1048,32 @@ func (a *App) logMediaAuthFailure(r *http.Request, camID, scope, reason string) 
 		"media:"+scope+":"+camID, reason)
 }
 
-// currentUser authenticates r via Basic or Bearer, wrapping auth.Current with
-// the failed-password throttle: a throttled Basic attempt is rejected BEFORE
-// the PBKDF2 pass (that cost is the whole point of the cap), and a failed one
-// records a strike + a security-log line. A present-but-invalid HTTP Basic
-// credential is a real brute-force signal: the browser UI authenticates with
-// Bearer tokens and never sends Basic, so a wrong Basic password is a
-// deliberate probe. Missing credentials and merely-expired Bearer tokens are
-// normal and get neither strikes nor log lines (they would ban legitimate
-// users whose sessions lapsed).
-func (a *App) currentUser(r *http.Request) (u *auth.CurrentUser, wait time.Duration, throttled bool) {
-	user, _, hasBasic := r.BasicAuth()
-	if !hasBasic {
-		return auth.Current(a.db, r), 0, false
+// currentUser authenticates a Bearer access token or a scoped service token.
+// There is no HTTP Basic path: browsers, the Android clients and scripts all
+// use Bearer (machine scripts mint a service token). Service tokens are
+// resolved here and then accepted only by requireScope/requireAdminOrScope.
+func (a *App) currentUser(r *http.Request) *auth.CurrentUser {
+	raw := auth.BearerToken(r)
+	if raw == "" {
+		return nil
 	}
-	release, wait, ok := a.authThrottle.begin(a.proxyTrust.clientIP(r), user)
-	if !ok {
-		return nil, wait, true
+	if strings.HasPrefix(raw, servicetoken.Prefix) {
+		if a.serviceTokens == nil {
+			return nil
+		}
+		st, err := a.serviceTokens.Verify(raw)
+		if err != nil {
+			a.logAuthFailure(r, "", "service_token_invalid")
+			return nil
+		}
+		return &auth.CurrentUser{
+			Username: "service:" + st.Name,
+			Role:     "service",
+			Service:  true,
+			Scopes:   st.Scopes,
+		}
 	}
-	u = auth.Current(a.db, r)
-	release(u == nil)
-	if u == nil {
-		a.logAuthFailure(r, user, "basic_auth_failed")
-	}
-	return u, 0, false
+	return auth.VerifyBearer(a.db, r)
 }
 
 // gateMetrics wraps a metrics handler so it is reachable without credentials
@@ -1019,7 +1082,7 @@ func (a *App) currentUser(r *http.Request) (u *auth.CurrentUser, wait time.Durat
 // the reverse proxy is treated as remote and must authenticate.
 func (a *App) gateMetrics(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isLocalRequest(r) && a.requireUser(w, r) == nil {
+		if !isLocalRequest(r) && a.requireScope(w, r, servicetoken.ScopeMetrics) == nil {
 			return
 		}
 		h.ServeHTTP(w, r)
@@ -1136,7 +1199,7 @@ type statusStorage struct {
 // there disk left?" without needing the Prometheus endpoint. Admin-gated
 // because it exposes each camera's live state by id.
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
-	if a.requireAdmin(w, r) == nil {
+	if a.requireAdminOrScope(w, r, servicetoken.ScopeStatus) == nil {
 		return
 	}
 
@@ -1234,7 +1297,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleCameras(w http.ResponseWriter, r *http.Request) {
-	if a.requireUser(w, r) == nil {
+	if a.requireScope(w, r, servicetoken.ScopeCameras) == nil {
 		return
 	}
 	// Project each camera through publicCamera — the single source of truth for

@@ -53,8 +53,8 @@ setup; a proxy on another host must be listed in `[server] trusted_proxies`
 
 | event                    | reason                | when                                                        |
 |--------------------------|-----------------------|-------------------------------------------------------------|
-| `authentication_failure` | `invalid_credentials` | wrong username/password at `POST /api/login`                |
-| `authentication_failure` | `basic_auth_failed`   | a wrong HTTP Basic password on any protected API endpoint   |
+| `authentication_failure` | `invalid_credentials` | wrong username/password at `POST /api/auth/login`            |
+| `authentication_failure` | `service_token_invalid` | a presented `envr_svc_...` token is unknown, revoked or expired (the token is never logged) |
 | `authentication_failure` | `invalid_current_password` | a wrong current password at `PUT /api/users/me/password` (an authenticated session guessing its own password) |
 | `authentication_failure` | `rtsp_auth_failed` | an RTSP relay reader presenting a missing/expired/invalid path token (`path="rtsp:<camera-id>"`; the token itself is never logged) |
 | `authentication_failure` | `media_grant_invalid` / `media_grant_expired` / `media_grant_malformed` | a signed media grant rejected on the thumbnail, live MSE or HLS endpoints (`path="media:<scope>:<camera-id>"`; the signature is never logged) |

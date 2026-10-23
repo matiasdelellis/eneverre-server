@@ -52,6 +52,21 @@ var schema = []string{
 	// handleRefresh looks sessions up by refresh_token on every renewal; without
 	// this index that is a full-table scan.
 	`CREATE INDEX IF NOT EXISTS idx_tokens_refresh ON tokens(refresh_token)`,
+	// Scoped read-only tokens for machine integrations (Zabbix, dashboards).
+	// Only a SHA-256 hash of the token is stored; the raw value is shown once
+	// by the create endpoint. scopes is a space-separated list.
+	`CREATE TABLE IF NOT EXISTS service_tokens (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		prefix TEXT NOT NULL,
+		token_hash TEXT NOT NULL UNIQUE,
+		scopes TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		last_used_at INTEGER NOT NULL DEFAULT 0,
+		revoked_at INTEGER NOT NULL DEFAULT 0
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_service_tokens_revoked ON service_tokens(revoked_at)`,
 	`CREATE TABLE IF NOT EXISTS events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		camera_id TEXT NOT NULL,

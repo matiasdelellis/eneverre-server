@@ -1,9 +1,10 @@
 # Zabbix template
 
 [`eneverre-nvr-by-http.yaml`](eneverre-nvr-by-http.yaml) monitors an Eneverre
-server through its admin snapshot endpoint `GET /api/status`, using HTTP Basic.
-Everything is configured with three macros — host, user, password — and no
-agent or script is installed on the NVR.
+server through its admin snapshot endpoint `GET /api/status`, using a
+read-only **service token** (`status:read`). Everything is configured with
+four macros — host, scheme, port and token — and no agent or script is
+installed on the NVR.
 
 The template is exported in the **7.0** format (validated against Zabbix
 7.0's import schema), so it imports as-is on 7.0.x. On an older server, import
@@ -24,18 +25,19 @@ Then link it to the host that runs Eneverre and set the macros
 | `{$ENEVERRE.HOST}`    | `{HOST.CONN}` | Host or IP serving the API — defaults to the interface   |
 | `{$ENEVERRE.PORT}`    | `8080`        | API port (`443` behind a TLS reverse proxy)              |
 | `{$ENEVERRE.SCHEME}`  | `http`        | `http` or `https`                                       |
-| `{$ENEVERRE.USER}`    | `admin`       | Username for HTTP Basic                                  |
-| `{$ENEVERRE.PASSWORD}`| *(empty)*     | Password — set it on the host as **Secret text**         |
+| `{$ENEVERRE.TOKEN}`   | *(empty)*     | Service token with `status:read` — set as **Secret text** |
 
 Two things to get right:
 
- * **The account must be an admin.** `/api/status` answers `403` for a
-   non-admin user, so the master item goes unsupported with a 403 body. A
-   read-only operator account is not enough.
- * **Wrong passwords are throttled.** Repeated `401`s from the same source trip
-   the server's failed-password throttle (`429` with `Retry-After`), which is
-   the same one that guards the login form — so a typo in
-   `{$ENEVERRE.PASSWORD}` is visible as `429`, not just `401`.
+ * **Create a service token, not a user.** As an admin, `POST
+   /api/service-tokens` with `{"name":"zabbix","scopes":["status:read"],
+   "expires_in_days":365}` and copy the `token` value from the response. It is
+   shown exactly once. The token is read-only, scoped to `/api/status`, and
+   can be revoked without touching any user account.
+ * **A token is not a password.** There is no HTTP Basic and no password
+   throttle on this path. `401` means the token is wrong, revoked, or expired;
+   `403` means it lacks `status:read`. Mint a replacement token and update the
+   macro if it expires.
 
 Everything else has a working default; the thresholds are
 `{$ENEVERRE.STATUS.INTERVAL}` (poll, `1m`), `{$ENEVERRE.NODATA.TIMEOUT}`

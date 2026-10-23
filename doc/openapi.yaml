@@ -12,23 +12,29 @@ info:
     3. GET /api/camera/{id}/recordings/list
     4. GET /api/camera/{id}/recordings/get
 
-    Most endpoints accept HTTP Basic or a Bearer access token. A session whose
-    user has `must_change_password` receives `403` with
+    Endpoints require a Bearer credential: a human access token from
+    `POST /api/auth/login` (or the device flow), or a scoped read-only service
+    token created through `POST /api/service-tokens` for machine integrations.
+    HTTP Basic is not accepted. A session whose user has
+    `must_change_password` receives `403` with
     `{"code":"password_change_required"}` on every route except
     `PUT /api/users/me/password`, logout and the session list/revoke endpoints.
+
+    Service tokens are only accepted on the read-only endpoints that match
+    their scopes (`status:read`, `cameras:read`, `events:read`,
+    `recordings:read`, `metrics:read`); they are rejected on users, camera
+    administration, PTZ, privacy, talk, schedules, uploads and device login.
 
     HTTP media endpoints (thumbnail, live MSE, HLS) also accept a short-lived
     signed grant `?exp=<unix>&sig=<hex>` for clients that cannot set headers;
     the grants are camera- and surface-scoped and are not valid on the clip
-    export/list/timeline/gaps APIs. The relay `user`/`pass` pair is not an HTTP
-    media credential.
+    export/list/timeline/gaps APIs.
 
 servers:
   - url: http://localhost:8080
 
-# Most endpoints accept either HTTP Basic or a Bearer access token.
+# Bearer access token (human) or a scoped service token (read-only endpoints).
 security:
-  - basicAuth: []
   - bearerAuth: []
 
 paths:
@@ -53,13 +59,14 @@ paths:
 
   /api/status:
     get:
-      summary: Operational status (admin)
+      summary: Operational status (admin, or status:read service token)
       description: >-
         Admin-only operational snapshot: per-camera connectivity, recording and
         privacy state, aggregate counts, and — when recording is enabled — the
         recording volume's disk headroom. Requires an admin token (403 for a
-        non-admin). Camera-side live settings are NOT part of this snapshot —
-        see GET /api/camera/{id}/settings.
+        non-admin) or a service token with the `status:read` scope.
+        Camera-side live settings are NOT part of this snapshot — see
+        GET /api/camera/{id}/settings.
       responses:
         '200':
           description: Status snapshot
@@ -127,7 +134,8 @@ paths:
       summary: Prometheus metrics
       description: >-
         Prometheus text-format metrics. Open to a scraper on loopback without
-        auth; any other client must authenticate. Enabled by default; when
+        auth; any other client must authenticate with a session or a service
+        token carrying `metrics:read`. Enabled by default; when
         `[server] metrics = false` the endpoint is not mounted and returns 404.
         Camera metrics are aggregate counts with no per-camera id label. See
         doc/MEDIA.md#metrics.
@@ -140,6 +148,8 @@ paths:
                 type: string
         '401':
           description: Missing or invalid token (from a non-loopback client).
+        '403':
+          description: Service token lacks metrics:read.
         '404':
           description: Metrics disabled ([server] metrics = false).
 
@@ -148,7 +158,8 @@ paths:
       summary: Metrics (JSON)
       description: >-
         The same metrics as /api/metrics rendered as JSON. Same auth model
-        (loopback bypass, else authenticated) and same 404 when disabled.
+        (loopback bypass, else a session or service token with metrics:read)
+        and same 404 when disabled.
       responses:
         '200':
           description: Metrics as a JSON object.
@@ -246,9 +257,7 @@ paths:
           description: >-
             Too many failed login attempts from this IP or for this username
             (in-memory throttle; only failures count and a success clears the
-            username's counter). Carries a Retry-After header in seconds. The
-            same throttle guards failed HTTP Basic attempts on every
-            authenticated endpoint.
+            username's counter). Carries a Retry-After header in seconds.
           headers:
             Retry-After:
               schema:
@@ -320,7 +329,7 @@ paths:
 
   /api/cameras:
     get:
-      summary: List cameras
+      summary: List cameras (cameras:read for service tokens)
       responses:
         '200':
           description: List of cameras
@@ -1737,6 +1746,75 @@ paths:
               schema:
                 $ref: '#/components/schemas/Message'
 
+  # --- service tokens -------------------------------------------------------
+  /api/service-tokens:
+    get:
+      summary: List service tokens (admin)
+      description: >-
+        Metadata for every machine token, including revoked/expired ones. The
+        raw secret is never returned; it is shown only once at creation.
+      responses:
+        '200':
+          description: Service token list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceToken'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      summary: Create a read-only service token (admin)
+      description: >-
+        Mints a scoped machine token. The raw value is returned exactly once
+        in `token`; only its SHA-256 hash is stored. Defaults to the
+        least-privilege `status:read` scope and a 365-day expiry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateServiceTokenRequest'
+      responses:
+        '201':
+          description: Token created; copy `token` now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceTokenCreated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Invalid name, scope or expiry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/service-token/{id}:
+    delete:
+      summary: Revoke a service token (admin)
+      description: Marks the token unusable immediately. Idempotent calls on an already-revoked token return 404.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/users/me/password:
     put:
       summary: Change my password
@@ -2119,13 +2197,13 @@ paths:
 components:
 
   securitySchemes:
-    basicAuth:
-      type: http
-      scheme: basic
     bearerAuth:
       type: http
       scheme: bearer
-      description: Access token issued by POST /api/auth/login (or the device flow).
+      description: >-
+        Human access token issued by POST /api/auth/login (or the device flow),
+        or a scoped read-only service token created through
+        POST /api/service-tokens.
     updateToken:
       type: http
       scheme: bearer
@@ -2729,6 +2807,65 @@ components:
         last_name:
           type: string
           nullable: true
+
+    ServiceToken:
+      type: object
+      description: >-
+        Public metadata for a machine token. The raw secret is never part of
+        this object.
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        prefix:
+          type: string
+          description: Non-secret display prefix (e.g. `envr_svc_1a2b3c4d`).
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [status:read, cameras:read, events:read, recordings:read, metrics:read]
+        created_at:
+          type: integer
+          format: int64
+        expires_at:
+          type: integer
+          format: int64
+        last_used_at:
+          type: integer
+          format: int64
+        revoked_at:
+          type: integer
+          format: int64
+    CreateServiceTokenRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        scopes:
+          type: array
+          description: Defaults to [status:read] when omitted.
+          items:
+            type: string
+            enum: [status:read, cameras:read, events:read, recordings:read, metrics:read]
+        expires_in_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+          default: 365
+    ServiceTokenCreated:
+      allOf:
+        - $ref: '#/components/schemas/ServiceToken'
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: Raw bearer token, shown only in this response.
 
     UserCreated:
       type: object

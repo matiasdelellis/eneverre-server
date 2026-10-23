@@ -302,8 +302,8 @@ func (c *Config) UpdatesMaxBuildSize() int64 {
 
 // CORSOrigins returns the allowlist of browser Origins that CORS accepts, from
 // [server] cors_origins (comma-separated). Empty (the default) lets any Origin
-// read responses but without credentials (Bearer front-ends work; cached Basic
-// credentials can't be ridden). Listed Origins get credentials; a literal "*"
+// read responses but without credentials (Bearer front-ends work; there are
+// no ambient browser credentials to ride). Listed Origins get credentials; a literal "*"
 // entry grants credentials to any Origin (explicit opt-in). See server.cors.
 func (c *Config) CORSOrigins() []string {
 	raw := strings.TrimSpace(c.Server.Get("cors_origins", ""))

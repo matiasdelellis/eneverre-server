@@ -26,7 +26,7 @@ func TestCORS(t *testing.T) {
 			t.Errorf("ACAO = %q, want the reflected origin", got)
 		}
 		// Credentials would let a foreign page read responses authenticated
-		// by the browser's cached Basic credentials.
+		// by ambient browser credentials.
 		if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "" {
 			t.Errorf("default must not allow credentials, got %q", got)
 		}

@@ -64,8 +64,7 @@ var talkUpgrader = websocket.Upgrader{
 
 // talkCheckOrigin admits any origin when the request carries an access token
 // (the token can't be forged, and a page that holds one could use it
-// anyway), but requires same-origin when it doesn't — that is the HTTP Basic
-// fallback, where a browser attaches cached credentials on its own and a
+// anyway), but requires same-origin when it doesn't — without a token a
 // foreign page could otherwise open a talk session to the camera speaker.
 // Requests without an Origin header are not from a browser and pass.
 func talkCheckOrigin(r *http.Request) bool {
@@ -140,16 +139,14 @@ func (a *App) CloseAllTalk() {
 func (a *App) handleTalk(w http.ResponseWriter, r *http.Request) {
 	u := auth.VerifyToken(a.db, talkToken(r))
 	if u == nil {
-		var wait time.Duration
-		var throttled bool
-		u, wait, throttled = a.currentUser(r) // Basic fallback goes through the throttle
-		if throttled {
-			throttleExceeded(w, wait)
-			return
-		}
+		u = a.currentUser(r) // Bearer header for non-browser clients
 	}
 	if u == nil {
 		a.unauthorized(w)
+		return
+	}
+	if u.IsService() {
+		httpError(w, http.StatusForbidden, "Service tokens are not allowed on this endpoint")
 		return
 	}
 	if u.MustChangePassword {

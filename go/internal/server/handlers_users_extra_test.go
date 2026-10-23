@@ -12,14 +12,14 @@ import (
 	"eneverre/internal/auth"
 	"eneverre/internal/config"
 	"eneverre/internal/mediaauth"
+	"eneverre/internal/servicetoken"
 	"eneverre/internal/store"
 )
 
 // withUsersApp builds an App backed by a fresh temp-file SQLite database with
 // the real schema applied but no seeded users, so each test controls exactly
 // which accounts (and passwords) exist. Requests authenticate with Bearer
-// tokens (see adminRequest); the Basic path is exercised separately where
-// relevant.
+// tokens (see adminRequest); HTTP Basic is not accepted.
 func withUsersApp(t *testing.T) *App {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -44,6 +44,7 @@ func withUsersApp(t *testing.T) *App {
 		t.Fatalf("mediaauth.NewStore: %v", err)
 	}
 	a.mediaAuth = ma
+	a.serviceTokens = servicetoken.NewStore(db)
 	return a
 }
 

@@ -15,10 +15,10 @@ import (
 //
 //   - empty (default): any Origin may read responses, but WITHOUT credentials.
 //     A cross-origin front-end that authenticates with a Bearer header keeps
-//     working, while a hostile page can no longer ride the browser's cached
-//     HTTP Basic credentials: without Access-Control-Allow-Credentials the
-//     browser won't let it read a credentialed response (and a credentialed
-//     preflight fails).
+//     working, while there are no ambient browser credentials for a hostile
+//     page to ride: without Access-Control-Allow-Credentials the browser won't
+//     let it read a credentialed response (and a credentialed preflight
+//     fails).
 //   - listed Origins: reflected with credentials; others get no CORS headers.
 //   - a "*" entry: any Origin, with credentials — the old permissive default,
 //     now an explicit opt-in.
@@ -38,10 +38,9 @@ func cors(h http.Handler, allowed []string) http.Handler {
 		case origin != "" && originAllowed(origin, allowed):
 			allow = origin
 			// A "*" entry opts into any-Origin reads, but never into
-			// credentialed ones: with Access-Control-Allow-Credentials a
-			// foreign page could ride a browser's cached HTTP Basic
-			// credentials. Bearer clients send an explicit header, so they
-			// keep working without credentials mode.
+			// credentialed ones: there are no ambient browser credentials,
+			// and Bearer clients send an explicit header, so they keep
+			// working without credentials mode.
 			creds = !wildcardOrigin(allowed)
 		}
 		if allow != "" {

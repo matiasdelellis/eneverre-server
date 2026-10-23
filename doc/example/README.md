@@ -65,8 +65,8 @@ port = 8080
    Set `false` to drop the endpoints entirely. See [`doc/MEDIA.md`](../MEDIA.md#metrics).
  * **cors_origins:** Comma-separated browser CORS allowlist. Empty (default)
    lets any Origin read API responses **without credentials**: a front-end on
-   another origin that sends a Bearer token works, but a foreign page can't use
-   HTTP Basic credentials the browser has cached. Listed Origins also get
+   another origin that sends a Bearer token works, but there are no ambient
+   browser credentials for a foreign page to ride. Listed Origins also get
    credentials (`Access-Control-Allow-Credentials`); a single `*` entry keeps
    the any-Origin read behavior but still never grants credentials.
  * **trusted_proxies:** Comma-separated IPs or CIDRs of reverse proxies whose
@@ -101,9 +101,10 @@ port = 8080
 > first login before the app opens, and the **server** blocks every protected
 > API route (`403 {"code":"password_change_required"}`) except the password
 > change, logout and session-revoke endpoints. The bootstrap credential can
-> therefore not be used with `curl -u admin:...` either. Manage further users
-> through the `/api/users` endpoints or the web UI — where an admin can require
-> the same forced change when creating a user or resetting a password.
+> therefore not be used to call the API until the password is changed. Manage
+> further users through the `/api/users` endpoints or the web UI — where an
+> admin can require the same forced change when creating a user or resetting a
+> password.
 
 ## `[auth]`
 
@@ -146,6 +147,35 @@ Token lifetimes and session hygiene. Every key is optional.
    created for you; rotate it with logrotate's `copytruncate`. Precedence:
    this key > `ENEVERRE_SECURITY_LOG` > `""`. See
    [`security-logging.md`](../security-logging.md).
+
+## Service tokens (machine integrations)
+
+HTTP Basic is not accepted. Zabbix, dashboards and scripts use a scoped,
+read-only **service token** instead of a user password. An admin mints one
+after logging in with a normal Bearer access token:
+
+```bash
+curl -sS -X POST http://localhost:8080/api/service-tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"zabbix","scopes":["status:read"],"expires_in_days":365}'
+```
+
+The response carries `"token": "envr_svc_..."` **once**; only its SHA-256 hash
+is stored, so copy it now. Supported scopes are `status:read`,
+`cameras:read`, `events:read`, `recordings:read` and `metrics:read`; the
+default is `status:read`. The token can only reach the matching read-only
+endpoints — it is rejected on users, camera administration, PTZ, privacy,
+talk, schedules, uploads and device login.
+
+```bash
+curl -sS -H "Authorization: Bearer envr_svc_..." http://localhost:8080/api/status
+curl -sS -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:8080/api/service-tokens
+curl -sS -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8080/api/service-token/1
+```
+
+Revocation is immediate; to rotate, mint a replacement and revoke the old id.
 
 ## `[media]`
 

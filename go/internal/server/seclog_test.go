@@ -60,7 +60,7 @@ func TestSecLoggerNoForgedFailure(t *testing.T) {
 	var buf bytes.Buffer
 	s := &secLogger{w: &buf}
 	forged := "x eneverre authentication_failure ip=10.0.0.1 y"
-	s.event("203.0.113.5", "authentication_failure", forged, "/api/camera/a\n"+forged+"/thumbnail", "basic_auth_failed")
+	s.event("203.0.113.5", "authentication_failure", forged, "/api/camera/a\n"+forged+"/thumbnail", "invalid_credentials")
 
 	line := buf.String()
 	if strings.Count(line, "\n") != 1 {

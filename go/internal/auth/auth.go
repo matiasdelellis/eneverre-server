@@ -1,4 +1,4 @@
-// Package auth provides Werkzeug-format password hashing and the Basic/Bearer
+// Package auth provides Werkzeug-format password hashing and the Bearer
 // authentication used by the API.
 package auth
 
@@ -21,31 +21,29 @@ type CurrentUser struct {
 	// seeded admin or an admin-forced reset can only change the password until
 	// the flag clears.
 	MustChangePassword bool
+	// Service marks a scoped machine token (service_tokens table). Service
+	// principals are rejected by requireUser and only reach the read-only
+	// endpoints that explicitly check one of their Scopes.
+	Service bool
+	// Scopes is the service token's read-only scope list; nil for humans.
+	Scopes []string
 }
 
 // IsAdmin reports whether the user has the admin role.
 func (u CurrentUser) IsAdmin() bool { return u.Role == "admin" }
 
-// VerifyBasic authenticates HTTP Basic credentials against the users table.
-func VerifyBasic(db *sql.DB, r *http.Request) *CurrentUser {
-	username, password, ok := r.BasicAuth()
-	if !ok {
-		return nil
+// IsService reports whether the principal is a scoped machine token.
+func (u CurrentUser) IsService() bool { return u.Service }
+
+// HasScope reports whether a service principal carries scope. Human sessions
+// are not scope-limited by this helper; handlers gate them by role instead.
+func (u CurrentUser) HasScope(scope string) bool {
+	for _, s := range u.Scopes {
+		if s == scope {
+			return true
+		}
 	}
-	var stored, role string
-	var mustChange bool
-	if err := db.QueryRow(
-		"SELECT password, role, must_change_password FROM users WHERE username = ?", username,
-	).Scan(&stored, &role, &mustChange); err != nil {
-		// Same cost as a real check, so response time doesn't reveal which
-		// usernames exist.
-		BurnPasswordCheck(password)
-		return nil
-	}
-	if !CheckPasswordHash(stored, password) {
-		return nil
-	}
-	return &CurrentUser{Username: username, Role: role, MustChangePassword: mustChange}
+	return false
 }
 
 // dummyPasswordHash has the default algorithm and iteration count, so
@@ -97,14 +95,6 @@ func VerifyToken(db *sql.DB, token string) *CurrentUser {
 		return nil
 	}
 	return &CurrentUser{Username: username, Role: role, MustChangePassword: mustChange}
-}
-
-// Current returns the user from Basic or Bearer credentials, preferring Basic.
-func Current(db *sql.DB, r *http.Request) *CurrentUser {
-	if u := VerifyBasic(db, r); u != nil {
-		return u
-	}
-	return VerifyBearer(db, r)
 }
 
 // BearerToken extracts the raw token from the Authorization header, or "".

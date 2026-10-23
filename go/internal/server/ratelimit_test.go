@@ -149,39 +149,18 @@ func TestLoginThrottled(t *testing.T) {
 	}
 }
 
-func TestBasicAuthThrottled(t *testing.T) {
+func TestBasicAuthRejected(t *testing.T) {
 	a := withUsersApp(t)
-	a.authThrottle = newAuthThrottle()
 	insertUser(t, a.db, "bob", "hunter2", "admin")
 
-	for i := 0; i < maxFailsPerUser; i++ {
-		w := httptest.NewRecorder()
-		r := httptest.NewRequest("GET", "/api/users", nil)
-		r.SetBasicAuth("bob", "nope")
-		if a.requireUser(w, r) != nil {
-			t.Fatal("bad password must not authenticate")
-		}
-		if w.Code != 401 {
-			t.Fatalf("expected 401 under the cap, got %d", w.Code)
-		}
-	}
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/api/users", nil)
 	r.SetBasicAuth("bob", "hunter2")
 	if a.requireUser(w, r) != nil {
-		t.Fatal("throttled request must not authenticate")
-	}
-	if w.Code != 429 {
-		t.Fatalf("expected 429 once throttled, got %d", w.Code)
-	}
-	// Bearer traffic is unaffected by a Basic throttle on the same source.
-	w = httptest.NewRecorder()
-	r = httptest.NewRequest("GET", "/api/users", nil)
-	if a.requireUser(w, r) != nil {
-		t.Fatal("no credentials must not authenticate")
+		t.Fatal("HTTP Basic must not authenticate anymore")
 	}
 	if w.Code != 401 {
-		t.Fatalf("credential-less request should still get a plain 401, got %d", w.Code)
+		t.Fatalf("Basic request status = %d, want 401", w.Code)
 	}
 }
 

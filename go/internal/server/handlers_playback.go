@@ -10,6 +10,7 @@ import (
 
 	"eneverre/internal/camera"
 	"eneverre/internal/mediaauth"
+	"eneverre/internal/servicetoken"
 	"eneverre/internal/timeutil"
 )
 
@@ -89,7 +90,7 @@ func (a *App) handleRecordingPaths(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "Not Found")
 		return
 	}
-	if a.requireUser(w, r) == nil {
+	if a.requireScope(w, r, servicetoken.ScopeRecordings) == nil {
 		return
 	}
 	paths, err := a.engine.Index().Paths()
@@ -183,7 +184,7 @@ func (a *App) playbackGate(w http.ResponseWriter, r *http.Request) *camera.Camer
 	if !a.playbackEnabled(w) {
 		return nil
 	}
-	if a.requireUser(w, r) == nil {
+	if a.requireScope(w, r, servicetoken.ScopeRecordings) == nil {
 		return nil
 	}
 	return a.playbackCamera(w, r)

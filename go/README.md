@@ -154,7 +154,8 @@ run_unix.go / run_windows.go  per-OS run loop: SIGINT/SIGTERM vs Service Control
                               and where log output goes (stderr vs ENEVERRE_LOG_FILE)
 internal/config               INI loading + path resolution
 internal/store                SQLite open + schema + admin seed
-internal/auth                 Werkzeug-format hashing + Basic/Bearer auth
+internal/auth                 Werkzeug-format hashing + Bearer auth
+internal/servicetoken         scoped read-only machine tokens (hashed at rest)
 internal/camera               Camera model + DB store + one-time INI seed
 internal/schedule             named recording programs (per-weekday armed windows) + DB store
 internal/mediaauth            short-lived camera/surface-scoped HMAC media + RTSP grants
@@ -266,12 +267,25 @@ shown as alive in `/api/users/me/sessions` while its refresh token is valid
 server-side to `PUT /api/users/me/password`, logout and session revoke/listing;
 every other protected route answers `403 {"code":"password_change_required"}`.
 
+**Service tokens (machine integrations).** `POST /api/service-tokens` (admin)
+mints a read-only token prefixed `envr_svc_`, with one or more scopes:
+`status:read`, `cameras:read`, `events:read`, `recordings:read`,
+`metrics:read`. The raw token is returned once; only its SHA-256 hash is stored
+in `service_tokens`. Each request refreshes `last_used_at` at most once a
+minute. `GET /api/service-tokens` lists metadata, `DELETE
+/api/service-token/{id}` revokes immediately. Service tokens are accepted only
+by endpoints that call `requireScope` with a matching scope; `requireUser`
+rejects them, so they cannot reach users, camera administration, PTZ, privacy,
+talk, schedules, uploads or device login. HTTP Basic is no longer accepted
+anywhere — Zabbix and other machine integrations use a service token.
+
 HTTP media links for clients that cannot set an `Authorization` header (the
 Zaguán hub, native HLS players, `<img>`) use short-lived HMAC grants:
 `?exp=<unix>&sig=<hex>`, scoped to one camera and one surface (`live`, `thumb`,
 `hls`). The same key signs the RTSP path token
-(`/<camera-id>/<exp>.<sig>`). The clip/list/timeline/gaps APIs remain
-session-only; the relay pair is gone and is not accepted on HTTP media.
+(`/<camera-id>/<exp>.<sig>`). The clip/list/timeline/gaps APIs accept a human
+session or a service token with `recordings:read`; signed media grants are still
+rejected there. The relay pair is gone and is not accepted on HTTP media.
 
 Both lifetimes are configurable, with precedence **CLI flag > env > `[auth]`
 section > default**:

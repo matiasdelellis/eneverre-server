@@ -9,7 +9,7 @@ zabbix_export:
       name: 'Eneverre NVR by HTTP'
       description: |
         Monitors an Eneverre NVR through its admin snapshot endpoint
-        GET /api/status (HTTP Basic).
+        GET /api/status (Bearer service token with status:read).
 
         One HTTP agent master item polls /api/status; everything else is a
         dependent item, so a whole host costs a single request per interval.
@@ -17,8 +17,9 @@ zabbix_export:
 
         Setup:
           1. Link this template to the host running Eneverre.
-          2. Set {$ENEVERRE.USER} / {$ENEVERRE.PASSWORD} to an *admin* account
-             (/api/status answers 403 for a non-admin user).
+          2. As an admin, create a read-only service token with the
+             status:read scope (POST /api/service-tokens) and set it as the
+             {$ENEVERRE.TOKEN} secret macro on the host.
           3. Adjust {$ENEVERRE.SCHEME} / {$ENEVERRE.HOST} / {$ENEVERRE.PORT} if
              Eneverre is not reachable at http://{HOST.CONN}:8080 (behind a
              reverse proxy this is usually https / 443).
@@ -37,9 +38,10 @@ zabbix_export:
           history: '0'
           trends: '0'
           value_type: TEXT
-          authtype: BASIC
-          username: '{$ENEVERRE.USER}'
-          password: '{$ENEVERRE.PASSWORD}'
+          authtype: NONE
+          headers:
+            - name: Authorization
+              value: 'Bearer {$ENEVERRE.TOKEN}'
           url: '{$ENEVERRE.SCHEME}://{$ENEVERRE.HOST}:{$ENEVERRE.PORT}/api/status'
           status_codes: '200'
           timeout: '{$ENEVERRE.STATUS.TIMEOUT}'
@@ -48,7 +50,8 @@ zabbix_export:
             item in this template; history is off because the dependents keep
             what matters.
 
-            403 here means the account in {$ENEVERRE.USER} is not an admin.
+            401 here means the service token is wrong, revoked or expired;
+            403 means it lacks the status:read scope.
           tags:
             - tag: component
               value: raw
@@ -582,12 +585,9 @@ zabbix_export:
         - macro: '{$ENEVERRE.PORT}'
           value: '8080'
           description: 'API port. 8080 is the Eneverre default; use 443 behind a proxy.'
-        - macro: '{$ENEVERRE.USER}'
-          value: admin
-          description: 'Username for HTTP Basic. Must be an admin — /api/status is admin-only.'
-        - macro: '{$ENEVERRE.PASSWORD}'
+        - macro: '{$ENEVERRE.TOKEN}'
           value: ''
-          description: 'Password for HTTP Basic. Override it on the host, as Secret text.'
+          description: 'Read-only service token with status:read. Override it on the host, as Secret text.'
         - macro: '{$ENEVERRE.STATUS.INTERVAL}'
           value: 1m
           description: 'How often /api/status is polled.'
@@ -652,8 +652,8 @@ zabbix_export:
       description: |
         No snapshot for {$ENEVERRE.NODATA.TIMEOUT}. Either the service is
         down / unreachable, or the request is being rejected — check the
-        master item error: 401 means wrong credentials, 403 means the
-        account in {$ENEVERRE.USER} is not an admin.
+        master item error: 401 means the service token is wrong/revoked/expired,
+        403 means it lacks the status:read scope.
       tags:
         - tag: scope
           value: availability
