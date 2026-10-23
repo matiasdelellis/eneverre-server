@@ -102,11 +102,14 @@ func logPath(p string) string {
 // secretQueryParams are query parameters that carry credentials: the talk
 // WebSocket's ?token= (an access token) and the webhook's ?token= (the shared
 // secret) among them.
+// secretQueryParams are query parameters that carry credentials: the device
+// pairing code, the signed media grant and any defensive token/secret value a
+// client may still attach. The API no longer accepts session tokens in URLs.
 var secretQueryParams = map[string]bool{
 	"token": true, "refresh_token": true, "password": true, "secret": true, "api_key": true,
 	// Signed media grants and the device pairing code are capabilities too.
 	"sig": true, "usercode": true,
-	// The deprecated rotating relay credentials the legacy media URLs carry.
+	// A stray relay pair (the RTSP credential) must never reach a log line.
 	"user": true, "pass": true,
 }
 

@@ -119,7 +119,7 @@ func TestStatusRecorderUnwrapForDeadline(t *testing.T) {
 }
 
 // The access log must not carry credentials: the device code in the poll
-// path, or the talk/webhook ?token= at DEBUG.
+// path, or a signed media/talk/webhook-looking query at DEBUG.
 func TestAccessLogRedaction(t *testing.T) {
 	if got := logPath("/api/auth/device/abc123"); got != "/api/auth/device/{device_code}" {
 		t.Errorf("logPath(poll) = %q", got)
