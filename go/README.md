@@ -284,10 +284,11 @@ a token cannot mint more tokens. HTTP Basic is no longer accepted anywhere —
 Zabbix and other machine integrations use a service token (a `monitor` user
 gives status/metrics but no camera list, live or playback).
 
-HTTP media links for clients that cannot set an `Authorization` header (native
-HLS players, `<img>`) use short-lived HMAC grants:
+HTTP media endpoints also accept short-lived HMAC grants for clients that
+cannot set an `Authorization` header (native HLS players, `<img>`):
 `?exp=<unix>&sig=<hex>`, scoped to one camera and one surface (`live`, `thumb`,
-`hls`). The same key signs the RTSP path token
+`hls`). No endpoint issues them; the server mints them internally. The same
+key signs the RTSP path token
 (`/<camera-id>/<exp>.<sig>`). The clip/list/timeline/gaps APIs accept a
 principal whose role includes playback (admin/user), including a linked service
 token; signed media grants are still rejected there. The relay pair is gone and is not accepted on HTTP media.

@@ -189,7 +189,9 @@ All code lives under `go/` (module `eneverre`).
   6 h for HLS); RTSP grants are a path segment
   `/<camera-id>/<exp>.<sig>` (6 h), validated by the relay on
   DESCRIBE/SETUP. `requireMediaAccess` accepts an HTTP grant or a normal
-  session; the RTSP relay accepts only the path token.
+  session; the RTSP relay accepts only the path token. Nothing in the stock
+  build mints an HTTP grant today (the RTSP path token is minted per request
+  in `handlers_cameras.go`); the grant surface stays for integrations.
 - `go/internal/camera` — `Camera` model + INI loader. Credential fields
   (`thingino_url`/`thingino_api_key`/`backchannel`/`source`) are tagged
   `json:"-"`, so marshaling a `Camera` is the public view (no credential

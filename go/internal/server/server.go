@@ -1011,7 +1011,8 @@ func passwordChangeAllowed(r *http.Request) bool {
 // present a normal Bearer session. Clients that cannot set headers (HLS
 // players, browser <img>) may present a signed grant minted with the media-auth
 // key — exp=<unix>&sig=<hex>, scoped to the camera and the media surface (live,
-// thumb, hls). There is no reusable password form.
+// thumb, hls). No endpoint issues those grants (the stock build mints none);
+// they exist for integrations. There is no reusable password form.
 func (a *App) requireMediaAccess(w http.ResponseWriter, r *http.Request, camID, scope string) bool {
 	q := r.URL.Query()
 	expRaw, sig := q.Get("exp"), q.Get("sig")

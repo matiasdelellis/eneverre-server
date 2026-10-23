@@ -428,8 +428,9 @@ always spans the full requested window and it is obvious there was no recording
 
 What a client (web UI, mobile/TV app) consumes. All `/api/*` calls take a
 Bearer credential — a human access token, or a service token linked to a user
-(role + camera ACL) for machine integrations — except the HTTP media surfaces that also accept the
-short-lived signed grants described below. HTTP Basic is not accepted.
+(role + camera ACL) for machine integrations. The HTTP media surfaces also
+accept a short-lived signed grant (described below) for clients that cannot
+set an Authorization header. HTTP Basic is not accepted.
 
 Roles are `admin`, `user` (live, playback, PTZ, privacy, talk), `viewer`
 (live and events, never playback) and `monitor` (status/metrics only). Every
@@ -464,20 +465,20 @@ role and ACL.
   legacy avc1/truncate.
 
 **Auth reminder for HLS**: every playlist/init/segment request needs a Bearer
-session or the signed grant. Use hls.js `xhrSetup` with the Bearer token for
-first-party clients. For players that cannot set headers (VLC, ExoPlayer),
-use the **signed grant**:
-`…/playlist.m3u8?exp=<unix>&sig=<hex>`; the playlist forwards `exp`/`sig` to
-its init and segment URIs.
+session, or a signed grant for players that cannot set headers (VLC,
+ExoPlayer): `…/playlist.m3u8?exp=<unix>&sig=<hex>`. The playlist forwards
+`exp`/`sig` to its init and segment URIs. The web UI keeps using the Bearer
+token through hls.js `xhrSetup`.
 
-Grants are minted server-side with the media-auth key and scoped to one camera
-and one surface; the relay `user`/`pass` pair is **not** accepted on HTTP media.
-They do not authorize the clip/list/timeline/gaps API — those remain
-session-only.
+A grant is minted server-side with the media-auth key and scoped to one camera
+and one surface (`live`, `thumb`, `hls`). No API endpoint issues one; the
+server does it internally. The relay `user`/`pass` pair is **not** accepted on
+HTTP media, and grants do not authorize the clip/list/timeline/gaps API —
+those remain session-only.
 
 **Client migration:** the RTSP `user`/`pass` pair is no longer an HTTP media
-credential. Use the normal Bearer session (web, Android phone) or consume the
-signed `exp`/`sig` URL the server publishes (hub/native player). The
+credential. Use the normal Bearer session (web, Android phone); a client that
+cannot set headers may present a signed `exp`/`sig` grant (see above). The
 clip/list/timeline/gaps endpoints remain session-only. The web UI, MSE player,
 hls.js and the Android talk client are unchanged; the additive API change is
 the device-login refresh token and the

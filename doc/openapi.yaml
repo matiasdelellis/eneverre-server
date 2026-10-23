@@ -29,7 +29,8 @@ info:
 
     HTTP media endpoints (thumbnail, live MSE, HLS) also accept a short-lived
     signed grant `?exp=<unix>&sig=<hex>` for clients that cannot set headers;
-    the grants are camera- and surface-scoped and are not valid on the clip
+    the grants are camera- and surface-scoped, are minted server-side (no
+    endpoint issues them) and are not valid on the clip
     export/list/timeline/gaps APIs.
 
 servers:
@@ -1022,8 +1023,8 @@ paths:
         configured); for any other camera it proxies the configured
         `snapshot_url` (the camera's own JPEG endpoint). 404 when the camera has
         neither configured. First-party clients authenticate with a normal
-        session. Third-party clients that cannot set an Authorization header
-        (browser `<img>`) use a short-lived signed grant:
+        session. Clients that cannot set an Authorization header (browser
+        `<img>`) may use a short-lived signed grant:
         `exp` + `sig`, scoped to this camera's `thumb` surface. The relay
         `user`/`pass` pair is not accepted here.
       parameters:
@@ -2297,8 +2298,9 @@ components:
       description: >-
         Expiry (unix seconds) of a short-lived signed media grant. Used with
         `sig` by clients that cannot set an Authorization header (native HLS
-        players, browser `<img>`); first-party clients use the
-        normal Bearer session instead.
+        players, browser `<img>`). The server mints these internally; no
+        endpoint issues them. First-party clients use the normal Bearer
+        session instead.
     media_sig:
       name: sig
       in: query

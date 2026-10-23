@@ -13,7 +13,9 @@
 //
 // Grants are meant for clients that cannot set an Authorization header
 // (browser <img>, HLS players). First-party clients keep using their normal
-// session Bearer token.
+// session Bearer token. The API has no endpoint that issues a grant: the
+// server mints one internally when an integration needs it, and the RTSP path
+// token below is the one the HTTP handlers always mint.
 package mediaauth
 
 import (
