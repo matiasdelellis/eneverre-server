@@ -264,8 +264,10 @@ paths:
       summary: Renew the session with the refresh token
       description: >-
         Rotates both secrets in place on the same row and slides both expiries
-        forward. Device (TV) sessions have no refresh token and cannot use this
-        endpoint.
+        forward. Password and device (TV) sessions can both renew. A consumed
+        refresh token replayed within 30 s is treated as a lost-response retry
+        (401, session kept); a later replay is treated as theft and revokes the
+        whole session.
       security: []
       requestBody:
         required: true

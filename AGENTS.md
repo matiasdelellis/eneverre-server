@@ -504,9 +504,12 @@ see request query strings and the more verbose media-engine traces
   `POST /api/auth/refresh`
   (body `{"refresh_token": "..."}`) validates the refresh secret, then rotates
   *both* secrets and slides both expiries **in place with an `UPDATE` on the
-  same row** — the session list grows per login, never per refresh. Lookups
-  never cross columns: `VerifyBearer` matches `WHERE token = ?`, refresh matches
-  `WHERE refresh_token = ?`, so the two are not interchangeable.
+  same row** — the session list grows per login, never per refresh. The
+  immediately consumed token is kept in `refresh_prev`: replaying it within
+  30 s is treated as a lost-response retry (401, session kept), later replay is
+  treated as theft and deletes the row (`refresh_token_reuse` in the security
+  log). Lookups never cross columns: `VerifyBearer` matches `WHERE token = ?`,
+  refresh matches `WHERE refresh_token = ?`, so the two are not interchangeable.
 - **Device (TV) sessions are renewable and limited to the `user` role**: the
   device-login flow issues an access token plus a refresh token
   (`refresh_token`/`refresh_expires_at` in the approved poll response) and

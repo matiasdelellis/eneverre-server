@@ -259,7 +259,9 @@ session; when omitted the field is NULL — older clients keep working unchanged
 (access) and a long-lived `refresh_token`, both stored on one `tokens` row.
 Clients renew with `POST /api/auth/refresh` (`{"refresh_token": "..."}`), which
 rotates both secrets and slides both expiries **in place on the same row** — so
-the session count tracks logins, not refreshes. Device-login (TV) sessions get
+the session count tracks logins, not refreshes. The consumed token is kept in
+`refresh_prev`: a replay within 30 s is a lost-response retry (401, session
+kept); a later replay revokes the row as theft. Device-login (TV) sessions get
 the same access + refresh pair, but the token is pinned to the ordinary
 `user` role even when an admin approves the device; older TVs that ignore the
 new refresh fields keep re-pairing, new ones renew like a phone. A session is

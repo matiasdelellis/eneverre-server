@@ -154,10 +154,17 @@ type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+// refreshReuseGrace bounds how long a just-consumed refresh token may be
+// presented again without being treated as theft. The web/Android clients
+// retry once on a lost response; a genuine retry lands within this window and
+// is refused without revoking the freshly rotated session. A replay after the
+// window revokes the whole session instead.
+const refreshReuseGrace = 30 * time.Second
+
 // handleRefresh exchanges a valid refresh token for a fresh access token,
 // rotating both secrets in place on the same row (so the session list grows
 // per login, never per refresh) and sliding both expiries forward. Device-flow
-// sessions have a NULL refresh_token and so can never refresh — they re-pair.
+// sessions also carry a refresh token and use the same path.
 func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	var req refreshRequest
 	if !decodeJSON(w, r, &req) {
@@ -175,21 +182,46 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// Rotate in a single conditional UPDATE rather than SELECT-then-UPDATE: the
 	// old refresh token is consumed atomically, so two concurrent requests with
 	// the same token can't both mint a new pair — the first flips refresh_token,
-	// the second's WHERE no longer matches (RowsAffected 0). (NULL/0
-	// refresh_expires_at means "never expires", matching the old semantics.)
+	// the second's WHERE no longer matches (RowsAffected 0). The consumed token
+	// is kept in refresh_prev for reuse detection. (NULL/0 refresh_expires_at
+	// means "never expires", matching the old semantics.)
 	res, err := a.db.Exec(
-		"UPDATE tokens SET token = ?, expires_at = ?, refresh_token = ?, refresh_expires_at = ? "+
+		"UPDATE tokens SET token = ?, expires_at = ?, refresh_prev = ?, refresh_prev_used_at = ?, "+
+			"refresh_token = ?, refresh_expires_at = ? "+
 			"WHERE refresh_token = ? AND (refresh_expires_at IS NULL OR refresh_expires_at = 0 OR refresh_expires_at > ?)",
-		newToken, expiresAt, newRefresh, newRefreshExpiresAt, req.RefreshToken, now,
+		newToken, expiresAt, req.RefreshToken, now, newRefresh, newRefreshExpiresAt, req.RefreshToken, now,
 	)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "Could not refresh session")
 		return
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		// Nothing rotated: the token is unknown, expired, or already consumed (a
-		// reused/stale token or a lost race). Never mint a new pair; opportunistically
-		// prune the row if it was simply expired.
+		// Nothing rotated: the token is unknown, expired, or was already
+		// consumed. If it matches a recent refresh_prev it is a replay; inside
+		// the retry grace just refuse it, outside revoke the session so a
+		// stolen token cannot keep the attacker logged in.
+		var id int64
+		var username sql.NullString
+		var usedAt sql.NullInt64
+		err := a.db.QueryRow(
+			"SELECT id, username, refresh_prev_used_at FROM tokens WHERE refresh_prev = ?",
+			req.RefreshToken,
+		).Scan(&id, &username, &usedAt)
+		switch {
+		case err == nil:
+			replayedLate := !usedAt.Valid || now-usedAt.Int64 > int64(refreshReuseGrace.Seconds())
+			if replayedLate {
+				_, _ = a.db.Exec("DELETE FROM tokens WHERE id = ?", id)
+				a.secLog.event(secLogIP(a.proxyTrust.clientIP(r), r),
+					"authentication_failure", username.String, r.URL.Path, "refresh_token_reuse")
+			}
+			httpError(w, http.StatusUnauthorized, "Invalid refresh token")
+			return
+		case err != sql.ErrNoRows:
+			httpError(w, http.StatusInternalServerError, "Could not refresh session")
+			return
+		}
+		// Opportunistically prune a row that was simply expired.
 		_, _ = a.db.Exec(
 			"DELETE FROM tokens WHERE refresh_token = ? AND refresh_expires_at > 0 AND refresh_expires_at < ?",
 			req.RefreshToken, now,

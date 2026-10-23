@@ -43,7 +43,9 @@ var schema = []string{
 		device_name TEXT,
 		refresh_token TEXT,
 		refresh_expires_at INTEGER,
-		role TEXT
+		role TEXT,
+		refresh_prev TEXT,
+		refresh_prev_used_at INTEGER
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_device_login_user_code ON device_login(user_code)`,
 	`CREATE INDEX IF NOT EXISTS idx_tokens_username ON tokens(username)`,
@@ -146,6 +148,11 @@ var migrations = []string{
 	// deliberately issued as ordinary users even when an admin approves them.
 	// NULL keeps the historical behavior (the user's current role).
 	`ALTER TABLE tokens ADD COLUMN role TEXT`,
+	// refresh_prev keeps the immediately consumed refresh token for one sliding
+	// window so a replayed/stolen token can be detected (and the session
+	// revoked) instead of silently minting another pair.
+	`ALTER TABLE tokens ADD COLUMN refresh_prev TEXT`,
+	`ALTER TABLE tokens ADD COLUMN refresh_prev_used_at INTEGER`,
 }
 
 // Open opens the SQLite database at path (creating its directory), enabling WAL
@@ -185,6 +192,11 @@ func Init(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {
 			return err
 		}
+	}
+	// Created after the migrations: on a pre-existing DB the refresh_prev
+	// column only exists once the ALTER above has run.
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_tokens_refresh_prev ON tokens(refresh_prev)"); err != nil {
+		return err
 	}
 	return seedAdmin(db)
 }

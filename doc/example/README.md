@@ -124,7 +124,10 @@ Token lifetimes and session hygiene. Every key is optional.
    `--access-token-ttl-hours` / `ENEVERRE_ACCESS_TOKEN_TTL_HOURS`.
  * **refresh_token_ttl_days:** Renewal window for a password or device login,
    slid forward on every refresh. Default `90`. Overridden by
-   `--refresh-token-ttl-days` / `ENEVERRE_REFRESH_TOKEN_TTL_DAYS`.
+   `--refresh-token-ttl-days` / `ENEVERRE_REFRESH_TOKEN_TTL_DAYS`. A consumed
+   refresh token replayed within 30 s is treated as a lost-response retry
+   (401, session kept); a later replay is treated as theft and revokes the
+   session.
  * **cleanup_interval_minutes:** How often the background goroutine prunes
    expired token rows, so the DB doesn't accumulate dead sessions on a
    rarely-used installation. `0` (or negative) disables the ticker —
