@@ -116,9 +116,8 @@ func (h *Handler) HandleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	b.WriteString(fmt.Sprintf("#EXT-X-TARGETDURATION:%d\n", int(math.Ceil(maxDur))))
 
 	// The player fetches the init and media segments as separate requests and
-	// cannot attach the query the playlist carried. Forward the media
-	// credentials (the rotating relay pair the Zaguán publisher puts in the
-	// playlist URL) so an authenticated playlist yields playable parts.
+	// cannot attach the query the playlist carried. Forward the signed media
+	// grant (`exp`/`sig`) so an authenticated playlist yields playable parts.
 	auth := hlsAuthQuery(r)
 
 	// init segment (track config) taken from the first segment of the range

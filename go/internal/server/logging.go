@@ -109,7 +109,8 @@ var secretQueryParams = map[string]bool{
 	"token": true, "refresh_token": true, "password": true, "secret": true, "api_key": true,
 	// Signed media grants and the device pairing code are capabilities too.
 	"sig": true, "usercode": true,
-	// A stray relay pair (the RTSP credential) must never reach a log line.
+	// A stray user/pass query value is never an API credential anymore, but
+	// must still never reach a log line.
 	"user": true, "pass": true,
 }
 

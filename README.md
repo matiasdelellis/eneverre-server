@@ -37,8 +37,9 @@ and the same seamless experience—everywhere.
 - 🔐 **Remote-ready credentials:** Run the API and HTTP media behind HTTPS
   (the example Caddyfile); third-party/hub links use short-lived
   camera-scoped signed grants (no reusable password in the URL), and TV
-  sessions are role-limited and renewable. RTSP stays a LAN/VPN surface; see
-  [doc/MEDIA.md](doc/MEDIA.md#credentials--rotation).
+  sessions are role-limited and renewable. RTSP uses a 6-hour per-camera path
+  token and stays a LAN/VPN surface; see
+  [doc/MEDIA.md](doc/MEDIA.md#rtsp-credentials).
 - 🚀 **OTA Update Server for clients:** Publish an APK once, and Eneverre will
   automatically handle updates for all your connected Android devices.
 

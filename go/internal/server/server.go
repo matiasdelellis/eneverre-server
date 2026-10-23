@@ -29,21 +29,16 @@ import (
 	"eneverre/internal/mediaauth"
 	"eneverre/internal/metrics"
 	"eneverre/internal/schedule"
-	"eneverre/internal/streamauth"
 	"eneverre/internal/thingino"
 	"eneverre/internal/updates"
 )
 
 // App carries the shared state for every request handler.
 type App struct {
-	cfg   *config.Config
-	db    *sql.DB
-	creds *streamauth.Store
-	// mediaAuth signs the short-lived HTTP media grants used by clients that
-	// cannot set an Authorization header (Zaguán's web client, HLS players,
-	// browser <img>). It is nil only when the DB/key could not be opened; in
-	// that case the publisher emits no media links instead of falling back to
-	// a reusable password.
+	cfg *config.Config
+	db  *sql.DB
+	// mediaAuth signs the short-lived HTTP media grants and the RTSP path
+	// tokens. Set by main via SetMediaAuth; nil only in isolated tests.
 	mediaAuth *mediaauth.Store
 	// camStore is the DB-backed source of truth for cameras. Reads for request
 	// handling go through the in-memory `cameras` snapshot (rebuilt on every
@@ -236,7 +231,7 @@ const (
 // the caller with flag/env/config precedence); pass <= 0 to fall back to the
 // built-in defaults. updatesRegistry is the auto-update track registry; pass
 // nil when the feature is not configured (its Root() is then read as "").
-func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *camera.Store, schedStore *schedule.Store, cameras []camera.Camera, staticFS fs.FS, staticCacheControl string, accessTTL, refreshTTL int64, updatesRegistry *updates.Registry) *App {
+func New(cfg *config.Config, db *sql.DB, camStore *camera.Store, schedStore *schedule.Store, cameras []camera.Camera, staticFS fs.FS, staticCacheControl string, accessTTL, refreshTTL int64, updatesRegistry *updates.Registry) *App {
 	if staticCacheControl == "" {
 		staticCacheControl = "no-cache"
 	}
@@ -255,7 +250,6 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 	a := &App{
 		cfg:                cfg,
 		db:                 db,
-		creds:              creds,
 		camStore:           camStore,
 		schedStore:         schedStore,
 		cameras:            cameras,
@@ -278,17 +272,6 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 		talkCodecs:         make(map[string][]string),
 		ptzPos:             make(map[string]ptzPos),
 		startedAt:          time.Now(),
-	}
-	// The HTTP media grants are signed with a server-only key. Create it after
-	// the schema exists (New also creates its table, so tests/embedders that
-	// skip store.Init still work). A failure leaves mediaAuth nil: the Zaguán
-	// publisher then omits media links rather than exposing a reusable password.
-	if db != nil {
-		if ma, err := mediaauth.NewStore(db); err != nil {
-			slog.Error("media signing key unavailable; signed media links disabled", "err", err)
-		} else {
-			a.mediaAuth = ma
-		}
 	}
 	// Precompute the embedded UI (ETag + gzip) so repeat loads revalidate
 	// cheaply instead of re-downloading. Only used when no on-disk dir wins.
@@ -325,9 +308,8 @@ func New(cfg *config.Config, db *sql.DB, creds *streamauth.Store, camStore *came
 // Called from main after New (mirrors SetMetrics / SetMediaEngine).
 func (a *App) SetVersion(v string) { a.version = v }
 
-// SetMediaAuth wires the media-grant signer. New does this automatically when
-// it has a database; the setter exists for tests and embedders that build App
-// by hand.
+// SetMediaAuth wires the shared media/RTSP token signer. main calls it once
+// before serving; tests that build App by hand call it too.
 func (a *App) SetMediaAuth(s *mediaauth.Store) { a.mediaAuth = s }
 
 // getCamera returns a copy of the camera with the given id (and true), or a
@@ -966,7 +948,7 @@ func passwordChangeAllowed(r *http.Request) bool {
 // set headers — the Zaguán web client, HLS players, browser <img> — use a
 // signed grant from the publisher: exp=<unix>&sig=<hex>, scoped to the camera
 // and the media surface (live, thumb, hls). There is no reusable password
-// form: the relay pair is for RTSP only.
+// form.
 func (a *App) requireMediaAccess(w http.ResponseWriter, r *http.Request, camID, scope string) bool {
 	q := r.URL.Query()
 	expRaw, sig := q.Get("exp"), q.Get("sig")

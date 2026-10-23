@@ -5,7 +5,8 @@
 //
 // The relay is multi-path: one listen address serves N cameras, each published
 // under its own path (the camera id). Readers connect to
-// rtsp://[user:pass@]host:port/<id>.
+// rtsp://host:port/<id>/<exp>.<sig>; Authorize validates the signed token and
+// returns the camera id used to find the stream.
 package liverelay
 
 import (
@@ -17,7 +18,6 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/base"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
-	"github.com/bluenviron/gortsplib/v5/pkg/headers"
 	"github.com/bluenviron/gortsplib/v5/pkg/liberrors"
 	"github.com/pion/rtp"
 )
@@ -26,18 +26,13 @@ import (
 // one path per source.
 type Relay struct {
 	Address string // e.g. ":8554"
-	User    string // if empty (and Pass empty), auth is disabled
-	Pass    string
-	// CredsFn, when set, supplies the currently-valid [user, pass] pairs on each
-	// auth (e.g. the rotating current + grace pair). A reader is accepted if it
-	// matches any pair. Takes precedence over User/Pass; return an empty slice to
-	// deny everyone. When nil, User/Pass (or open access) is used instead.
-	CredsFn func() [][2]string
-	// OnAuthFailure, when set, is called for a request that carried
-	// credentials which matched no valid pair (a wrong or rotated-out
-	// password), with the peer IP, the attempted username and the path. A
-	// request with no credentials at all is RTSP's normal first step (it gets
-	// the 401 challenge) and is not reported.
+	// Authorize, when set, validates the request path and returns the stream
+	// path (camera id). The expected public form is <id>/<exp>.<sig>. A nil
+	// callback leaves the relay open (tests/integrated trusted setups).
+	Authorize func(path string) (streamPath string, ok bool)
+	// OnAuthFailure, when set, receives a rejected path: the peer IP, an empty
+	// username (the relay uses path tokens, not RTSP credentials) and the
+	// camera id only — never the token.
 	OnAuthFailure func(ip, user, path string)
 	Logf          func(string, ...any)
 
@@ -60,8 +55,8 @@ func (r *Relay) Initialize() error {
 		return err
 	}
 	auth := "no auth"
-	if r.CredsFn != nil || r.User != "" || r.Pass != "" {
-		auth = "auth required"
+	if r.Authorize != nil {
+		auth = "signed path token"
 	}
 	r.Logf("RTSP relay listening on %s (%s)", r.Address, auth)
 	return nil
@@ -156,45 +151,48 @@ func (r *Relay) stream(path string) *gortsplib.ServerStream {
 	return r.streams[normalize(path)]
 }
 
-func (r *Relay) authOK(conn *gortsplib.ServerConn, req *base.Request, path string) bool {
-	ok := false
-	switch {
-	case r.CredsFn != nil:
-		for _, p := range r.CredsFn() {
-			if conn.VerifyCredentials(req, p[0], p[1]) {
-				ok = true
-				break
-			}
-		}
-	case r.User == "" && r.Pass == "":
-		return true
-	default:
-		ok = conn.VerifyCredentials(req, r.User, r.Pass)
+// authorize validates the request path and returns the camera stream path.
+// The public path is <camera-id>/<exp>.<sig>; only the camera id is used for
+// stream lookup and logging.
+func (r *Relay) authorize(conn *gortsplib.ServerConn, path string) (string, bool) {
+	p := normalize(path)
+	if r.Authorize == nil {
+		return p, true
 	}
+	cam, ok := r.Authorize(p)
 	if !ok {
-		r.reportAuthFailure(conn, req, path)
+		r.reportAuthFailure(conn, p)
+		return "", false
 	}
-	return ok
+	return normalize(cam), true
 }
 
-// reportAuthFailure forwards a failed credentialed attempt to OnAuthFailure.
-func (r *Relay) reportAuthFailure(conn *gortsplib.ServerConn, req *base.Request, path string) {
+// reportAuthFailure forwards a rejected path to OnAuthFailure. The token is
+// stripped: only the camera id (the first segment) reaches the security log.
+func (r *Relay) reportAuthFailure(conn *gortsplib.ServerConn, path string) {
 	if r.OnAuthFailure == nil {
 		return
 	}
-	hv, has := req.Header["Authorization"]
-	if !has || len(hv) == 0 {
-		return // the unauthenticated first request of the challenge
-	}
-	var auth headers.Authorization
-	_ = auth.Unmarshal(hv) // a malformed header still counts, with no username
 	ip := ""
 	if nc := conn.NetConn(); nc != nil {
 		if host, _, err := net.SplitHostPort(nc.RemoteAddr().String()); err == nil {
 			ip = host
 		}
 	}
-	r.OnAuthFailure(ip, auth.Username, normalize(path))
+	r.OnAuthFailure(ip, "", relayLogPath(path))
+}
+
+// relayLogPath returns the camera id part of a public path (<id>/<token>),
+// never the token. A path with no second segment is malformed and logs no
+// path at all, so a request that accidentally puts a token alone in the path
+// cannot leak it into the security log.
+func relayLogPath(path string) string {
+	p := normalize(path)
+	i := strings.IndexByte(p, '/')
+	if i <= 0 {
+		return ""
+	}
+	return p[:i]
 }
 
 // normalize strips the leading slash gortsplib includes in ctx.Path so callers
@@ -219,10 +217,11 @@ func (r *Relay) OnSessionClose(_ *gortsplib.ServerHandlerOnSessionCloseCtx) {}
 func (r *Relay) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (
 	*base.Response, *gortsplib.ServerStream, error,
 ) {
-	if !r.authOK(ctx.Conn, ctx.Request, ctx.Path) {
+	streamPath, ok := r.authorize(ctx.Conn, ctx.Path)
+	if !ok {
 		return &base.Response{StatusCode: base.StatusUnauthorized}, nil, liberrors.ErrServerAuth{}
 	}
-	st := r.stream(ctx.Path)
+	st := r.stream(streamPath)
 	if st == nil {
 		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 	}
@@ -233,10 +232,11 @@ func (r *Relay) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (
 func (r *Relay) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (
 	*base.Response, *gortsplib.ServerStream, error,
 ) {
-	if !r.authOK(ctx.Conn, ctx.Request, ctx.Path) {
+	streamPath, ok := r.authorize(ctx.Conn, ctx.Path)
+	if !ok {
 		return &base.Response{StatusCode: base.StatusUnauthorized}, nil, liberrors.ErrServerAuth{}
 	}
-	st := r.stream(ctx.Path)
+	st := r.stream(streamPath)
 	if st == nil {
 		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 	}

@@ -62,18 +62,13 @@ var schema = []string{
 		created_at INTEGER NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_events_camera_start ON events(camera_id, start_ts)`,
-	// Single-row table holding the current stream-auth credential pair. The
-	// CHECK pins it to one row; the streamauth.Store keeps the live pair in
-	// memory and only reads this at startup / writes it on rotation.
-	`CREATE TABLE IF NOT EXISTS streamauth_credentials (
-		id INTEGER PRIMARY KEY CHECK (id = 1),
-		username TEXT NOT NULL,
-		password TEXT NOT NULL,
-		rotated_at INTEGER NOT NULL
-	)`,
-	// Single-row HMAC key for the short-lived HTTP media grants (Zaguán,
-	// HLS players, thumbnails). Kept separate from the stream-auth pair so a
-	// client that knows the RTSP credentials cannot forge a media grant.
+	// The global RTSP credential pair was replaced by per-camera signed path
+	// tokens. Drop the old table on upgrade so a dead reusable secret does not
+	// stay behind in the database.
+	`DROP TABLE IF EXISTS streamauth_credentials`,
+	// Single-row HMAC key for the short-lived HTTP media grants and the RTSP
+	// path tokens. It is the only relay/media signing secret; there is no
+	// global RTSP username/password.
 	`CREATE TABLE IF NOT EXISTS media_auth_key (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		secret TEXT NOT NULL,

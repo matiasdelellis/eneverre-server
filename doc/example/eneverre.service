@@ -12,8 +12,8 @@
 # Then check it:  systemctl status eneverre   /   journalctl -u eneverre -f
 #
 # Config is read from /etc/eneverre/eneverre.ini and /etc/eneverre/cameras.d/.
-# Persistent state is a single SQLite DB (it also holds the rotating stream
-# credentials) in /var/lib/eneverre, created and owned automatically via
+# Persistent state is a single SQLite DB (it also holds the media/RTSP signing
+# key) in /var/lib/eneverre, created and owned automatically via
 # StateDirectory.
 #
 # EMBEDDED MEDIA ENGINE ([media] in eneverre.ini): recordings + the segment

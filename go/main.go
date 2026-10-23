@@ -22,11 +22,11 @@ import (
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
 	"eneverre/internal/media"
+	"eneverre/internal/mediaauth"
 	"eneverre/internal/metrics"
 	"eneverre/internal/schedule"
 	"eneverre/internal/server"
 	"eneverre/internal/store"
-	"eneverre/internal/streamauth"
 	"eneverre/internal/updates"
 	"eneverre/internal/zaguan"
 )
@@ -174,13 +174,12 @@ func main() {
 		fatal("init database failed", "err", err)
 	}
 
-	// Stream-auth credentials live in the DB (generated on a fresh table).
-	// The live pair is cached in memory — the per-request path never hits the
-	// DB. The same pair guards the embedded RTSP relay and is embedded in the
-	// relay URL returned by /api/cameras.
-	creds, err := streamauth.NewStore(db)
+	// The media/RTSP signing key lives in the DB and is kept in memory. It
+	// signs the short-lived HTTP media grants and the per-camera RTSP path
+	// tokens; there is no global RTSP password.
+	mediaAuth, err := mediaauth.NewStore(db)
 	if err != nil {
-		fatal("stream-auth credentials failed", "err", err)
+		fatal("media signing key failed", "err", err)
 	}
 
 	// Cameras are DB-backed. On a fresh install (or an upgrade from the old
@@ -234,7 +233,13 @@ func main() {
 	// missing [media] section (cfg.Media == nil) still yields the defaults;
 	// recordings land under the record_dir resolved from cfg.DataDir.
 	mopts := media.OptionsFromSection(cfg.Media, cfg.DataDir)
-	mopts.RelayCredsFn = creds.Pairs // rotation-aware relay auth (current + grace)
+	mopts.RelayAuthorize = func(path string) (string, bool) {
+		cam, token, ok := strings.Cut(path, "/")
+		if !ok || cam == "" || token == "" {
+			return "", false
+		}
+		return cam, mediaAuth.ValidateToken(cam, mediaauth.ScopeRTSP, token)
+	}
 	// The engine starts before the App exists, so relay auth failures reach
 	// the security log through a pointer filled in once the App is built;
 	// the (rare) failures before that only lack the log line.
@@ -255,8 +260,9 @@ func main() {
 	}
 	engine.Start(cams)
 
-	app := server.New(cfg, db, creds, camStore, schedStore, cams, uiFS, opts.staticCacheControl,
+	app := server.New(cfg, db, camStore, schedStore, cams, uiFS, opts.staticCacheControl,
 		int64(accessHours)*3600, int64(refreshDays)*86400, updatesRegistry)
+	app.SetMediaAuth(mediaAuth)
 	app.SetMediaEngine(engine)
 	secApp.Store(app)
 	app.SetVersion(version)
@@ -325,27 +331,6 @@ func main() {
 					"public_url", publicURL,
 					"sync_interval", cfg.ZaguanSyncInterval())
 			}
-		}
-	}
-
-	// Auto-rotate the stream/relay credentials. The previous pair stays valid
-	// for one interval (grace window) so active streams are not dropped at the
-	// moment of rotation. The interval comes from [media].rotate_hours when
-	// [media] is configured; otherwise we use the 24h default — the relay
-	// runs even without [media], so a fresh pair is just as useful.
-	rotateHours := 24
-	if cfg.Media != nil {
-		rotateHours = cfg.Media.GetInt("rotate_hours", 24)
-	}
-	if rotateHours > 0 {
-		creds.StartRotation(time.Duration(rotateHours) * time.Hour)
-		slog.Info("credential rotation enabled", "every_hours", rotateHours)
-	} else {
-		slog.Info("credential rotation disabled (rotate_hours <= 0)")
-		if zaguanURL != "" {
-			slog.Warn("stream credential rotation is disabled while [zaguan] is enabled; "+
-				"RTSP URLs remain valid until rotation is re-enabled",
-				"hint", "set [media] rotate_hours > 0 for remote deployments")
 		}
 	}
 

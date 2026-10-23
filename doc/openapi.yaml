@@ -2240,13 +2240,13 @@ components:
         rtsp:
           type: string
           description: >-
-            Embedded RTSP relay URL with rotating credentials
-            (`rtsp://<user>:<pass>@<host>:<port>/<id>`). `host` is `[media]
-            rtsp_host` when set, otherwise the host the client used to reach the
-            API. Present whenever the relay feature is on for the camera and a
-            host is resolvable; empty when the relay is disabled (`relay =
-            false`) or no host can be determined. The raw camera `source` is
-            never exposed.
+            Embedded RTSP relay URL with a short-lived per-camera signed path
+            token (`rtsp://<host>:<port>/<id>/<exp>.<sig>`, 6 h). `host` is
+            `[media] rtsp_host` when set, otherwise the host the client used to
+            reach the API. Present whenever the relay feature is on for the
+            camera and a host is resolvable; empty when the relay is disabled
+            (`relay = false`), the token cannot be signed, or no host can be
+            determined. The raw camera `source` is never exposed.
         live_mse:
           type: string
           description: >-

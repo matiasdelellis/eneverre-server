@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"eneverre/internal/camera"
-	"eneverre/internal/streamauth"
 )
 
 // TestCreateCameraReqSpec pins the create-request validation and defaulting:
@@ -147,11 +146,6 @@ func TestCreateCameraReqSpec(t *testing.T) {
 // disabling over deleting is that stored footage stays browsable.
 func TestPublicCameraDisabled(t *testing.T) {
 	a := withUsersApp(t)
-	creds, err := streamauth.NewStore(a.db)
-	if err != nil {
-		t.Fatalf("streamauth.NewStore: %v", err)
-	}
-	a.creds = creds
 
 	base := camera.Camera{
 		ID:          "cam1",
@@ -279,11 +273,6 @@ func TestUpdateCameraReseedsRuntimeState(t *testing.T) {
 	newApp := func(t *testing.T, enabled bool) *App {
 		a := withUsersApp(t)
 		insertUser(t, a.db, "admin", "adminpw", "admin")
-		creds, err := streamauth.NewStore(a.db)
-		if err != nil {
-			t.Fatalf("streamauth.NewStore: %v", err)
-		}
-		a.creds = creds
 		a.camStore = camera.NewStore(a.db)
 		a.privacy = map[string]bool{}
 		a.schedOff = map[string]bool{}
@@ -386,11 +375,6 @@ func TestUpdateCameraReseedsRuntimeState(t *testing.T) {
 func TestUpdateCameraKeepsManualPrivacy(t *testing.T) {
 	a := withUsersApp(t)
 	insertUser(t, a.db, "admin", "adminpw", "admin")
-	creds, err := streamauth.NewStore(a.db)
-	if err != nil {
-		t.Fatalf("streamauth.NewStore: %v", err)
-	}
-	a.creds = creds
 	a.camStore = camera.NewStore(a.db)
 	a.privacy = map[string]bool{"cam1": true}
 	a.schedOff = map[string]bool{}

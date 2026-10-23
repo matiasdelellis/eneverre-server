@@ -15,8 +15,8 @@
 #   - RTSP relay     : 127.0.0.1:8554  - exposed directly, not proxied
 #
 # REMOTE CLIENTS: the API, MSE and HLS links are HTTPS through Caddy. The RTSP
-# relay is plain RTSP (no TLS) and carries the rotating relay pair: keep :8554
-# on the LAN or reach it through a VPN/TLS tunnel. Do not forward it on the
+# relay is plain RTSP (no TLS) with a short-lived per-camera path token: keep
+# :8554 on the LAN or reach it through a VPN/TLS tunnel. Do not forward it on the
 # Internet. Android/TV clients that need remote live should prefer the HTTPS
 # MSE/HLS links when their player supports them.
 

@@ -7,9 +7,9 @@
 //	exp=<unix-seconds>&sig=<hex HMAC-SHA256>
 //
 // where sig covers the camera id, the scope and exp. The HMAC key is a random
-// server secret kept in the database and never exposed through the API; the
-// stream-auth relay pair is deliberately not reused, because that pair is
-// handed to RTSP clients and must not be able to forge media grants.
+// server secret kept in the database and never exposed through the API. The
+// same key signs the RTSP relay path token; there is no separate global RTSP
+// username/password to reuse.
 //
 // Grants are meant for clients that cannot set an Authorization header
 // (browser <img>, HLS players) and for third-party integrations such as the
@@ -36,6 +36,7 @@ const (
 	ScopeLive  = "live"  // live MSE info + stream
 	ScopeThumb = "thumb" // still JPEG thumbnail
 	ScopeHLS   = "hls"   // HLS VOD playlist + init + segments
+	ScopeRTSP  = "rtsp"  // RTSP relay path credential
 )
 
 // maxTokenLifetime bounds how far in the future a grant may claim to be valid.
@@ -104,10 +105,9 @@ func newKey() ([]byte, error) {
 // publisher refreshes the camera inventory every sync interval, so these are
 // intentionally short: a leaked URL stops working on its own.
 func TTL(scope string) time.Duration {
-	if scope == ScopeHLS {
-		// A VOD playlist is opened once and its init/segment URIs are fetched
-		// during playback; allow a long recording session without forcing a
-		// re-fetch in the middle.
+	if scope == ScopeHLS || scope == ScopeRTSP {
+		// A VOD playlist / an RTSP viewing session is opened once and then
+		// used for a while; allow a long session without forcing a re-fetch.
 		return 6 * time.Hour
 	}
 	return time.Hour
@@ -129,6 +129,27 @@ func (s *Store) SignAt(cameraID, scope string, exp int64) string {
 	key := append([]byte(nil), s.key...)
 	s.mu.RUnlock()
 	return sign(key, cameraID, scope, exp)
+}
+
+// SignToken returns a single path-safe token ("<exp>.<sig>") for the RTSP
+// relay. The relay path is /<camera-id>/<exp>.<sig>; a path segment avoids the
+// RTSP URL query string, which gortsplib and some clients handle poorly.
+func (s *Store) SignToken(cameraID, scope string, ttl time.Duration) string {
+	exp, sig := s.Sign(cameraID, scope, ttl)
+	return strconv.FormatInt(exp, 10) + "." + sig
+}
+
+// ValidateToken validates a token produced by SignToken.
+func (s *Store) ValidateToken(cameraID, scope, token string) bool {
+	expPart, sig, ok := strings.Cut(token, ".")
+	if !ok || expPart == "" || sig == "" {
+		return false
+	}
+	exp, err := strconv.ParseInt(expPart, 10, 64)
+	if err != nil {
+		return false
+	}
+	return s.Validate(cameraID, scope, exp, sig)
 }
 
 func sign(key []byte, cameraID, scope string, exp int64) string {

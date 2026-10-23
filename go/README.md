@@ -83,27 +83,23 @@ level=INFO msg="request" method=GET path=/api/cameras status=200 dur_ms=1 ip=127
 level=WARN msg="media/recorder[jardin]: camera codec not supported (recording/live disabled for it)" err="... stream offers: MJPEG"
 ```
 
-### Credential rotation (embedded RTSP relay)
+### RTSP path tokens (embedded relay)
 
-The embedded RTSP relay is protected with a rotating username/password
-pair (random 8/8 alphanumeric), generated on first start and rotated on a
-schedule. Set the interval in `[media]`:
+The embedded RTSP relay no longer uses a global username/password. Each
+`GET /api/cameras` call mints a short-lived token per camera:
 
-```ini
-[media]
-rtsp_address = :8554
-rotate_hours = 24           ; 0 or negative disables rotation
+```
+rtsp://<host>:<port>/<camera-id>/<exp>.<sig>
 ```
 
-On rotation the previous pair stays valid for one interval (a grace
-window) so a reader that already holds an old RTSP URL is not dropped the
-instant the pair rolls — it picks up the new URL on its next
-`/api/cameras` call. The relay validates against both the current and the
-grace pair (via `streamauth.Store.Pairs`), so a stream started just
-before rotation is not dropped. The current pair is persisted in the
-single-row `streamauth_credentials` table of the SQLite DB so a restart
-keeps the last credentials; the live pair is cached in memory, so the
-per-request path never queries the DB.
+`sig` is HMAC-SHA256 over camera id + `rtsp` + expiry, using the server-only
+`media_auth_key` (the same key as the HTTP media grants). Tokens last 6 h,
+are scoped to one camera and are validated on DESCRIBE/SETUP only — the RTP
+path stays a passthrough. The relay never logs the token. Plain RTSP over TCP
+is deliberate: VLC does not support RTSPS, and GStreamer's RTSPS/SRTP MIKEY is
+not negotiated by gortsplib. For remote clients use a VPN (WireGuard/Tailscale)
+or a TLS tunnel (stunnel); the player still sees a local `rtsp://` URL, so no
+certificate is configured in VLC/GStreamer/ExoPlayer.
 
 The web UI is embedded into the binary (`go:embed`) from `go/static/`, so the
 single file runs standalone. Edit the UI there and rebuild. For live edits
@@ -161,8 +157,7 @@ internal/store                SQLite open + schema + admin seed
 internal/auth                 Werkzeug-format hashing + Basic/Bearer auth
 internal/camera               Camera model + DB store + one-time INI seed
 internal/schedule             named recording programs (per-weekday armed windows) + DB store
-internal/streamauth           rotating credential store + RTSP URL builder
-internal/mediaauth            short-lived camera/surface-scoped HMAC media grants
+internal/mediaauth            short-lived camera/surface-scoped HMAC media + RTSP grants
 internal/thingino             PTZ move + JPEG snapshot HTTP calls
 internal/events               event model + record/list/get/delete
 internal/updates              Android auto-update store + per-track registry
@@ -274,9 +269,9 @@ every other protected route answers `403 {"code":"password_change_required"}`.
 HTTP media links for clients that cannot set an `Authorization` header (the
 Zaguán hub, native HLS players, `<img>`) use short-lived HMAC grants:
 `?exp=<unix>&sig=<hex>`, scoped to one camera and one surface (`live`, `thumb`,
-`hls`). The key is a server-only row (`media_auth_key`), not the RTSP pair.
-The clip/list/timeline/gaps APIs remain session-only; the relay `user`/`pass`
-pair is not accepted on HTTP media.
+`hls`). The same key signs the RTSP path token
+(`/<camera-id>/<exp>.<sig>`). The clip/list/timeline/gaps APIs remain
+session-only; the relay pair is gone and is not accepted on HTTP media.
 
 Both lifetimes are configurable, with precedence **CLI flag > env > `[auth]`
 section > default**:

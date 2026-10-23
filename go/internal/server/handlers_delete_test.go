@@ -9,7 +9,6 @@ import (
 
 	"eneverre/internal/camera"
 	"eneverre/internal/events"
-	"eneverre/internal/streamauth"
 )
 
 // deleteTestApp stores one camera ("cam1") with a motion event, plus an admin
@@ -19,11 +18,6 @@ func deleteTestApp(t *testing.T) (*App, int64) {
 	a := withUsersApp(t)
 	insertUser(t, a.db, "admin", "adminpw", "admin")
 	insertUser(t, a.db, "bob", "bobpw", "user")
-	creds, err := streamauth.NewStore(a.db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a.creds = creds
 	a.camStore = camera.NewStore(a.db)
 	a.privacy = map[string]bool{}
 	a.schedOff = map[string]bool{}

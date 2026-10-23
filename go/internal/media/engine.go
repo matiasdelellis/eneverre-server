@@ -77,13 +77,13 @@ type Options struct {
 	MinFreeBytes    uint64        // purge oldest recordings when free space drops below this; 0 disables (default 1 GiB)
 	RTSPAddress     string        // relay listen address (default ":8554")
 	Transport       string        // RTSP source transport: auto|tcp|udp (default auto)
-	// RelayCredsFn supplies the currently-valid [user, pass] pairs the RTSP relay
-	// accepts (current + grace), consulted per auth so credential rotation takes
-	// effect without dropping readers. Nil leaves the relay open.
-	RelayCredsFn func() [][2]string
-	// RelayAuthFailure, when set, receives each relay request whose
-	// credentials matched no valid pair (peer IP, username, camera path), for
-	// the security log fail2ban tails.
+	// RelayAuthorize validates a relay path (<camera-id>/<exp>.<sig>) and
+	// returns the camera id used to find the stream. Nil leaves the relay open
+	// (tests/integrated trusted setups).
+	RelayAuthorize func(path string) (streamPath string, ok bool)
+	// RelayAuthFailure, when set, receives each relay request whose path token
+	// was rejected (peer IP, empty username, camera id), for the security log
+	// fail2ban tails.
 	RelayAuthFailure func(ip, user, path string)
 }
 
@@ -337,7 +337,7 @@ func New(opts Options) (*Engine, error) {
 	if opts.RelayEnabled {
 		relay = &liverelay.Relay{
 			Address:       opts.RTSPAddress,
-			CredsFn:       opts.RelayCredsFn,
+			Authorize:     opts.RelayAuthorize,
 			OnAuthFailure: opts.RelayAuthFailure,
 			Logf:          func(f string, a ...any) { slog.Debug("media/relay: " + fmt.Sprintf(f, a...)) },
 		}

@@ -97,8 +97,8 @@ adds `gortsplib` (RTSP client) + `mediacommon` (fMP4) + `pion/*` (RTP/SDP).
 ## Layout
 All code lives under `go/` (module `eneverre`).
 - `go/main.go` — bootstrap: `config.Load()`, `store.Open()`+`store.Init()`,
-  `streamauth.NewStore(db)` (reads/writes the credential row, so it runs
-  after the schema exists), `camera.Load()`. The embedded engine is
+  `mediaauth.NewStore(db)` (the media/RTSP signing key, created after the
+  schema exists), `camera.Load()`. The embedded engine is
   always built and started when any camera has a `source` URL — live MSE,
   the RTSP relay and disk recording are all on by default. Set `[media]
   record = false` for **live-only mode** (per-camera `record = false` opts
@@ -108,8 +108,9 @@ All code lives under `go/` (module `eneverre`).
   `[server] read_timeout`, default 5m / Write 30s / Idle 60s) so a slow or
   idle client can't hold a goroutine open indefinitely; the long-streaming
   handlers (live MSE, clip download, APK publish/download) lift the write
-  deadline per-request via `clearWriteDeadline`. Credential rotation is started when the engine is
-  running (always). When `[zaguan]` is configured, main also starts the
+  deadline per-request via `clearWriteDeadline`. The media/RTSP signing key
+  (`mediaauth.NewStore`) is loaded before the engine and wired into both the
+  relay authorizer and the App. When `[zaguan]` is configured, main also starts the
   camera publisher there (after the engine and the App exist, so the first
   snapshot has the live privacy state and the signed media grants); the shutdown
   cleanup cancels it and waits for its loops before closing the engine/DB.
@@ -162,9 +163,8 @@ All code lives under `go/` (module `eneverre`).
   come from `config.go` (Unix) and `paths_windows.go` (Windows, which
   rewrites the slices in `init()` to `%ProgramData%\Eneverre\...`).
 - `go/internal/store` — opens SQLite (WAL + busy_timeout), runs the schema
-  (`users`, `device_login`, `tokens`, `events`, `streamauth_credentials`,
-  `media_auth_key`, `cameras`, `schedules`) plus a short list of idempotent
-  `ALTER TABLE` migrations (`Init` swallows a "duplicate column" so re-running
+  (`users`, `device_login`, `tokens`, `events`, `media_auth_key`, `cameras`,
+  `schedules`) plus a short list of idempotent `ALTER TABLE` migrations (`Init` swallows a "duplicate column" so re-running
   is safe — this is how `cameras.schedule_id` and the token role were
   backfilled onto upgraded installs), chmods the DB file to 0600, and seeds an
   admin when the users table is empty: username from
@@ -182,18 +182,19 @@ All code lives under `go/` (module `eneverre`).
   the password-change, logout and session-revoke endpoints with a
   `403 {"code":"password_change_required"}`.
 - `go/internal/mediaauth` — short-lived HMAC grants for the HTTP media
-  surfaces a client cannot authenticate with a header: `live`, `thumb` and
-  `hls`. The key is a random DB row (`media_auth_key`), never the RTSP relay
-  pair. A grant is `?exp=<unix>&sig=<hex>` over camera id + scope + exp;
-  `exp` lives 1 h (6 h for HLS) and the publisher refreshes it with the camera
-  inventory. `requireMediaAccess` accepts a valid grant or a normal session;
-  the relay pair is not an HTTP media credential.
+  surfaces a client cannot authenticate with a header (`live`, `thumb`,
+  `hls`) and for RTSP. The key is a random DB row (`media_auth_key`). HTTP
+  grants are `?exp=<unix>&sig=<hex>` over camera id + scope + exp (1 h,
+  6 h for HLS); RTSP grants are a path segment
+  `/<camera-id>/<exp>.<sig>` (6 h), validated by the relay on
+  DESCRIBE/SETUP. `requireMediaAccess` accepts an HTTP grant or a normal
+  session; the RTSP relay accepts only the path token.
 - `go/internal/camera` — `Camera` model + INI loader. Credential fields
   (`thingino_url`/`thingino_api_key`/`backchannel`/`source`) are tagged
   `json:"-"`, so marshaling a `Camera` is the public view (no credential
   leak). `WithEngineURLs` rebuilds the per-request URLs for the embedded
   engine (sets `live_mse` to the same-origin MSE path, populates `rtsp`
-  with the relay URL). The camera INI `source` key
+  with the relay URL plus the per-camera signed path token). The camera INI `source` key
   is the direct camera RTSP URL the embedded engine
   records/relays from; `transport` overrides the global `[media] transport`
   per camera; `record = false` opts the camera out of disk recording while
@@ -208,17 +209,6 @@ All code lives under `go/` (module `eneverre`).
   `schedules` table, rules persisted as JSON). The server's scheduler
   (`server.startScheduler`) pauses a camera's pipeline outside its schedule's
   windows — see the privacy/scheduling quirk below.
-- `go/internal/streamauth` — credential `Store`: keeps the live pair in
-  memory and persists it to the single-row `streamauth_credentials` table
-  (`NewStore` reads it at startup or generates a fresh pair when the
-  table is empty, and `Rotate` upserts it). Builds the authenticated RTSP
-  relay URL and rotates credentials with a one-interval grace window
-  (`Validate` accepts the current or previous pair so active streams
-  aren't dropped at rotation). `Current`/`Validate` are in-memory, so the
-  per-request path never touches the DB. `Pairs()` returns both the
-  current and grace pair (when present) for the embedded RTSP relay to
-  validate against, so a stream started before a rotation is not dropped
-  the moment the pair rolls.
 - `go/internal/thingino` — direct HTTP calls to Thingino cameras (`Move` for
   PTZ, `Thumb` for JPEG, `State` for the slow heartbeat). The heartbeat
   decodes the full read-only runtime state (day/night mode, illuminators,
@@ -347,10 +337,10 @@ All code lives under `go/` (module `eneverre`).
     state is exposed on `GET /api/status` under `storage.low_space` and
     `storage.low_space_since`.
   - `liverelay` — raw RTP passthrough of the recorder's RTP packets, served
-    over RTSP on `[media] rtsp_address` (default `:8554`). Auth validates
-    against the rotating credential pair (current + grace, via
-    `streamauth.Store.Pairs`), so a stream started just before a rotation
-    doesn't get dropped. No re-encode — same codec, sub-second latency.
+    over RTSP on `[media] rtsp_address` (default `:8554`). The reader URL is
+    `rtsp://host:port/<camera-id>/<exp>.<sig>`; `Relay.Authorize` validates
+    the HMAC path token on DESCRIBE/SETUP and maps it to the camera id. No
+    re-encode — same codec, sub-second latency.
   - `live` — chunked-HTTP fMP4 broadcaster: reads the recorder's RTP,
     remuxes to CMAF fMP4 on the fly, and serves
     `…/live/info` (codec string) and `…/live/stream` (init + parts) for
@@ -452,9 +442,9 @@ see request query strings and the more verbose media-engine traces
   rewrites each camera's stream fields via `WithEngineURLs` — this does
   not depend on `[media]` being present. `live_mse` becomes the
   same-origin MSE path (`/api/camera/{id}/live/stream`) and `rtsp`
-  becomes the relay `rtsp://<user>:<pass>@<host>:<port>/<id>`, each shown
-  only when that feature resolves on (global toggle AND per-camera
-  toggle — see `Camera.ResolveFeatures`). The camera's
+  becomes the relay `rtsp://<host>:<port>/<id>/<exp>.<sig>` (short-lived
+  per-camera token), each shown only when that feature resolves on (global
+  toggle AND per-camera toggle — see `Camera.ResolveFeatures`). The camera's
   `source`/`thingino_*`/`backchannel` are tagged `json:"-"` and never
   appear in responses, `[media]` or not. Set `[media] rtsp_host` to pin a
   public host in reverse-proxied deployments; otherwise the relay host is
@@ -462,14 +452,12 @@ see request query strings and the more verbose media-engine traces
   `record`: when it (or a per-camera override) resolves false — the
   default — every recording endpoint answers 404 for that camera; live
   MSE and the RTSP relay are unaffected.
-- The rotating credential pair (random 8/8 alphanumeric) guards the
-  embedded RTSP relay and is embedded in the relay URL on every
-  `/api/cameras` call, so rotation takes effect without a restart. The
-  previous pair stays valid for one interval as a grace window so live
-  streams don't get dropped at rollover.
-- Stream-auth credentials live in the `streamauth_credentials` table (one
-  row). On first run a random pair is generated and rotated every
-  `[media] rotate_hours` (default 24; `0` disables).
+- The RTSP relay URL is `rtsp://host:port/<camera-id>/<exp>.<sig>`: a
+  short-lived (6 h) HMAC token scoped to one camera, minted on every
+  `/api/cameras` call. There is no global relay username/password and no
+  credential rotation. The relay validates the token on DESCRIBE/SETUP and
+  never logs it. For remote clients use a VPN/TLS tunnel; the relay is plain
+  RTSP over TCP.
 - The webhook (`POST /api/camera/{id}/events`) accepts any body shape; on a
   parse failure it still records a motion event and stashes the raw body in
   `source` as `webhook:raw (...)`. Requires `[events] webhook_secret` in the
@@ -653,7 +641,7 @@ see request query strings and the more verbose media-engine traces
 - For camera responses, marshal `camera.Camera` (credentials are already
   excluded) and apply `WithEngineURLs` (the live `engine` is set on `App`
   via `SetMediaEngine` when `[media]` is configured) so URLs reflect the
-  embedded engine's stream fields and the rotating relay credentials.
+  embedded engine's stream fields and the per-camera signed RTSP token.
 
 ## Adding a new camera
 The easiest way is the web wizard: **user menu → Manage cameras → Add camera**

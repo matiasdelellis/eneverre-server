@@ -83,8 +83,9 @@ port = 8080
    spoof the banned IP.
  * **Remote access:** clients outside the LAN must reach the API through
    HTTPS (the example Caddyfile terminates TLS). The RTSP relay is plain RTSP
-   and carries the global relay pair; keep `:8554` on the LAN or tunnel it
-   (VPN/TLS), and prefer the HTTPS MSE/HLS links for remote live. The binary
+   over TCP and the URL carries a short-lived per-camera token; keep `:8554`
+   on the LAN or put it behind a VPN/TLS tunnel. Prefer the HTTPS MSE/HLS
+   links for remote live when the player supports them. The binary
    sets CSP, frame-ancestors/X-Frame-Options, Referrer-Policy, nosniff, HSTS
    (when HTTPS) and `Cache-Control: no-store` on API responses itself, so a
    direct LAN deployment gets the same browser hardening as the proxied one.
@@ -182,7 +183,6 @@ are ANDed, so a camera can opt out but never opt back in.
 ;rtsp_host        =            ; public host in the relay URL; empty = from request
 ;transport        = auto       ; auto | tcp | udp
 ;gap_message      = NO RECORDING  ; caption burned into gap-fill black frames
-;rotate_hours     = 24         ; RTSP-relay credential rotation; 0 disables
 ```
 
 **Switches** — three independent booleans, each `true` by default and each
@@ -243,19 +243,18 @@ overridable per camera:
    the port must be reachable by RTSP clients directly.
  * **rtsp_host:** Public hostname clients use to reach the relay, embedded in
    the `rtsp` URL of `/api/cameras`
-   (`rtsp://<user>:<pass>@<rtsp_host>:<port>/<id>`). Empty (default) takes the
+   (`rtsp://<rtsp_host>:<port>/<id>/<exp>.<sig>`). Empty (default) takes the
    host from the request, which works out of the box on a LAN; set it to pin a
    public host when the API and relay hostnames differ. The web UI uses
    `live_mse` regardless.
  * **transport:** RTSP source transport: `auto` (default — UDP with TCP
    fallback), `tcp` (reliable, cleanest on lossy or distant links), or `udp`.
    Overridable per camera.
- * **rotate_hours:** The relay URL embeds a random 8/8 username/password that
-   rotates on this interval, with the previous pair staying valid for one
-   interval as a grace window. Default `24`; `0` (or negative) disables
-   rotation. The credentials live in the SQLite DB, not in this file. Keep
-   rotation on for remote clients: signed media grants expire by themselves,
-   but RTSP URLs stay valid until the next rotation.
+ * **RTSP tokens:** each `/api/cameras` call mints a 6-hour HMAC token in the
+   relay path (`/<id>/<exp>.<sig>`), scoped to that camera. There is no global
+   username/password or rotation interval. A reader that needs a fresh URL
+   re-reads `/api/cameras`; for remote clients use a VPN/TLS tunnel because
+   the relay itself is plain RTSP over TCP.
  * **gap_message:** Caption burned into the gap-fill black frames served for
    uncovered ranges. UTF-8 is fine; changing it regenerates the cached asset.
    Default `NO RECORDING`.
@@ -461,7 +460,7 @@ flag of its own:
 [`eneverre.service`](eneverre.service) is a ready-to-use unit. It runs the
 binary as an isolated transient user (`DynamicUser=yes`), reads config from
 `/etc/eneverre/`, and keeps its state — a single SQLite DB, which also holds the
-rotating stream-auth credentials — in `/var/lib/eneverre/` (created
+media/RTSP signing key — in `/var/lib/eneverre/` (created
 automatically via `StateDirectory=`).
 
 ```bash
@@ -603,8 +602,9 @@ from the UI afterwards.
    it and relays/records from it — `[media]` only decides whether
    *recording* happens, not whether the engine talks to the camera. This
    URL is never returned by `/api/cameras`; clients get the relay
-   `rtsp://…:8554/{id}` instead. Must point at the camera itself, since
-   the engine speaks RTSP to it directly (not to a streamer in front of it).
+   `rtsp://…:8554/{id}/{exp}.{sig}` instead. Must point at the camera itself,
+   since the engine speaks RTSP to it directly (not to a streamer in front of
+   it).
  * **mse:** Per-camera opt-out of the live MSE (fMP4) browser feed. Default
     true. Set to `false` to skip the MSE broadcaster for this camera — it
     will not appear with a `live_mse` URL in `/api/cameras`. The RTSP relay

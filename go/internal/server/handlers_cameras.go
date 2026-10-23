@@ -17,6 +17,7 @@ import (
 	"eneverre/internal/camera"
 	"eneverre/internal/events"
 	"eneverre/internal/media"
+	"eneverre/internal/mediaauth"
 	"eneverre/internal/thingino"
 )
 
@@ -730,10 +731,11 @@ func (a *App) handleSetCameraSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // publicCamera renders one camera as the API view GET /api/cameras returns:
-// engine stream URLs rebuilt from the current rotating credentials, the live
-// privacy state applied (stale live/relay URLs cleared while paused), and the
-// discovered talk codecs attached. reqHost is the request Host, used to build
-// the relay URL when no [media] rtsp_host is configured.
+// engine stream URLs rebuilt from the current media grants and the per-camera
+// RTSP path token, the live privacy state applied (stale live/relay URLs
+// cleared while paused), and the discovered talk codecs attached. reqHost is
+// the request Host, used to build the relay URL when no [media] rtsp_host is
+// configured.
 func (a *App) publicCamera(c camera.Camera, reqHost string) camera.Camera {
 	def := media.DefaultOptions()
 	gMSE, gRelay, gRecord := def.MSEEnabled, def.RelayEnabled, def.RecordEnabled
@@ -741,7 +743,11 @@ func (a *App) publicCamera(c camera.Camera, reqHost string) camera.Camera {
 		gMSE, gRelay, gRecord = a.engine.GlobalToggles()
 	}
 	f := c.ResolveFeatures(gMSE, gRelay, gRecord)
-	out := c.WithEngineURLs(a.cfg, a.creds.Current(), reqHost, f)
+	rtspToken := ""
+	if a.mediaAuth != nil {
+		rtspToken = a.mediaAuth.SignToken(c.ID, mediaauth.ScopeRTSP, mediaauth.TTL(mediaauth.ScopeRTSP))
+	}
+	out := c.WithEngineURLs(a.cfg, reqHost, f, rtspToken)
 	a.privacyMu.RLock()
 	out.Privacy = a.privacy[c.ID]
 	out.ScheduleOff = a.schedOff[c.ID]

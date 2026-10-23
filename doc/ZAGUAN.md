@@ -72,16 +72,16 @@ The entity carries these attributes (empty values are omitted):
 |---|---|
 | `enabled`, `privacy`, `schedule_off`, `recording` | the live flags, the same the API reports |
 | `comment`, `aspect_ratio` | camera metadata (`16:9`, the sensor aspect ratio) |
-| `rtsp_url` | the authenticated relay URL on the RTSP port, with the rotating credentials |
+| `rtsp_url` | the relay URL on the RTSP port, with a short-lived per-camera signed path token |
 | `mse_url` | absolute live MSE (fMP4) stream for a browser `MediaSource` |
 | `mse_info_url` | absolute live MSE codec/availability JSON (`{available, mime}`) |
 | `hls_url` | absolute HLS **VOD** playlist for the last hour (needs recordings) |
 | `snapshot_url` | absolute thumbnail URL |
 | `playback`, `talk`, `ptz` | the interactive capabilities the camera has |
 
-The links are regenerated on every snapshot, so the hub keeps usable URLs
-across credential rotations. They need a reachable host: `[media] rtsp_host`
-or `[zaguan] public_url` supplies it. The HTTP media URLs carry a **short-lived
+The links are regenerated on every snapshot, so the hub keeps usable URLs as
+tokens expire. They need a reachable host: `[media] rtsp_host` or
+`[zaguan] public_url` supplies it. The HTTP media URLs carry a **short-lived
 signed grant** — `exp` (unix seconds) plus `sig` (HMAC-SHA256 over camera id,
 surface and expiry) — scoped to one camera and one surface:
 
@@ -90,20 +90,21 @@ surface and expiry) — scoped to one camera and one surface:
 | `mse_url`, `mse_info_url` | `live` | 1 h |
 | `snapshot_url` | `thumb` | 1 h |
 | `hls_url` (playlist + init/segments) | `hls` | 6 h |
+| `rtsp_url` | `rtsp` (path token) | 6 h |
 
-The signing key lives in the Eneverre database (`media_auth_key`) and is
-never the RTSP relay pair, so a leaked RTSP URL cannot mint media grants. The
-relay `user`/`pass` pair is not accepted on HTTP media at all. The grants do
-**not** authorize the clip/list/timeline/gaps APIs: those remain session-only.
+The signing key lives in the Eneverre database (`media_auth_key`) and signs
+both the HTTP grants and the RTSP path token. The relay has no username/password
+and `user`/`pass` is not accepted on HTTP media. The HTTP grants do **not**
+authorize the clip/list/timeline/gaps APIs: those remain session-only.
 The playlist propagates `exp`/`sig` to its init and segment URIs. Links are
 omitted while the camera is in privacy or outside its schedule, so a still
 cannot bypass the pause. Treat the hub store with the same care as the
 Eneverre API: a signed URL is still a bearer capability until it expires.
 
-> **Remote deployments:** `rtsp_url` is plain RTSP and carries the global relay
-> pair. For clients outside the LAN, prefer the HTTPS media links (MSE/HLS) or
-> put RTSP behind a VPN/TLS tunnel. Do not expose port 8554 directly to the
-> Internet.
+> **Remote deployments:** `rtsp_url` is plain RTSP over TCP and carries a
+> short-lived per-camera token in the path. For clients outside the LAN, prefer
+> the HTTPS media links (MSE/HLS) or put RTSP behind a VPN/TLS tunnel. Do not
+> expose port 8554 directly to the Internet.
 
 There is **no HLS live** mode in Eneverre: live is MSE (or the RTSP relay), and
 HLS is the VOD playlist of what is already on disk. `hls_url` covers the last

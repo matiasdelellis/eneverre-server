@@ -11,6 +11,7 @@ import (
 
 	"eneverre/internal/auth"
 	"eneverre/internal/config"
+	"eneverre/internal/mediaauth"
 	"eneverre/internal/store"
 )
 
@@ -37,7 +38,13 @@ func withUsersApp(t *testing.T) *App {
 		t.Fatalf("clear tokens: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return &App{db: db, cfg: &config.Config{}}
+	a := &App{db: db, cfg: &config.Config{}}
+	ma, err := mediaauth.NewStore(db)
+	if err != nil {
+		t.Fatalf("mediaauth.NewStore: %v", err)
+	}
+	a.mediaAuth = ma
+	return a
 }
 
 func insertUser(t *testing.T, db *sql.DB, username, password, role string) {

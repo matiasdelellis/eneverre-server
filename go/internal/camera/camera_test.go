@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"eneverre/internal/config"
-	"eneverre/internal/streamauth"
 )
 
 // TestResolveFeatures pins the "master switch + opt-out" gating rule: a sink is
@@ -137,37 +136,43 @@ func TestLoadPrivacyCapability(t *testing.T) {
 // TestWithEngineURLs checks the API advertises a feed's URL only when its
 // resolved feature is on, and builds the relay URL from rtsp_host / request host.
 func TestWithEngineURLs(t *testing.T) {
-	creds := streamauth.Creds{Username: "u", Password: "p"}
 	cfg := &config.Config{Media: config.Section{"rtsp_host": "cam.lan", "rtsp_address": ":8554"}}
 
 	t.Run("both on", func(t *testing.T) {
-		c := Camera{ID: "c1"}.WithEngineURLs(cfg, creds, "10.0.0.1:8080", Features{MSE: true, Relay: true})
+		c := Camera{ID: "c1"}.WithEngineURLs(cfg, "10.0.0.1:8080", Features{MSE: true, Relay: true}, "tok")
 		if c.LiveMSE != "/api/camera/c1/live/stream" {
 			t.Errorf("LiveMSE = %q; want the live path", c.LiveMSE)
 		}
-		if want := "rtsp://u:p@cam.lan:8554/c1"; c.RTSP != want {
+		if want := "rtsp://cam.lan:8554/c1/tok"; c.RTSP != want {
 			t.Errorf("RTSP = %q; want %q", c.RTSP, want)
 		}
 	})
 
 	t.Run("both off clears URLs", func(t *testing.T) {
-		c := Camera{ID: "c1", LiveMSE: "x", RTSP: "y"}.WithEngineURLs(cfg, creds, "10.0.0.1:8080", Features{})
+		c := Camera{ID: "c1", LiveMSE: "x", RTSP: "y"}.WithEngineURLs(cfg, "10.0.0.1:8080", Features{}, "tok")
 		if c.LiveMSE != "" || c.RTSP != "" {
 			t.Errorf("URLs not cleared: LiveMSE=%q RTSP=%q", c.LiveMSE, c.RTSP)
 		}
 	})
 
+	t.Run("relay without token clears RTSP", func(t *testing.T) {
+		c := Camera{ID: "c1", RTSP: "stale"}.WithEngineURLs(cfg, "10.0.0.1:8080", Features{Relay: true}, "")
+		if c.RTSP != "" {
+			t.Errorf("RTSP = %q; want empty when no token was signed", c.RTSP)
+		}
+	})
+
 	t.Run("relay uses request host when rtsp_host unset", func(t *testing.T) {
 		bare := &config.Config{Media: config.Section{}}
-		c := Camera{ID: "c1"}.WithEngineURLs(bare, creds, "192.168.1.5:8080", Features{Relay: true})
-		if want := "rtsp://u:p@192.168.1.5:8554/c1"; c.RTSP != want {
+		c := Camera{ID: "c1"}.WithEngineURLs(bare, "192.168.1.5:8080", Features{Relay: true}, "tok")
+		if want := "rtsp://192.168.1.5:8554/c1/tok"; c.RTSP != want {
 			t.Errorf("RTSP = %q; want %q", c.RTSP, want)
 		}
 	})
 
 	t.Run("relay with no resolvable host clears RTSP", func(t *testing.T) {
 		bare := &config.Config{Media: config.Section{}}
-		c := Camera{ID: "c1", RTSP: "stale"}.WithEngineURLs(bare, creds, "", Features{Relay: true})
+		c := Camera{ID: "c1", RTSP: "stale"}.WithEngineURLs(bare, "", Features{Relay: true}, "tok")
 		if c.RTSP != "" {
 			t.Errorf("RTSP = %q; want empty when no host resolvable", c.RTSP)
 		}

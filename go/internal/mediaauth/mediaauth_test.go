@@ -71,12 +71,33 @@ func TestStorePersistsKey(t *testing.T) {
 }
 
 func TestTTL(t *testing.T) {
-	if got := TTL(ScopeHLS); got != 6*time.Hour {
-		t.Errorf("HLS TTL = %s", got)
+	for _, scope := range []string{ScopeHLS, ScopeRTSP} {
+		if got := TTL(scope); got != 6*time.Hour {
+			t.Errorf("%s TTL = %s", scope, got)
+		}
 	}
 	for _, scope := range []string{ScopeLive, ScopeThumb, "unknown"} {
 		if got := TTL(scope); got != time.Hour {
 			t.Errorf("TTL(%q) = %s", scope, got)
+		}
+	}
+}
+
+func TestSignTokenAndValidateToken(t *testing.T) {
+	s := newTestStore(t)
+	token := s.SignToken("front", ScopeRTSP, time.Hour)
+	if !s.ValidateToken("front", ScopeRTSP, token) {
+		t.Fatal("fresh RTSP token was rejected")
+	}
+	if s.ValidateToken("garden", ScopeRTSP, token) {
+		t.Error("RTSP token validated for a different camera")
+	}
+	if s.ValidateToken("front", ScopeLive, token) {
+		t.Error("RTSP token validated for a different scope")
+	}
+	for _, bad := range []string{"", "no-dot", "1.", ".abc", "x.abc"} {
+		if s.ValidateToken("front", ScopeRTSP, bad) {
+			t.Errorf("malformed RTSP token %q accepted", bad)
 		}
 	}
 }

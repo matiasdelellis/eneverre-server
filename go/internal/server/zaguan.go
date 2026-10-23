@@ -55,7 +55,7 @@ func (a *App) ZaguanCameras(publicURL string) []zaguan.Camera {
 	// The media endpoints are for clients that cannot set an Authorization
 	// header (the hub's web client, HLS players, <img>). They carry a
 	// short-lived HMAC grant scoped to one camera and one surface. There is no
-	// reusable password form: the relay pair is for RTSP only.
+	// reusable password form at all.
 	mediaURL := func(camID, path, scope string, extra url.Values) string {
 		if base == "" || a.mediaAuth == nil {
 			// No signer: omit the link rather than publish a reusable password.

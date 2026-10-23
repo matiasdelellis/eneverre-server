@@ -74,6 +74,35 @@ func TestMigrationAddsScheduleID(t *testing.T) {
 	}
 }
 
+// TestMigrationDropsLegacyStreamAuthTable proves an upgraded install does not
+// keep the old global RTSP credential pair: the schema drops the table once
+// path tokens took over.
+func TestMigrationDropsLegacyStreamAuthTable(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := db.Exec(`CREATE TABLE streamauth_credentials (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		username TEXT NOT NULL,
+		password TEXT NOT NULL,
+		rotated_at INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatalf("seed legacy table: %v", err)
+	}
+	if !tableExists(t, db, "streamauth_credentials") {
+		t.Fatal("legacy table was not seeded")
+	}
+	if err := Init(db); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if tableExists(t, db, "streamauth_credentials") {
+		t.Fatal("legacy streamauth_credentials table survived Init")
+	}
+}
+
 // TestFreshInstallHasScheduleID confirms a brand-new DB gets schedule_id from
 // the CREATE TABLE (and the redundant ALTER is swallowed without error).
 func TestFreshInstallHasScheduleID(t *testing.T) {

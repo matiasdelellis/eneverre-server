@@ -11,7 +11,6 @@ import (
 	"eneverre/internal/camera"
 	"eneverre/internal/config"
 	"eneverre/internal/mediaauth"
-	"eneverre/internal/streamauth"
 )
 
 func mediaAuthTestApp(t *testing.T) *App {
@@ -23,11 +22,6 @@ func mediaAuthTestApp(t *testing.T) *App {
 		t.Fatalf("mediaauth.NewStore: %v", err)
 	}
 	a.mediaAuth = ma
-	creds, err := streamauth.NewStore(a.db)
-	if err != nil {
-		t.Fatalf("streamauth.NewStore: %v", err)
-	}
-	a.creds = creds
 	a.privacy = map[string]bool{}
 	a.schedOff = map[string]bool{}
 	a.talkCodecs = map[string][]string{}
@@ -77,13 +71,6 @@ func TestRequireMediaAccessFallsBackToSession(t *testing.T) {
 
 	if ok, w := requireMedia(t, a, "/api/camera/front/live/stream", "front", mediaauth.ScopeLive); ok || w.Code != http.StatusUnauthorized {
 		t.Errorf("anonymous request accepted: ok=%v status=%d", ok, w.Code)
-	}
-
-	// The relay pair is not an HTTP media credential anymore.
-	creds := a.creds.Current()
-	pair := "/api/camera/front/live/stream?user=" + url.QueryEscape(creds.Username) + "&pass=" + url.QueryEscape(creds.Password)
-	if ok, w := requireMedia(t, a, pair, "front", mediaauth.ScopeLive); ok || w.Code != http.StatusUnauthorized {
-		t.Errorf("relay pair accepted on HTTP media: ok=%v status=%d", ok, w.Code)
 	}
 }
 

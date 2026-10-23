@@ -12,7 +12,6 @@ import (
 	"gopkg.in/ini.v1"
 
 	"eneverre/internal/config"
-	"eneverre/internal/streamauth"
 )
 
 // Capabilities flags what a camera supports.
@@ -685,21 +684,22 @@ func (c Camera) PTZDegreesToSteps(pan, tilt float64) (x, y float64) {
 // The host is taken from the configured `[media] rtsp_host` when set
 // (authoritative for public / reverse-proxied deployments), otherwise the host
 // the client used to reach the API (reqHost) so RTSP works out of the box on a
-// LAN. The raw camera source URL (which carries credentials) is never exposed.
-func (c Camera) WithEngineURLs(cfg *config.Config, creds streamauth.Creds, reqHost string, f Features) Camera {
+// LAN. rtspToken is the short-lived per-camera credential placed in the relay
+// path (/<id>/<exp>.<sig>); an empty token omits the RTSP URL entirely.
+func (c Camera) WithEngineURLs(cfg *config.Config, reqHost string, f Features, rtspToken string) Camera {
 	if f.MSE {
 		c.LiveMSE = "/api/camera/" + c.ID + "/live/stream"
 	} else {
 		c.LiveMSE = ""
 	}
-	if f.Relay {
+	if f.Relay && rtspToken != "" {
 		host := cfg.Media.Get("rtsp_host", "")
 		if host == "" {
 			host = hostOnly(reqHost)
 		}
 		if host != "" {
 			port := portFromAddr(cfg.Media.Get("rtsp_address", ":8554"))
-			c.RTSP = creds.RtspURL(host, port, c.ID)
+			c.RTSP = "rtsp://" + net.JoinHostPort(host, port) + "/" + c.ID + "/" + rtspToken
 		} else {
 			c.RTSP = ""
 		}

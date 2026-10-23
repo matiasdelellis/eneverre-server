@@ -33,10 +33,10 @@ output can still be inspected with the MediaMTX tooling if needed.
 
 The removal of the external integration dropped `[mediamtx]` and the
 `POST /api/auth` endpoint, the MediaMTX control-API proxy, the
-`mediamtx_credentials` SQLite table (renamed `streamauth_credentials`),
-and the `WithMediaMTXURLs` camera helper. The rotating-credential
-mechanism stayed (now `streamauth.Store`) because the embedded RTSP
-relay still needs it.
+`mediamtx_credentials` SQLite table, and the `WithMediaMTXURLs` camera
+helper. The old rotating relay pair is gone too: RTSP readers now use
+short-lived, per-camera signed path tokens (see
+[RTSP credentials](#rtsp-credentials)).
 
 ### Independent switches
 
@@ -91,9 +91,9 @@ For every camera that has a `source` RTSP URL, the engine:
    + optional AAC/G711 audio), cataloging each segment in a shared SQLite index —
    the same layout MediaMTX wrote (including the `mtxi` box for gapless
    concatenation on playback).
-2. **Relays** the live stream over RTSP (`rtsp://…:8554/<id>`) as a raw RTP
-   passthrough, so many clients (e.g. the Android apps) read from Eneverre
-   instead of hammering the camera. Sub-second latency, no re-encode.
+2. **Relays** the live stream over RTSP (`rtsp://…:8554/<id>/<exp>.<sig>`) as a
+   raw RTP passthrough, so many clients (e.g. the Android apps) read from
+   Eneverre instead of hammering the camera. Sub-second latency, no re-encode.
 3. **Broadcasts** the live stream to browsers as chunked-HTTP fMP4 for a
    MediaSource player (`GET /api/camera/<id>/live/stream`, ~1-2s latency). The
    web UI uses this instead of HLS.
@@ -248,7 +248,6 @@ retain           = 7d          ; default 7d; 0 = keep forever
 rtsp_address     = :8554       ; RTSP relay listen address
 ;rtsp_host       = nvr.example.com  ; pin the public host in the `rtsp` URL (else the request host)
 transport        = auto        ; source transport: auto (default) | tcp | udp
-;rotate_hours    = 24          ; stream/relay credential rotation
 ```
 
 The three on/off switches (`mse`, `relay`, `record` — all `true` by default)
@@ -283,29 +282,85 @@ In embedded mode each camera's stream fields are rebuilt as:
 | Field      | Value                                                            |
 |------------|------------------------------------------------------------------|
 | `live_mse` | `/api/camera/<id>/live/stream` (same-origin browser MSE)         |
-| `rtsp`     | `rtsp://<user>:<pass>@<host>:<port>/<id>` — `host` is `rtsp_host` when set, else the host the client used to reach the API |
+| `rtsp`     | `rtsp://<host>:<port>/<id>/<exp>.<sig>` — `host` is `rtsp_host` when set, else the host the client used to reach the API |
 
-The credentials embedded in `rtsp` are the rotating pair (see below); the raw
+The path after the camera id is a short-lived signed token (see below); the raw
 camera `source` is never returned. Set `rtsp_host` to pin the host in public /
 reverse-proxied deployments (where the API host and the RTSP relay host
 differ); on a LAN the request-host fallback fills `rtsp` automatically.
 
-## Credentials & rotation
+## RTSP credentials
 
-The engine uses a rotating credential store (`streamauth_credentials` table,
-carried over from the historical MediaMTX integration — see [Why the embedded
-engine](#why-the-embedded-engine)). A random 8/8 char pair guards the RTSP
-relay; it rotates every `rotate_hours` (default 24, `0` disables), and the
-previous pair stays valid for one interval (grace window) so readers are not
-dropped mid-rotation. The relay validates each RTSP connection against the
-current **and** grace pair. The pair is **not** a general HTTP media key: live
-MSE, thumbnails and HLS use the normal session (Bearer/Basic) or a short-lived
-signed grant (`exp`/`sig`) issued to a client that cannot set headers. The
-clip/list/timeline/gaps APIs are session-only.
+There is **no global RTSP username/password**. Each `GET /api/cameras` call
+mints a token for each camera:
 
-The RTSP relay is plain RTSP (no TLS) and carries the global pair. For clients
-outside the LAN, prefer the HTTPS MSE/HLS surfaces or put RTSP behind a
-VPN/TLS tunnel; do not publish port 8554 on the Internet.
+```
+rtsp://<host>:<port>/<camera-id>/<exp>.<sig>
+```
+
+`sig` is HMAC-SHA256 over `camera-id + "\nrtsp\n" + exp`, using the same
+server-only key as the HTTP media grants (`media_auth_key`). The token:
+
+- is valid for **6 hours** and scoped to one camera;
+- is not valid for another camera, HTTP media, HLS or the clips API;
+- is validated on DESCRIBE/SETUP only (not per RTP packet);
+- never appears in the relay's security log (only the camera id is logged).
+
+The RTSP relay is plain RTSP over TCP (interleaved RTP), not RTSPS: VLC
+3.0.24 cannot open `rtsps://`, and GStreamer's RTSPS path requires SRTP/MIKEY
+that gortsplib's server does not negotiate with it. The signed path works with
+VLC, GStreamer, ffmpeg and Media3/ExoPlayer without any client-side auth or
+certificate configuration.
+
+For clients outside the LAN, do not publish `:8554` directly. Put the relay
+behind a **VPN (WireGuard/Tailscale)** or a local **TLS tunnel** (stunnel): the
+player still uses a plain `rtsp://` URL to its local tunnel endpoint, so no
+certificate is installed in VLC/GStreamer/ExoPlayer. The token expiry and the
+camera scope limit what a leaked URL can reach.
+
+### Remote RTSP: stunnel example
+
+Server (same host as Eneverre; certificate/key are the only certificate
+material involved — there are no client certificates):
+
+```ini
+; /etc/stunnel/eneverre-server.conf
+pid = /run/stunnel-eneverre.pid
+[eneverre-rtsp]
+accept = 0.0.0.0:8555
+connect = 127.0.0.1:8554
+cert = /etc/stunnel/eneverre.pem
+key = /etc/stunnel/eneverre.key
+```
+
+Client (laptop/phone/tablet; listens locally and forwards to the NVR):
+
+```ini
+; /etc/stunnel/eneverre-client.conf
+foreground = yes
+[eneverre-rtsp]
+client = yes
+accept = 127.0.0.1:8554
+connect = nvr.example.com:8555
+verifyChain = yes
+CAfile = /etc/ssl/certs/ca-certificates.crt
+checkHost = nvr.example.com
+```
+
+Use the camera path/token from `GET /api/cameras`, but point the host/port at
+the local tunnel:
+
+```bash
+vlc 'rtsp://127.0.0.1:8554/calle/1730000000.<sig>'
+
+gst-launch-1.0 -v rtspsrc \
+  location='rtsp://127.0.0.1:8554/calle/1730000000.<sig>' \
+  protocols=tcp ! rtph264depay ! avdec_h264 ! autovideosink
+```
+
+WireGuard is simpler when it is available: set `[media] rtsp_host` to the NVR's
+VPN address and use the `camera.rtsp` URL verbatim; the tunnel encrypts the TCP
+interleaved stream and there are no certificates at all.
 
 ## Live HTTP endpoints
 
@@ -314,7 +369,7 @@ VPN/TLS tunnel; do not publish port 8554 on the Internet.
 | `GET /api/camera/{id}/live/info`   | `{available, mime}` — MSE availability + codec string |
 | `GET /api/camera/{id}/live/stream` | live fMP4 (init + parts) as chunked HTTP for MediaSource |
 
-Plus the RTSP surface: `rtsp://[user:pass@]host:8554/<id>`.
+Plus the RTSP surface: `rtsp://host:8554/<id>/<exp>.<sig>`.
 
 ## Recordings (playback) HTTP endpoints
 
@@ -380,10 +435,11 @@ short-lived signed grants described below.
   chunked-HTTP fMP4 stream (init + parts) for a `MediaSource` `SourceBuffer`;
   fetch it with the Bearer token and query `live/info` first for the codec
   `mime`. ~1-2s latency.
-- **Apps / RTSP**: use `camera.rtsp` (the relay `rtsp://…:8554/{id}`), present
-  whenever the relay feature is on and a host is resolvable — `rtsp_host` when
-  set, otherwise the host the client used to reach the API. Standard RTSP; the
-  embedded creds rotate, so re-read `/api/cameras` for a fresh URL.
+- **Apps / RTSP**: use `camera.rtsp` (the relay
+  `rtsp://…:8554/{id}/{exp}.{sig}`), present whenever the relay feature is on
+  and a host is resolvable — `rtsp_host` when set, otherwise the host the
+  client used to reach the API. Standard RTSP over TCP; the token expires
+  after 6 h, so re-read `/api/cameras` for a fresh URL.
 - Live view does **not** require a `[media]` section: the MSE feed and RTSP
   relay are on by default (that is what `[media]` makes optional — recording).
   A camera drops off the live surface only when it has no `source`, or its
@@ -483,7 +539,8 @@ is also on by default; set `[media] record = false` (globally) or a per-camera
 `record = false` to drop a camera into live-only mode — still fully watchable,
 just not written to disk, so `/recordings/*` answers 404 for it. Either way,
 clients never see the raw camera `source` URL; they
-always get the relay `rtsp://…:8554/{id}` with rotating credentials instead.
+always get the relay `rtsp://…:8554/{id}/{exp}.{sig}` with a short-lived
+per-camera token instead.
 
 If you want browser live for an H265 camera whose viewers lack an HEVC
 decoder, a different codec, or WebRTC, front the camera with an external
