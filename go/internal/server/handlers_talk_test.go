@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"eneverre/internal/backchannel"
 )
@@ -22,9 +23,26 @@ func TestCloseAllTalkClearsPlaceholders(t *testing.T) {
 	}
 }
 
-// The Basic fallback carries browser-cached credentials a foreign page can't
-// see but can still trigger, so without a token the talk upgrade must be
-// same-origin. Token-bearing and non-browser (no Origin) requests pass.
+// A session token in the query string must not authenticate the talk socket:
+// only the subprotocol carrier or the Bearer header do.
+func TestTalkRejectsQueryToken(t *testing.T) {
+	a := withUsersApp(t)
+	insertUser(t, a.db, "alice", "pw", "user")
+	token := "talk-query-token"
+	if _, err := a.db.Exec(
+		"INSERT INTO tokens (token, username, expires_at, created_at) VALUES (?, 'alice', ?, 0)",
+		token, time.Now().Add(time.Hour).Unix(),
+	); err != nil {
+		t.Fatalf("insert token: %v", err)
+	}
+	r := httptest.NewRequest("GET", "/api/camera/c/talk?token="+token, nil)
+	w := httptest.NewRecorder()
+	a.handleTalk(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("query token authenticated talk: status %d", w.Code)
+	}
+}
+
 func TestTalkCheckOrigin(t *testing.T) {
 	req := func(origin, proto string) *http.Request {
 		r := httptest.NewRequest("GET", "http://nvr.example:8080/api/camera/c/talk", nil)

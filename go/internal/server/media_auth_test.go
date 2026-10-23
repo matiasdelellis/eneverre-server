@@ -66,7 +66,7 @@ func TestRequireMediaAccessSignedGrants(t *testing.T) {
 	}
 }
 
-func TestRequireMediaAccessFallsBackToSessionAndLegacy(t *testing.T) {
+func TestRequireMediaAccessFallsBackToSession(t *testing.T) {
 	a := mediaAuthTestApp(t)
 
 	r := httptest.NewRequest(http.MethodGet, "/api/camera/front/live/stream", nil)
@@ -80,15 +80,11 @@ func TestRequireMediaAccessFallsBackToSessionAndLegacy(t *testing.T) {
 		t.Errorf("anonymous request accepted: ok=%v status=%d", ok, w.Code)
 	}
 
+	// The relay pair is not an HTTP media credential anymore.
 	creds := a.creds.Current()
-	legacy := "/api/camera/front/live/stream?user=" + url.QueryEscape(creds.Username) + "&pass=" + url.QueryEscape(creds.Password)
-	if ok, w := requireMedia(t, a, legacy, "front", mediaauth.ScopeLive); ok || w.Code != http.StatusUnauthorized {
-		t.Errorf("legacy pair accepted without opt-in: ok=%v status=%d", ok, w.Code)
-	}
-
-	a.cfg.Zaguan = config.Section{"url": "http://hub.local", "legacy_media_auth": "true"}
-	if ok, _ := requireMedia(t, a, legacy, "front", mediaauth.ScopeLive); !ok {
-		t.Error("legacy pair rejected with explicit opt-in")
+	pair := "/api/camera/front/live/stream?user=" + url.QueryEscape(creds.Username) + "&pass=" + url.QueryEscape(creds.Password)
+	if ok, w := requireMedia(t, a, pair, "front", mediaauth.ScopeLive); ok || w.Code != http.StatusUnauthorized {
+		t.Errorf("relay pair accepted on HTTP media: ok=%v status=%d", ok, w.Code)
 	}
 }
 
@@ -134,19 +130,12 @@ func TestZaguanCamerasPublishesSignedGrants(t *testing.T) {
 		t.Errorf("paused camera leaked media links: %+v", c)
 	}
 
-	// Without a signer and without the legacy opt-in, omit the links instead
-	// of falling back to a reusable password.
+	// Without a signer the links are omitted rather than falling back to a
+	// reusable password.
 	a.mediaAuth = nil
 	a.privacy["front"] = false
 	c = a.ZaguanCameras("https://cams.example.com")[0]
 	if c.MSEURL != "" || c.SnapshotURL != "" {
 		t.Errorf("no signer still published a media link: %+v", c)
-	}
-
-	a.cfg.Zaguan = config.Section{"url": "http://hub.local", "legacy_media_auth": "true"}
-	c = a.ZaguanCameras("https://cams.example.com")[0]
-	u, _ := url.Parse(c.MSEURL)
-	if u.Query().Get("user") == "" || u.Query().Get("pass") == "" {
-		t.Errorf("legacy opt-in did not publish the pair: %s", c.MSEURL)
 	}
 }

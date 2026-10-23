@@ -503,14 +503,6 @@ func (c *Config) ZaguanToken() (string, error) {
 	return strings.TrimSpace(os.Getenv("ENEVERRE_ZAGUAN_TOKEN")), nil
 }
 
-// ZaguanLegacyMediaAuth reports whether the pre-signed media URLs may still be
-// authenticated with the rotating relay pair as user/pass query parameters.
-// It defaults to false: the signed grants are the supported path, and the old
-// form is a one-release migration aid for hubs with cached URLs.
-func (c *Config) ZaguanLegacyMediaAuth() bool {
-	return c.ZaguanSection().GetBool("legacy_media_auth", false)
-}
-
 // ZaguanName is the name the source shows in the hub's Sources page.
 // Precedence: [zaguan] name > "Eneverre".
 func (c *Config) ZaguanName() string {

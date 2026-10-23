@@ -62,20 +62,20 @@ instead of guessing:
 ## Authentication
 
 The access token (the same Bearer token used for the REST API) authenticates the
-WebSocket, validated **before** the upgrade. Three ways, in the order the server
-checks them:
+WebSocket, validated **before** the upgrade. Two carriers are supported:
 
 1. **`Sec-WebSocket-Protocol` subprotocol carrier** — the client offers
    `["eneverre-talk", "<token>"]`; the server echoes only `eneverre-talk`. This
    is what the **browser** uses, because browsers cannot set an `Authorization`
    header on a WebSocket upgrade. It keeps the token out of the URL and out of
    reverse-proxy access logs.
-2. **`?token=<token>` query param** — simple, but the token ends up in the URL
-   and in proxy logs. Avoid it in production.
-3. **`Authorization: Bearer <token>` header** — standard; not usable from a
+2. **`Authorization: Bearer <token>` header** — standard; not usable from a
    browser WebSocket, but **fully usable from Android** (OkHttp can set it).
 
-> **Android should use option 3 (Bearer header).** It is the simplest and keeps
+There is deliberately no `?token=` query fallback: it would put a session
+token in URLs and proxy logs.
+
+> **Android should use option 2 (Bearer header).** It is the simplest and keeps
 > the token out of the URL/logs, with no subprotocol handling needed.
 
 An invalid/missing token → HTTP `401` and the WebSocket never opens.

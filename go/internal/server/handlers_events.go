@@ -106,13 +106,8 @@ func (a *App) handleWebhookEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func validWebhookSecret(r *http.Request, expected string) bool {
-	candidates := []string{r.Header.Get("X-Webhook-Secret"), r.URL.Query().Get("token")}
-	for _, c := range candidates {
-		if c != "" && subtle.ConstantTimeCompare([]byte(c), []byte(expected)) == 1 {
-			return true
-		}
-	}
-	return false
+	c := r.Header.Get("X-Webhook-Secret")
+	return c != "" && subtle.ConstantTimeCompare([]byte(c), []byte(expected)) == 1
 }
 
 // parseWebhookObject mirrors the Pydantic WebhookBody: timestamp (int or

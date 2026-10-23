@@ -255,8 +255,7 @@ overridable per camera:
    interval as a grace window. Default `24`; `0` (or negative) disables
    rotation. The credentials live in the SQLite DB, not in this file. Keep
    rotation on for remote clients: signed media grants expire by themselves,
-   but RTSP URLs (and the legacy `[zaguan]` media pair) stay valid until the
-   next rotation.
+   but RTSP URLs stay valid until the next rotation.
  * **gap_message:** Caption burned into the gap-fill black frames served for
    uncovered ranges. UTF-8 is fine; changing it regenerates the cached asset.
    Default `NO RECORDING`.
@@ -271,13 +270,14 @@ returns 503 — this section is the only thing that turns the feature on.
 
 ```ini
 [events]
-webhook_secret = change-me   ; required; sent as X-Webhook-Secret or ?token=
+webhook_secret = change-me   ; required; sent as X-Webhook-Secret
 ;pre_seconds  = 5            ; widen each event this many seconds before...
 ;post_seconds = 5            ; ...and after the trigger
 ```
 
  * **webhook_secret:** Shared secret the camera (or motion detector) sends in
-   the `X-Webhook-Secret` header or the `?token=` query param. Required.
+   the `X-Webhook-Secret` header. Required. There is no query-string form, so
+   the secret never lands in a URL or proxy log.
  * **pre_seconds / post_seconds:** Each recorded event is widened to
    `[start - pre_seconds, end + post_seconds]`. The defaults (`5` + `5`) make a
    single event cover a 10-second window centered on the trigger, which is what
@@ -350,7 +350,6 @@ token_file = /etc/eneverre/zaguan.token ; source token, mode 0600
 ;name = Eneverre                       ; source name in the hub
 ;public_url = https://cams.example.com  ; base for the media links
 ;sync_interval = 30s                    ; inventory refresh
-;legacy_media_auth = false              ; migration aid only
 ```
 
  * **url:** Address of the hub, with or without a scheme. Create the source in
@@ -380,10 +379,6 @@ token_file = /etc/eneverre/zaguan.token ; source token, mode 0600
    snapshot is also what refreshes connectivity and availability in the hub
    (this integration sends no per-state events). Values shorter than `1s` fall
    back to `30s`.
- * **legacy_media_auth:** `false` by default. Set `true` for one release only
-   if a hub has cached media URLs from before the signed grants: it re-enables
-   the old `user`/`pass` relay pair on the media endpoints. New links are
-   always signed, so no client change is required to migrate.
 
 Each camera becomes a device (`eneverre:<camera-id>`) with one `camera`
 entity (`eneverre:<camera-id>/camera`); the camera's `location` becomes an

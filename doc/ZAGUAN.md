@@ -93,15 +93,12 @@ surface and expiry) — scoped to one camera and one surface:
 
 The signing key lives in the Eneverre database (`media_auth_key`) and is
 never the RTSP relay pair, so a leaked RTSP URL cannot mint media grants. The
-grants do **not** authorize the clip/list/timeline/gaps APIs: those remain
-session-only. The playlist propagates `exp`/`sig` to its init and segment URIs.
-
-`[zaguan] legacy_media_auth = true` re-enables the old `user`/`pass` relay
-pair for one release, only for a hub that has cached URLs from an older
-version; new snapshots are always signed. Links are omitted while the camera
-is in privacy or outside its schedule, so a still cannot bypass the pause.
-Treat the hub store with the same care as the Eneverre API: a signed URL is
-still a bearer capability until it expires.
+relay `user`/`pass` pair is not accepted on HTTP media at all. The grants do
+**not** authorize the clip/list/timeline/gaps APIs: those remain session-only.
+The playlist propagates `exp`/`sig` to its init and segment URIs. Links are
+omitted while the camera is in privacy or outside its schedule, so a still
+cannot bypass the pause. Treat the hub store with the same care as the
+Eneverre API: a signed URL is still a bearer capability until it expires.
 
 > **Remote deployments:** `rtsp_url` is plain RTSP and carries the global relay
 > pair. For clients outside the LAN, prefer the HTTPS media links (MSE/HLS) or

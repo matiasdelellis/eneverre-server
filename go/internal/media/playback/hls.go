@@ -49,14 +49,12 @@ func (s *splitWriter) Write(p []byte) (int, error) {
 const maxPlaylistSpan = 7 * 24 * time.Hour
 
 // hlsAuthQuery forwards the media authorization of the playlist request to the
-// init and segment URIs. Only the known media keys travel; the rest of each
-// URI is built here. exp/sig are the short-lived camera-scoped grant; user/pass
-// are the deprecated legacy relay pair, forwarded while
-// [zaguan] legacy_media_auth is enabled.
+// init and segment URIs. Only the signed grant keys travel; the rest of each
+// URI is built here.
 func hlsAuthQuery(r *http.Request) string {
 	q := r.URL.Query()
 	var b strings.Builder
-	for _, key := range []string{"exp", "sig", "user", "pass"} {
+	for _, key := range []string{"exp", "sig"} {
 		if v := q.Get(key); v != "" {
 			b.WriteByte('&')
 			b.WriteString(key)

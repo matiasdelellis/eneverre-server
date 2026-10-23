@@ -186,8 +186,8 @@ All code lives under `go/` (module `eneverre`).
   `hls`. The key is a random DB row (`media_auth_key`), never the RTSP relay
   pair. A grant is `?exp=<unix>&sig=<hex>` over camera id + scope + exp;
   `exp` lives 1 h (6 h for HLS) and the publisher refreshes it with the camera
-  inventory. `requireMediaAccess` accepts a valid grant, a normal session, or
-  the legacy relay pair only when `[zaguan] legacy_media_auth = true`.
+  inventory. `requireMediaAccess` accepts a valid grant or a normal session;
+  the relay pair is not an HTTP media credential.
 - `go/internal/camera` — `Camera` model + INI loader. Credential fields
   (`thingino_url`/`thingino_api_key`/`backchannel`/`source`) are tagged
   `json:"-"`, so marshaling a `Camera` is the public view (no credential
@@ -294,12 +294,10 @@ All code lives under `go/` (module `eneverre`).
   (`token_file` recommended) are set. Media links in the attributes are
   absolute only with `[zaguan] public_url`; they carry short-lived signed
   grants (`exp`/`sig`, camera- and surface-scoped, 1 h / 6 h for HLS) instead
-  of the relay password. `[zaguan] legacy_media_auth = true` re-enables the
-  old `user`/`pass` query pair for one release so a hub with cached URLs can
-  migrate. The attributes include live MSE (`mse_url` + `mse_info_url`), a
-  last-hour HLS **VOD** playlist (`hls_url`) and the thumbnail; links are
-  omitted while a camera is paused/disabled. Eneverre has no HLS live mode
-  (live is MSE/RTSP). See `doc/ZAGUAN.md`.
+  of the relay password. The attributes include live MSE (`mse_url` +
+  `mse_info_url`), a last-hour HLS **VOD** playlist (`hls_url`) and the
+  thumbnail; links are omitted while a camera is paused/disabled. Eneverre has
+  no HLS live mode (live is MSE/RTSP). See `doc/ZAGUAN.md`.
 - `go/internal/media` — **embedded media engine**. Always built and started;
   the optional `[media]` section only tunes it (a missing section behaves
   exactly like a present-but-empty one). One binary, no external streamer.
@@ -474,8 +472,8 @@ see request query strings and the more verbose media-engine traces
   `[media] rotate_hours` (default 24; `0` disables).
 - The webhook (`POST /api/camera/{id}/events`) accepts any body shape; on a
   parse failure it still records a motion event and stashes the raw body in
-  `source` as `webhook:raw (...)`. Requires `[events] webhook_secret` (via
-  `X-Webhook-Secret` header or `token` query param), else `503`. The recorded
+  `source` as `webhook:raw (...)`. Requires `[events] webhook_secret` in the
+  `X-Webhook-Secret` header (no query-string form), else `503`. The recorded
   range is widened to `[ts - pre_seconds, ts + duration + post_seconds]` (both
   default to `5`; `pre_seconds` / `post_seconds` are read from the `[events]`
   section).
@@ -599,12 +597,10 @@ see request query strings and the more verbose media-engine traces
   outbound-only and never changes the camera pipeline. Media links in the
   attributes need `[zaguan] public_url`; they carry a short-lived signed grant
   (`exp`/`sig`) scoped to the camera and surface, not the relay password.
-  `[zaguan] legacy_media_auth = true` accepts the old `user`/`pass` pair as a
-  migration aid. They include live MSE (`mse_url` + `mse_info_url`), a
-  last-hour HLS VOD playlist (`hls_url`) and the thumbnail; there is no HLS
-  live. `server.ZaguanCameras` applies the live privacy state and signs the
-  links; `App.CaptureSnapshot` backs the command. See
-  [`doc/ZAGUAN.md`](doc/ZAGUAN.md).
+  They include live MSE (`mse_url` + `mse_info_url`), a last-hour HLS VOD
+  playlist (`hls_url`) and the thumbnail; there is no HLS live.
+  `server.ZaguanCameras` applies the live privacy state and signs the links;
+  `App.CaptureSnapshot` backs the command. See [`doc/ZAGUAN.md`](doc/ZAGUAN.md).
 - The embedded engine (live MSE, RTSP relay, recording) is always active for
   any camera with a `source` URL — there is no mode where it's off.
   `[media]` only toggles **recording** (default off) and tunes its
@@ -632,8 +628,8 @@ see request query strings and the more verbose media-engine traces
   the upgrade, by `auth.VerifyToken`): the access token rides the
   `Sec-WebSocket-Protocol` carrier — the browser offers `["eneverre-talk",
   <token>]` and the server echoes only `eneverre-talk`, keeping the token out of
-  the URL and reverse-proxy logs — with a `?token=` query param and a Bearer
-  header as fallbacks. Sessions are one per camera — a second client gets `409`
+  the URL and reverse-proxy logs — or a Bearer header for native clients.
+  There is no `?token=` fallback. Sessions are one per camera — a second client gets `409`
   — tracked in `App.talk` (guarded by `talkMu`; a nil placeholder reserves the
   slot during the RTSP handshake). Wire protocol: client sends JSON
   `{"sampleRate": N}` then binary S16LE PCM; once the RTSP session is live the

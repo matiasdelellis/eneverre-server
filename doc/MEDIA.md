@@ -400,27 +400,25 @@ short-lived signed grants described below.
   player decodes avc3 (all mainstream players do). `fill_gaps=false` reverts to
   legacy avc1/truncate.
 
-**Auth reminder for HLS**: every playlist/init/segment request needs the Bearer
-token, a signed grant, or Basic credentials. Use hls.js `xhrSetup` with the
-Bearer token for first-party clients. For players that cannot set headers
-(VLC, ExoPlayer, a hub's browser), prefer a **signed grant**:
+**Auth reminder for HLS**: every playlist/init/segment request needs a Bearer
+session or the signed grant. Use hls.js `xhrSetup` with the Bearer token for
+first-party clients. For players that cannot set headers (VLC, ExoPlayer, a
+hub's browser), use the **signed grant**:
 `…/playlist.m3u8?exp=<unix>&sig=<hex>`; the playlist forwards `exp`/`sig` to
-its init and segment URIs. Basic-in-URL still works but puts the account
-password in history/logs — avoid it for remote clients.
+its init and segment URIs.
 
 When `[zaguan]` is configured, the publisher mints camera- and surface-scoped
-signed grants for the thumbnail, live MSE and HLS links. The old `user`/`pass`
-relay pair is accepted on those media endpoints only when
-`[zaguan] legacy_media_auth = true` (one-release migration aid). The grants do
-not authorize the clip/list/timeline/gaps API — those remain session-only.
+signed grants for the thumbnail, live MSE and HLS links. The relay `user`/`pass`
+pair is **not** accepted on HTTP media. The grants do not authorize the
+clip/list/timeline/gaps API — those remain session-only.
 See [`ZAGUAN.md`](ZAGUAN.md).
 
-**Client migration:** if a client used the RTSP `user`/`pass` pair as query
-parameters on HTTP media endpoints, switch to its normal Bearer session (web,
-Android phone) or consume the signed `exp`/`sig` URL the server publishes
-(hub/native player). The clip/list/timeline/gaps endpoints never accept the
-pair. The web UI, MSE player, hls.js and the Android talk client are unchanged;
-the only additive API change is the device-login refresh token and the
+**Client migration:** the RTSP `user`/`pass` pair is no longer an HTTP media
+credential. Use the normal Bearer session (web, Android phone) or consume the
+signed `exp`/`sig` URL the server publishes (hub/native player). The
+clip/list/timeline/gaps endpoints remain session-only. The web UI, MSE player,
+hls.js and the Android talk client are unchanged; the additive API change is
+the device-login refresh token and the
 `403 {"code":"password_change_required"}` response.
 
 ## Metrics

@@ -20,8 +20,8 @@ info:
     HTTP media endpoints (thumbnail, live MSE, HLS) also accept a short-lived
     signed grant `?exp=<unix>&sig=<hex>` for clients that cannot set headers;
     the grants are camera- and surface-scoped and are not valid on the clip
-    export/list/timeline/gaps APIs. The legacy `user`/`pass` relay pair is only
-    accepted when `[zaguan] legacy_media_auth = true`.
+    export/list/timeline/gaps APIs. The relay `user`/`pass` pair is not an HTTP
+    media credential.
 
 servers:
   - url: http://localhost:8080
@@ -1008,9 +1008,8 @@ paths:
         neither configured. First-party clients authenticate with a normal
         session. Third-party clients that cannot set an Authorization header
         (the Zaguán publisher, browser `<img>`) use a short-lived signed grant:
-        `exp` + `sig`, scoped to this camera's `thumb` surface. The legacy
-        `user`/`pass` relay pair is accepted only when
-        `[zaguan] legacy_media_auth = true`.
+        `exp` + `sig`, scoped to this camera's `thumb` surface. The relay
+        `user`/`pass` pair is not accepted here.
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - $ref: '#/components/parameters/media_exp'
@@ -1043,8 +1042,8 @@ paths:
         header on a WebSocket upgrade, the access token is carried in the
         `Sec-WebSocket-Protocol` header — the client offers `["eneverre-talk",
         <token>]` and the server echoes only `eneverre-talk` — which keeps the
-        token out of the URL and access logs; a `?token=` query param and a
-        Bearer header are accepted as fallbacks. Auth is validated before the
+        token out of the URL and access logs; a Bearer header is also accepted
+        for native clients. Auth is validated before the
         upgrade. After the upgrade the client sends a JSON handshake
         `{"sampleRate": N}` then binary mono S16LE PCM frames (resampled to 8 kHz
         and encoded G.711). Adding `"codec": "aac"` to the handshake instead
@@ -1314,8 +1313,7 @@ paths:
         and resolve under this same `/recordings/hls/` prefix. Every request
         needs auth: a Bearer session, or a short-lived signed grant
         (`exp`/`sig`, `hls` scope) for players that cannot set headers. The
-        playlist forwards `exp`/`sig` (and the deprecated `user`/`pass` pair
-        when `[zaguan] legacy_media_auth = true`) to its init and segment URIs.
+        playlist forwards `exp`/`sig` to its init and segment URIs.
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - $ref: '#/components/parameters/media_exp'
@@ -1385,9 +1383,8 @@ paths:
         404 otherwise. Reports whether a live MSE source is available for the
         camera and the codec string the browser needs to build a MediaSource.
         First-party clients use a Bearer session; header-less clients use a
-        short-lived signed grant (`exp`/`sig`, `live` scope). The legacy
-        `user`/`pass` relay pair is accepted only with
-        `[zaguan] legacy_media_auth = true`.
+        short-lived signed grant (`exp`/`sig`, `live` scope). The relay
+        `user`/`pass` pair is not accepted here.
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - $ref: '#/components/parameters/media_exp'
@@ -1420,9 +1417,8 @@ paths:
         404 otherwise. Streams the camera's live fragmented-MP4 (init + parts)
         as chunked HTTP, to be fed into a browser MediaSource SourceBuffer.
         First-party clients use a Bearer session; header-less clients use a
-        short-lived signed grant (`exp`/`sig`, `live` scope). The legacy
-        `user`/`pass` relay pair is accepted only with
-        `[zaguan] legacy_media_auth = true`.
+        short-lived signed grant (`exp`/`sig`, `live` scope). The relay
+        `user`/`pass` pair is not accepted here.
       parameters:
         - $ref: '#/components/parameters/camera_id'
         - $ref: '#/components/parameters/media_exp'
@@ -1517,18 +1513,13 @@ paths:
       summary: Event webhook (motion/IO/etc.)
       description: |
         Endpoint cameras (or external integrations) use to record a motion,
-        privacy, I/O, etc. event. Requires `[events] webhook_secret`, sent in
-        the `X-Webhook-Secret` header or as `?token=...` (query). Accepts any
+        privacy, I/O, etc. event. Requires `[events] webhook_secret` in the
+        `X-Webhook-Secret` header (there is no query-string form). Accepts any
         body; if it cannot be parsed as valid JSON, the event is stored with the
         raw body in `source` and type `motion`. A camera that is out of service
         (`enabled: false`) records nothing, so its events are dropped with 409.
       parameters:
         - $ref: '#/components/parameters/camera_id'
-        - name: token
-          in: query
-          schema:
-            type: string
-          description: Alternative to the X-Webhook-Secret header
       requestBody:
         required: false
         content:

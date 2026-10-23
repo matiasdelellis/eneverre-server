@@ -103,10 +103,8 @@ export async function logout(silent = false) {
 function parseUsercode() {
   const params = new URLSearchParams(window.location.search);
   const raw = (params.get("usercode") || "").trim().toUpperCase();
-  // The server emits 4 random bytes as 8 uppercase hex characters. Accept the
-  // old 6-character form too so links minted before the length change still
-  // reach the approval screen (the server will report those as expired).
-  if (!/^[A-F0-9]{6,8}$/.test(raw)) return null;
+  // The server emits 4 random bytes as 8 uppercase hex characters.
+  if (!/^[A-F0-9]{8}$/.test(raw)) return null;
   return raw;
 }
 

@@ -80,10 +80,11 @@ func talkCheckOrigin(r *http.Request) bool {
 	return err == nil && strings.EqualFold(u.Host, r.Host)
 }
 
-// talkToken extracts the access token, preferring the Sec-WebSocket-Protocol
-// carrier (the entry that is not talkSubprotocol) and falling back to the
-// ?token= query param for non-browser clients. Our access tokens are base64url,
-// so they are always valid subprotocol tokens.
+// talkToken extracts the access token from the Sec-WebSocket-Protocol carrier
+// (the entry that is not talkSubprotocol). Browser clients use this because
+// they cannot set an Authorization header on the upgrade; native clients can
+// instead use the Bearer header handled by handleTalk. Our access tokens are
+// base64url, so they are always valid subprotocol tokens.
 func talkToken(r *http.Request) string {
 	for _, p := range strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",") {
 		p = strings.TrimSpace(p)
@@ -91,7 +92,7 @@ func talkToken(r *http.Request) string {
 			return p
 		}
 	}
-	return r.URL.Query().Get("token")
+	return ""
 }
 
 // CloseAllTalk tears down every active push-to-talk session so a clean shutdown
@@ -129,9 +130,9 @@ func (a *App) CloseAllTalk() {
 // packets forwarded to the camera's Opus track (see internal/backchannel). At
 // most one session per camera.
 //
-// Auth: the access token comes via the Sec-WebSocket-Protocol carrier (or the
-// ?token= query param, or a Bearer header for non-browser clients), validated
-// before the upgrade. The camera must define a `backchannel` URL in its INI
+// Auth: the access token comes via the Sec-WebSocket-Protocol carrier or a
+// Bearer header for non-browser clients, validated before the upgrade. The
+// camera must define a `backchannel` URL in its INI
 // (Capabilities.Talk). Once the RTSP session is live the server sends a single
 // text message {"status":"ready"} so the client's UI can switch from
 // "connecting" to "talking"; thereafter the socket is receive-only apart from

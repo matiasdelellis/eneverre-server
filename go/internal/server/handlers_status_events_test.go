@@ -238,6 +238,29 @@ func TestHandleGetCameraSettings(t *testing.T) {
 // events: the firmware keeps posting (it has no idea it was disabled), and the
 // webhook must drop those with 409 instead of writing motion rows that have no
 // footage behind them.
+func TestWebhookRequiresHeaderSecret(t *testing.T) {
+	a := withUsersApp(t)
+	a.cfg.Events = config.Section{"webhook_secret": "s3cret"}
+	a.cameras = []camera.Camera{{ID: "cam", Name: "Cam", Enabled: true}}
+
+	post := func(query string, header bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/api/camera/cam/events"+query, bytes.NewReader([]byte(`{"event":"motion"}`)))
+		if header {
+			r.Header.Set("X-Webhook-Secret", "s3cret")
+		}
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, r)
+		return w
+	}
+
+	if w := post("?token=s3cret", false); w.Code != http.StatusUnauthorized {
+		t.Errorf("query token authenticated the webhook: %d", w.Code)
+	}
+	if w := post("", true); w.Code != http.StatusCreated {
+		t.Errorf("header secret failed: %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestWebhookRejectsDisabledCamera(t *testing.T) {
 	a := withUsersApp(t)
 	a.cfg.Events = config.Section{"webhook_secret": "s3cret"}

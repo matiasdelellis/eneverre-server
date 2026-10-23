@@ -962,12 +962,11 @@ func passwordChangeAllowed(r *http.Request) bool {
 }
 
 // requireMediaAccess authorizes one camera media surface. First-party clients
-// present a normal session (Bearer/Basic). Third-party clients that cannot set
-// headers — the Zaguán web client, HLS players, browser <img> — use a signed
-// grant from the publisher: exp=<unix>&sig=<hex>, scoped to the camera and the
-// media surface (live, thumb, hls). The old user/pass relay pair is accepted
-// only when [zaguan] legacy_media_auth is explicitly enabled, so upgrading
-// hubs keep working while operators retire the reusable password.
+// present a normal session (Bearer or Basic). Third-party clients that cannot
+// set headers — the Zaguán web client, HLS players, browser <img> — use a
+// signed grant from the publisher: exp=<unix>&sig=<hex>, scoped to the camera
+// and the media surface (live, thumb, hls). There is no reusable password
+// form: the relay pair is for RTSP only.
 func (a *App) requireMediaAccess(w http.ResponseWriter, r *http.Request, camID, scope string) bool {
 	q := r.URL.Query()
 	expRaw, sig := q.Get("exp"), q.Get("sig")
@@ -993,17 +992,6 @@ func (a *App) requireMediaAccess(w http.ResponseWriter, r *http.Request, camID, 
 			return false
 		}
 		return true
-	}
-
-	user, pass := q.Get("user"), q.Get("pass")
-	if user != "" || pass != "" {
-		if a.cfg != nil && a.cfg.ZaguanLegacyMediaAuth() &&
-			a.cfg.ZaguanURL() != "" && a.creds != nil && a.creds.Validate(user, pass) {
-			return true
-		}
-		a.logMediaAuthFailure(r, camID, scope, "legacy_media_auth_failed")
-		httpError(w, http.StatusUnauthorized, "Unauthorized")
-		return false
 	}
 
 	return a.requireUser(w, r) != nil

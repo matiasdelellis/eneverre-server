@@ -54,28 +54,17 @@ func (a *App) ZaguanCameras(publicURL string) []zaguan.Camera {
 
 	// The media endpoints are for clients that cannot set an Authorization
 	// header (the hub's web client, HLS players, <img>). They carry a
-	// short-lived HMAC grant scoped to one camera and one surface instead of a
-	// reusable password. [zaguan] legacy_media_auth keeps the old user/pass
-	// form for one release so a hub with a cached URL can migrate.
+	// short-lived HMAC grant scoped to one camera and one surface. There is no
+	// reusable password form: the relay pair is for RTSP only.
 	mediaURL := func(camID, path, scope string, extra url.Values) string {
-		if base == "" {
+		if base == "" || a.mediaAuth == nil {
+			// No signer: omit the link rather than publish a reusable password.
 			return ""
 		}
+		exp, sig := a.mediaAuth.Sign(camID, scope, mediaauth.TTL(scope))
 		q := url.Values{}
-		switch {
-		case a.mediaAuth != nil:
-			exp, sig := a.mediaAuth.Sign(camID, scope, mediaauth.TTL(scope))
-			q.Set("exp", strconv.FormatInt(exp, 10))
-			q.Set("sig", sig)
-		case a.cfg != nil && a.cfg.ZaguanLegacyMediaAuth() && a.creds != nil:
-			creds := a.creds.Current()
-			q.Set("user", creds.Username)
-			q.Set("pass", creds.Password)
-		default:
-			// No signer and no explicit legacy opt-in: omit the link rather
-			// than publish a reusable password.
-			return ""
-		}
+		q.Set("exp", strconv.FormatInt(exp, 10))
+		q.Set("sig", sig)
 		for k, v := range extra {
 			q[k] = v
 		}

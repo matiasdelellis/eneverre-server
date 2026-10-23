@@ -124,9 +124,10 @@ Admin seeding: when the users table is empty, an `admin` user is created with
 a random password logged once at `WARN` (`ENEVERRE_ADMIN_USER` /
 `ENEVERRE_ADMIN_PASS` override the username / password when set). No credential
 is read from a config file — user management lives entirely in the DB. The
-seeded admin is flagged `must_change_password`, so the web UI forces a new
-password on first login before the app opens (the flag is UI-enforced; it does
-not block Basic-auth API calls). Admins can require the same change when
+seeded admin is flagged `must_change_password`: the server blocks every
+protected route with `403 {"code":"password_change_required"}` until the
+password is changed (only the change, logout and session-revoke endpoints are
+reachable). Admins can require the same change when
 creating a user or resetting a password; a self password change clears it. The
 listen address comes from
 `[server] host`/`port`, defaulting to `0.0.0.0:8080`. The server runs with
@@ -274,8 +275,8 @@ HTTP media links for clients that cannot set an `Authorization` header (the
 Zaguán hub, native HLS players, `<img>`) use short-lived HMAC grants:
 `?exp=<unix>&sig=<hex>`, scoped to one camera and one surface (`live`, `thumb`,
 `hls`). The key is a server-only row (`media_auth_key`), not the RTSP pair.
-The clip/list/timeline/gaps APIs remain session-only; the deprecated
-`user`/`pass` pair is accepted on media only with `[zaguan] legacy_media_auth`.
+The clip/list/timeline/gaps APIs remain session-only; the relay `user`/`pass`
+pair is not accepted on HTTP media.
 
 Both lifetimes are configurable, with precedence **CLI flag > env > `[auth]`
 section > default**:
