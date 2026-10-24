@@ -288,6 +288,9 @@ All code lives under `go/` (module `eneverre`).
     indexes them in SQLite (with the `mtxi` box for gapless concatenation on
     playback). Includes a media watchdog (silent-but-alive detection +
     reconnect) and a graceful-segment-finalize on source loss / shutdown.
+    Video DTS = PTS until the stream shows B-frames (`[media] dts_from_pts`,
+    default on): mediacommon's DTS extractor mistakes lost frames for
+    reordering. See `doc/MEDIA.md` → Camera stalls.
     Codecs: H264/H265 video + AAC/G711 audio. H265 live/playback is advertised
     with its `hvc1` codec string and gated client-side by browser HEVC support
     (see `doc/MEDIA.md` → Codec support).
@@ -299,6 +302,11 @@ All code lives under `go/` (module `eneverre`).
     `Expired(cutoff,limit)` and `DeleteBatch(fpaths)` (one transaction, one
     fsync, instead of N round-trips) / `Oldest(limit)` for the low-disk
     emergency purge (force-remove oldest-first, ignoring `[media] retain`).
+    Each row also carries the segment's video extent (`Segment.Video`, nil
+    while unknown; `video_duration_ns = -1` in SQL): a camera can keep
+    sending audio while its video is down, and that audio is kept, so a
+    segment can be longer than its video. `VideoUnmeasured`/`SetVideo` drive
+    the engine's startup backfill of rows from older versions.
   - `recovery` — re-indexes segments that are on disk but missing from the
     index, the footage a hard crash (power loss, SIGKILL, panic) leaves
     behind: `Recover` runs per camera at startup and scans only the recent
@@ -334,7 +342,11 @@ All code lives under `go/` (module `eneverre`).
     playlist with `EXT-X-DISCONTINUITY` at coverage gaps), plus a gap-fill
     helper that generates a black "NO RECORDING" frame via ffmpeg, caches
     it to `<cache_dir>/gapfill/<WxH>-<msghash>.h264` and reuses it across
-    restarts. Codec-agnostic (it just re-muxes the segment data).
+    restarts. The re-muxing is codec-agnostic, but the black frame is
+    H264-only: H265 clips are truncated at gaps instead. Spans of a segment
+    with audio but no video get a "NO VIDEO" frame the same way (`videoFill`,
+    also H264-only) so players keep playing the audio; in HLS those segments
+    get their own avc3 init (`&fill=1`). See `doc/MEDIA.md` → Camera stalls.
   - `retention` — segment cleaner. The periodic sweep (`clean`) queries
     `Expired` in batches, `os.Remove`s the files with bounded parallel
     workers, calls `DeleteBatch` (one tx, one fsync), and prunes the

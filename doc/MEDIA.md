@@ -109,6 +109,54 @@ For every camera that has a `source` RTSP URL, the engine:
 It is a single binary and a single systemd unit — no separate streamer to
 install, configure or supervise.
 
+### Camera stalls
+
+A camera can stop sending frames, and sometimes keeps sending audio while its
+video is down. The audio is still a recording (it can be the only evidence of
+what happened), so it is kept, and the outage never becomes a stretched sample:
+
+- A segment lasts as long as its longest track. The index also records where
+  the video lies in it (`video_start_ns` / `video_duration_ns`; `-1` for rows
+  from older versions until a background pass at startup measures them from
+  the files), exposed as `video_start` / `video_duration` by
+  `recordings/list`. The extent, and the segment's end, are in presentation
+  time: a frame can be shown after it is decoded (B-frames, or the offset the
+  H264 DTS extractor builds up when frames are lost).
+- The last frame before a stall keeps its usual duration instead of absorbing
+  the outage; a video jump over 5s ends the segment.
+- While only audio flows, the audio rotates segments at the usual length, and
+  the video's return starts a new segment on its keyframe. Audio is recorded
+  even when a session starts without video, as long as the stream's parameter
+  sets are known.
+- The media watchdog reconnects after 8s with neither video nor audio. With
+  audio still flowing it keeps the session (reconnecting would drop a second or
+  two of it) and retries the video after 1 minute, doubling up to 16 minutes
+  while the video stays down. Meanwhile `/api/status` reports the camera as
+  `audio_only` (and `connected: false`, `recording: true`); the admin status
+  view shows an amber link dot.
+- A stream clock that drifts more than 5s from wall-clock ends the segment and
+  resyncs on the next keyframe.
+- **Decode timestamps.** The H264/H265 DTS extractor (mediacommon, shared with
+  MediaMTX) reads a lost frame's jump in picture order as B-frame reordering:
+  each loss leaves a 1 ms frame and a PTS-DTS offset that only grows (0.6 s
+  after a few losses on a field recording), and past 10 such frames it errors
+  and resets, dropping up to a GOP. Most cameras send no B-frames, and then
+  DTS = PTS is exact: with `[media] dts_from_pts = true` (default) the recorder
+  does that, and a lost frame simply makes the one before it last longer. The
+  first frame shown before an earlier-decoded one proves B-frames: the
+  extractor takes over from the next keyframe (video is dropped until then,
+  once per session; the segment and its audio go on). A PTS going back more
+  than 1s is a camera clock reset, not reordering: the segment ends and video
+  resyncs on the next keyframe. **Limitation:** cameras that do send B-frames
+  still run the extractor and still suffer from lost frames.
+
+On playback, the spans of a segment without video are filled with a black frame
+captioned **"NO VIDEO"** (`[media] no_video_message`), one keyframe per second,
+so players keep playing the audio instead of waiting for frames that never come.
+In HLS those segments get their own avc3 init (`init.mp4?…&fill=1`, the
+placeholder carries its own SPS) bracketed by discontinuities; `/get` fills them
+along with the coverage gaps. Like the gap fill, this is H264-only.
+
 ### Low-disk safety
 
 A naive recorder happily writes until the disk is full, at which point every
@@ -381,7 +429,7 @@ only when the camera actually has recordings on disk; a per-camera
 | Method + path | Purpose |
 |---|---|
 | `GET /api/recordings/paths` | camera ids that have recordings: `["calle", …]` (for recordings-only clients; = NVR's `/api/paths`) |
-| `GET /api/camera/{id}/recordings/list?start=&end=` | segments overlapping the range: `[{start, duration}]` |
+| `GET /api/camera/{id}/recordings/list?start=&end=` | segments overlapping the range: `[{start, duration, video_start, video_duration}]` (video fields absent until measured; see [Camera stalls](#camera-stalls)) |
 | `GET /api/camera/{id}/recordings/get?start=&duration=[&fill_gaps=]` | fMP4 clip (`video/mp4`) spanning the full window, gaps filled with black (see below); `404` + `X-Next-Available` header on a miss |
 | `GET /api/camera/{id}/recordings/timeline` | recorded extent: `{start, end, count}` (start/end null if empty) |
 | `GET /api/camera/{id}/recordings/gaps?start=&end=` | coverage gaps >1s: `[{start, end, duration}]` |

@@ -244,6 +244,8 @@ are ANDed, so a camera can opt out but never opt back in.
 ;rtsp_host        =            ; public host in the relay URL; empty = from request
 ;transport        = auto       ; auto | tcp | udp
 ;gap_message      = NO RECORDING  ; caption burned into gap-fill black frames
+;no_video_message = NO VIDEO      ; caption over audio recorded without video
+;dts_from_pts     = true          ; video DTS = PTS until the stream shows B-frames
 ```
 
 **Switches** — three independent booleans, each `true` by default and each
@@ -319,6 +321,15 @@ overridable per camera:
  * **gap_message:** Caption burned into the gap-fill black frames served for
    uncovered ranges. UTF-8 is fine; changing it regenerates the cached asset.
    Default `NO RECORDING`.
+ * **no_video_message:** Caption of the placeholder frame played over audio
+   the camera recorded while its video was down (HLS playback and `/get`).
+   Default `NO VIDEO`.
+ * **dts_from_pts:** Take each video frame's decode time from its presentation
+   time while the stream shows no B-frames (the first frame shown before an
+   earlier-decoded one hands over to the codec's DTS extractor). The extractor
+   mistakes lost frames for reordering, which leaves 1 ms frames and a growing
+   PTS-DTS offset on lossy links. Default `true`; set `false` to always use the
+   extractor if a camera misbehaves.
 
 See [`doc/MEDIA.md`](../MEDIA.md) for the full endpoint list, client
 integration notes, and the codec/coverage-gap semantics.

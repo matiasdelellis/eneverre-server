@@ -96,6 +96,12 @@ paths:
                         id: { type: string }
                         name: { type: string }
                         connected: { type: boolean }
+                        audio_only:
+                          type: boolean
+                          description: >-
+                            The camera delivers audio but no video (its video
+                            is down). `connected` is false meanwhile; the audio
+                            is still recorded, so `recording` stays true.
                         recording: { type: boolean }
                         mse_active: { type: boolean }
                         privacy: { type: boolean }
@@ -1147,6 +1153,12 @@ paths:
                   value:
                     - start: "2026-05-04T10:00:00Z"
                       duration: 60
+                      video_start: 0
+                      video_duration: 60
+                    - start: "2026-05-04T10:01:00Z"
+                      duration: 60
+                      video_start: 0
+                      video_duration: 2.28
 
         '400':
           $ref: '#/components/responses/BadRequest'
@@ -2659,6 +2671,23 @@ components:
           format: date-time
         duration:
           type: number
+          description: >-
+            Seconds the segment spans: the longest of its tracks. A camera can
+            stop sending video while its audio keeps flowing, so this can be
+            longer than the video.
+        video_start:
+          type: number
+          description: >-
+            Offset in seconds from `start` of the segment's first video frame.
+            Absent while not measured (see `video_duration`).
+        video_duration:
+          type: number
+          description: >-
+            Seconds of the segment covered by video from `video_start`. 0 for a
+            segment recorded while the camera sent audio only. Absent for a
+            segment recorded by an older version that has not been measured
+            yet. In HLS playback the spans without video carry a "NO VIDEO"
+            placeholder frame, so players keep playing the audio.
 
     Schedule:
       type: object
