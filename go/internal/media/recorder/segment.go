@@ -26,12 +26,34 @@ type segment struct {
 	curPart        *part
 	endDTS         time.Duration
 	nextPartNumber uint32
+
+	// Extent of the video samples written. A camera can stop sending video
+	// while its audio keeps flowing, so a segment's video can cover only part
+	// of it (or none of it); playback fills the rest with a placeholder frame.
+	// videoStart/videoEnd are presentation times (DTS + composition offset:
+	// a frame can be shown after it is decoded: B-frames, or the offset the
+	// H264 DTS extractor builds up when frames are lost); videoEndDTS is the
+	// decode-order end, which is what the stall detection compares against.
+	hasVideo    bool
+	videoStart  time.Duration
+	videoEnd    time.Duration
+	videoEndDTS time.Duration
 }
 
 func (s *segment) write(t *recTrack, smp *sample, dts time.Duration) error {
 	endDTS := dts + timestampToDuration(int64(smp.Duration), int(t.clockRate))
 	if endDTS > s.endDTS {
 		s.endDTS = endDTS
+	}
+	if t.initTrack.Codec.IsVideo() {
+		pts := dts + timestampToDuration(int64(smp.PTSOffset), int(t.clockRate))
+		ptsEnd := pts + (endDTS - dts)
+		if !s.hasVideo || pts < s.videoStart {
+			s.videoStart = pts
+		}
+		s.hasVideo = true
+		s.videoEnd = max(s.videoEnd, ptsEnd)
+		s.videoEndDTS = max(s.videoEndDTS, endDTS)
 	}
 
 	if s.curPart == nil {
@@ -47,6 +69,17 @@ func (s *segment) write(t *recTrack, smp *sample, dts time.Duration) error {
 	}
 
 	return s.curPart.write(t, smp, dts)
+}
+
+// videoStalled reports whether no video sample has covered the segment for
+// longer than a stall by time dts: the video stopped (or never started) while
+// another track keeps writing.
+func (s *segment) videoStalled(dts time.Duration) bool {
+	last := s.startDTS
+	if s.hasVideo {
+		last = s.videoEndDTS
+	}
+	return dts-last > maxSampleGap
 }
 
 func (s *segment) closeCurPart() error {
@@ -74,7 +107,15 @@ func (s *segment) close() error {
 		err = s.closeCurPart()
 	}
 	if s.fi != nil {
+		// The segment ends where its last sample ends, in decode order or —
+		// for video shown after it decodes (composition offsets) — in presentation
+		// order, whichever is later. Without audio the video's presentation
+		// end is the later one; ending at the decode end would make the next
+		// segment's first frame show before this one's last.
 		duration := s.endDTS - s.startDTS
+		if s.hasVideo {
+			duration = max(duration, s.videoEnd-s.startDTS)
+		}
 		if e := writeDuration(s.fi, duration); err == nil {
 			err = e
 		}
@@ -83,13 +124,18 @@ func (s *segment) close() error {
 			err = e
 		}
 		if e == nil && s.r.OnSegment != nil {
-			s.r.OnSegment(SegmentInfo{
+			info := SegmentInfo{
 				Path:          s.path,
 				Start:         s.startNTP,
 				Duration:      duration,
 				SegmentNumber: s.number,
 				StreamID:      s.r.streamID.String(),
-			})
+			}
+			if s.hasVideo {
+				info.VideoStart = s.videoStart - s.startDTS
+				info.VideoDuration = s.videoEnd - s.videoStart
+			}
+			s.r.OnSegment(info)
 		}
 	}
 	return err

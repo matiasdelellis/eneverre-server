@@ -94,6 +94,14 @@ function dot(on) {
   return `<span class="${cls}" role="img" aria-label="${escapeHtml(label)}">${svgIcon("circle-dot")}</span>`;
 }
 
+// linkDot is the connection column: green when video flows, amber when only
+// audio does (the video is down but the audio is still being recorded).
+function linkDot(c) {
+  if (c.connected || !c.audio_only) return dot(c.connected);
+  const label = t("status.audio_only");
+  return `<span class="status-dot status-dot-warn" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${svgIcon("circle-dot")}</span>`;
+}
+
 function tile(label, value) {
   return `<div class="status-tile"><div class="status-tile-value">${escapeHtml(String(value))}</div><div class="status-tile-label">${escapeHtml(label)}</div></div>`;
 }
@@ -133,7 +141,7 @@ function renderCameras(cams) {
   const rows = (cams || []).map((c) => `
     <div class="users-row status-cam-row">
       <div class="status-cam-name">${escapeHtml(c.name || c.id)}</div>
-      <div>${dot(c.connected)}</div>
+      <div>${linkDot(c)}</div>
       <div>${dot(c.recording)}</div>
       <div>${dot(c.mse_active)}</div>
       <div>${dot(c.privacy)}</div>

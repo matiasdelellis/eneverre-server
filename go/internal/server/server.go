@@ -1144,6 +1144,7 @@ type statusCamera struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Connected   bool   `json:"connected"`
+	AudioOnly   bool   `json:"audio_only"`
 	Recording   bool   `json:"recording"`
 	MSEActive   bool   `json:"mse_active"`
 	Privacy     bool   `json:"privacy"`
@@ -1243,6 +1244,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		sc := statusCamera{ID: c.ID, Name: c.Name, Privacy: a.privacy[c.ID], ScheduleOff: a.schedOff[c.ID], Enabled: c.Enabled}
 		if st, ok := byID[c.ID]; ok {
 			sc.Connected = st.Connected
+			sc.AudioOnly = st.AudioOnly
 			sc.Recording = st.Recording
 			sc.MSEActive = st.MSEActive
 		}

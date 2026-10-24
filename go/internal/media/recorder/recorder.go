@@ -48,6 +48,15 @@ const maxBasetime = 1 * time.Second
 // stream never trips it, but a stalled one recovers instead of hanging forever.
 const noVideoTimeout = 8 * time.Second
 
+// audioOnlyTimeout is how long a session that still delivers audio may go
+// without video before the watchdog reconnects to try to get the video back.
+// Reconnecting costs a second or two of audio, so it doubles on every attempt
+// that brings no video, up to audioOnlyMaxTimeout.
+const (
+	audioOnlyTimeout    = time.Minute
+	audioOnlyMaxTimeout = 16 * time.Minute
+)
+
 // ErrNoSupportedVideo is returned by Start when the RTSP stream carries no video
 // codec the recorder can handle (H264 or H265; AV1/etc. are not). Callers can
 // detect it with errors.Is to report a clear diagnostic and back off (retrying
@@ -74,6 +83,13 @@ type SegmentInfo struct {
 	Duration      time.Duration
 	SegmentNumber uint64
 	StreamID      string
+	// VideoStart is the offset of the first video frame's presentation from
+	// Start, and VideoDuration the span the video is shown for from there. A camera can stop
+	// sending video while its audio keeps flowing: the segment then lasts as
+	// long as the audio, and its video covers only part of it. Both are zero
+	// for a segment with no video (audio recorded while the video was down).
+	VideoStart    time.Duration
+	VideoDuration time.Duration
 }
 
 // Recorder records a single RTSP stream (H264 video + optional AAC/G711 audio).
@@ -131,6 +147,12 @@ type Recorder struct {
 	videoCodecH265 *mcodecs.H265
 	dtsExtractor   videoDTS
 	videoStarted   bool
+	// connStart is when the current session started playing (zero until PLAY
+	// succeeds). Audio arriving before the
+	// first video keyframe waits up to maxSampleGap for it (a session normally
+	// starts on video); past that the camera is sending audio only and it is
+	// recorded without video.
+	connStart time.Time
 	// resyncKeyframe is set when a segment write failed and the segment was
 	// dropped: the next segment must not open until a video keyframe arrives.
 	resyncKeyframe bool
@@ -140,6 +162,21 @@ type Recorder struct {
 	// keeping the RTSP session half-alive (common on weak/distant links), which
 	// the transport-level read timeout doesn't always catch.
 	lastVideoNano atomic.Int64
+	// lastAudioNano is the UnixNano of the most recent decoded audio packet.
+	// A session whose video stalled but whose audio still flows is alive: the
+	// watchdog keeps it (the audio is still being recorded) and only retries
+	// the video after audioOnlyTimeout, backing off while it stays down.
+	lastAudioNano atomic.Int64
+	// lastFrameNano is the UnixNano of the most recent decoded video frame
+	// handed to the track (in relay-only mode, where nothing is decoded, of
+	// the most recent video packet). Unlike lastVideoNano — which the watchdog
+	// also feeds with pictures still waiting for a keyframe — it only moves
+	// when video is actually flowing into the recording and live view: it is
+	// what IsConnected reports.
+	lastFrameNano atomic.Int64
+	// audioOnlyRetries counts consecutive reconnects forced while only audio
+	// flowed; reset as soon as a connection delivers video.
+	audioOnlyRetries atomic.Int32
 
 	// shared multi-track state (guarded by mu, since RTP callbacks for
 	// different medias may run on different goroutines)
@@ -179,6 +216,7 @@ func (r *Recorder) Start() error {
 	r.dtsExtractor = nil
 	r.videoStarted = false
 	r.resyncKeyframe = false
+	r.connStart = time.Time{} // set once PLAY succeeds
 	r.mu.Unlock()
 
 	u, err := base.ParseURL(r.URL)
@@ -373,12 +411,16 @@ func (r *Recorder) Start() error {
 
 	// --- video callback ---
 	c.OnPacketRTP(videoMedia, videoForma, func(pkt *rtp.Packet) {
-		r.lastVideoNano.Store(time.Now().UnixNano()) // feed the media watchdog
-		if r.OnRTP != nil {                          // forward raw to live relay (lowest latency)
+		if r.OnRTP != nil { // forward raw to live relay (lowest latency)
 			r.OnRTP(videoMedia, pkt)
 		}
 		if !demux {
-			return // relay-only: skip video decode + fMP4 assembly
+			// relay-only: skip video decode + fMP4 assembly. No frames are
+			// decoded, so packets are the only liveness signal there is.
+			now := time.Now().UnixNano()
+			r.lastVideoNano.Store(now)
+			r.lastFrameNano.Store(now)
+			return
 		}
 		assemble(pkt)
 	})
@@ -409,26 +451,60 @@ func (r *Recorder) Start() error {
 	if _, err = c.Play(nil); err != nil {
 		return err
 	}
+	r.mu.Lock()
+	r.connStart = time.Now()
+	r.mu.Unlock()
 
 	// Media watchdog: some cameras (weak/distant links) stop sending video but
 	// keep the RTSP session alive, so client.Wait blocks forever and the
 	// transport read timeout never fires. If no video packet arrives for
 	// noVideoTimeout, close the client to unblock Wait; the engine then
 	// reconnects with a fresh session, which usually recovers the stream.
-	r.lastVideoNano.Store(time.Now().UnixNano())
+	//
+	// A camera can also stop sending video while its audio keeps flowing. That
+	// session is alive and its audio is still recorded, so it is kept for
+	// audioOnlyTimeout (doubling on each reconnect that brings no video) before
+	// retrying the video with a fresh session.
+	connStart := time.Now()
+	r.lastVideoNano.Store(connStart.UnixNano())
+	r.lastAudioNano.Store(0)
 	watchdogDone := make(chan struct{})
 	go func() {
 		t := time.NewTicker(2 * time.Second)
 		defer t.Stop()
+		audioOnly := false
 		for {
 			select {
 			case <-watchdogDone:
 				return
 			case <-t.C:
-				since := time.Since(time.Unix(0, r.lastVideoNano.Load()))
-				if since > noVideoTimeout {
+				lastVideo := time.Unix(0, r.lastVideoNano.Load())
+				if lastVideo.After(connStart) {
+					r.audioOnlyRetries.Store(0) // this session delivered video
+				}
+				since := time.Since(lastVideo)
+				if since <= noVideoTimeout {
+					audioOnly = false
+					continue
+				}
+				if time.Since(time.Unix(0, r.lastAudioNano.Load())) > noVideoTimeout {
 					r.Logf("no video for %s, forcing reconnect", since.Round(time.Second))
 					c.Close() // unblocks Wait below
+					return
+				}
+				limit := audioOnlyMaxTimeout
+				if n := r.audioOnlyRetries.Load(); n < 5 {
+					limit = min(audioOnlyTimeout<<n, audioOnlyMaxTimeout)
+				}
+				if !audioOnly {
+					audioOnly = true
+					r.Logf("no video for %s, audio still flowing: recording audio only (retrying video in %s)",
+						since.Round(time.Second), limit)
+				}
+				if since > limit {
+					r.audioOnlyRetries.Add(1)
+					r.Logf("no video for %s (audio only), forcing reconnect", since.Round(time.Second))
+					c.Close()
 					return
 				}
 			}
@@ -460,19 +536,31 @@ func (r *Recorder) Start() error {
 }
 
 // IsConnected reports whether the recorder is currently receiving video, i.e.
-// a video packet arrived within the last noVideoTimeout window (plus a small
-// margin). This is the same signal the media watchdog uses.
+// a decoded video frame (in relay-only mode, a video packet) arrived within the
+// last noVideoTimeout window (plus a small margin). Pictures still waiting for
+// a keyframe keep the watchdog quiet but don't count here: they are neither
+// recorded nor shown.
 func (r *Recorder) IsConnected() bool {
 	// Lock-free on purpose: this is called from the metrics scrape and must not
 	// contend with r.mu, which the RTP callback holds per access-unit around the
-	// fMP4 assembly + disk write. lastVideoNano is atomic and is the real
-	// "receiving video" signal; before the first packet it is 0, so the elapsed
-	// check already reports disconnected without needing to inspect r.client.
-	last := r.lastVideoNano.Load()
+	// fMP4 assembly + disk write. lastFrameNano is atomic and is the real
+	// "receiving video" signal (decoded frames, not pictures stuck waiting for
+	// a keyframe); before the first frame it is 0, so the elapsed check already
+	// reports disconnected without needing to inspect r.client.
+	last := r.lastFrameNano.Load()
 	if last == 0 {
 		return false
 	}
 	return time.Since(time.Unix(0, last)) <= noVideoTimeout+2*time.Second
+}
+
+// IsAudioOnly reports whether the camera is delivering audio but no video: its
+// video is down while the session (and its audio, which is still recorded) is
+// alive. IsConnected is false meanwhile.
+func (r *Recorder) IsAudioOnly() bool {
+	last := r.lastAudioNano.Load()
+	return !r.IsConnected() && last != 0 &&
+		time.Since(time.Unix(0, last)) <= noVideoTimeout+2*time.Second
 }
 
 // Close stops recording and flushes the current segment. Safe to call from
@@ -620,9 +708,13 @@ func (r *Recorder) setupG711(desc *description.Session, g711Media *description.M
 
 // wireAudio registers the RTP-callback envelope shared by every audio codec:
 // raw OnRTP passthrough, the relay-only short-circuit (!demux), PTS extraction,
-// and the mu-guarded "drop until first video keyframe" gate. decode turns one
-// packet into zero or more samples (nil on a decode error it already logged);
-// they are written to the track under r.mu only once video has started.
+// and the mu-guarded write. decode turns one packet into zero or more samples
+// (nil on a decode error it already logged); they are written to the track
+// under r.mu. Until the first video keyframe audio is dropped, so a session
+// starts on video; but if none comes within maxSampleGap the camera is sending
+// audio only, and that audio is recorded — a camera whose video is down can
+// still be heard — as long as the init can describe the video track (its
+// parameter sets are known).
 func (r *Recorder) wireAudio(t *recTrack, media *description.Media, forma format.Format, demux bool, decode func(pkt *rtp.Packet, pts int64) []*sample) {
 	r.client.OnPacketRTP(media, forma, func(pkt *rtp.Packet) {
 		if r.OnRTP != nil {
@@ -639,14 +731,42 @@ func (r *Recorder) wireAudio(t *recTrack, media *description.Media, forma format
 		if len(samples) == 0 {
 			return
 		}
+		r.lastAudioNano.Store(time.Now().UnixNano()) // the watchdog keeps an audio-only session
 		r.mu.Lock()
-		if r.videoStarted { // drop audio until first video keyframe
+		if r.videoStarted || r.audioOnly() {
 			for _, s := range samples {
 				t.write(s)
 			}
 		}
 		r.mu.Unlock()
 	})
+}
+
+// audioOnly reports whether audio may be recorded without video: the session
+// has been playing for longer than a stall without a video picture, and the
+// init can describe the video track. Caller must hold r.mu.
+func (r *Recorder) audioOnly() bool {
+	if r.connStart.IsZero() || !r.videoParamsKnown() {
+		return false
+	}
+	since := time.Since(r.connStart)
+	if r.videoStarted {
+		since = time.Since(time.Unix(0, r.lastVideoNano.Load()))
+	}
+	return since > maxSampleGap
+}
+
+// videoParamsKnown reports whether the video track's parameter sets are known
+// (from the SDP or a keyframe seen earlier), i.e. whether a segment's init can
+// be written before the first video sample. Caller must hold r.mu.
+func (r *Recorder) videoParamsKnown() bool {
+	switch {
+	case r.videoCodec != nil:
+		return r.videoCodec.SPS != nil && r.videoCodec.PPS != nil
+	case r.videoCodecH265 != nil:
+		return r.videoCodecH265.VPS != nil && r.videoCodecH265.SPS != nil && r.videoCodecH265.PPS != nil
+	}
+	return false
 }
 
 // processH264 turns an access unit into a sample and feeds it to the video track.
@@ -696,6 +816,11 @@ func (r *Recorder) processH264(t *recTrack, au [][]byte, pts int64, ntp time.Tim
 	if !hasVCL {
 		return
 	}
+	// Feed the media watchdog with coded pictures, not RTP packets: a camera
+	// that keeps the session alive with keep-alives but stops sending video
+	// would otherwise never trip it. Fed before the keyframe/DTS gates below,
+	// so waiting for an IDR (long GOP, extractor reset) is not a stall.
+	r.lastVideoNano.Store(time.Now().UnixNano())
 
 	if r.dtsExtractor == nil {
 		if !randomAccess {
@@ -720,6 +845,7 @@ func (r *Recorder) processH264(t *recTrack, au [][]byte, pts int64, ntp time.Tim
 		r.Logf("fill h264: %v", err)
 		return
 	}
+	r.lastFrameNano.Store(time.Now().UnixNano())
 	t.write(&sample{Sample: &s, dts: dts, ntp: ntp})
 }
 
@@ -782,6 +908,7 @@ func (r *Recorder) processH265(t *recTrack, au [][]byte, pts int64, ntp time.Tim
 	if !hasVCL {
 		return
 	}
+	r.lastVideoNano.Store(time.Now().UnixNano()) // see processH264
 
 	if r.dtsExtractor == nil {
 		if !randomAccess {
@@ -807,5 +934,6 @@ func (r *Recorder) processH265(t *recTrack, au [][]byte, pts int64, ntp time.Tim
 		r.Logf("fill h265: %v", err)
 		return
 	}
+	r.lastFrameNano.Store(time.Now().UnixNano())
 	t.write(&sample{Sample: &s, dts: dts, ntp: ntp})
 }

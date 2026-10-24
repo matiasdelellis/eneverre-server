@@ -512,6 +512,7 @@ export default {
   "status.no_cameras": "No hay cámaras configuradas.",
   "status.yes": "sí",
   "status.no": "no",
+  "status.audio_only": "solo audio (sin video)",
   "status.load_failed": "No se pudo cargar el estado del servidor.",
   "status.disk_low_banner": "Espacio en disco bajo: {free} libres. Se están purgando las grabaciones más viejas.",
 

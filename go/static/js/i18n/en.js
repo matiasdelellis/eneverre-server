@@ -511,6 +511,7 @@ export default {
   "status.no_cameras": "No cameras configured.",
   "status.yes": "yes",
   "status.no": "no",
+  "status.audio_only": "audio only (no video)",
   "status.load_failed": "Could not load server status.",
   "status.disk_low_banner": "Low disk space: {free} free. Purging the oldest recordings.",
 

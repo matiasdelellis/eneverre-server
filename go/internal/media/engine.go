@@ -69,6 +69,7 @@ type Options struct {
 	IndexPath       string        // SQLite index file (default <RecordDir>/index.db)
 	CacheDir        string        // generated-asset cache (gap-fill frames); default <RecordDir>/../cache
 	GapMessage      string        // caption burned into gap-fill black frames (default "NO RECORDING")
+	NoVideoMessage  string        // caption over audio recorded without video (default "NO VIDEO")
 	RecordPath      string        // segment path pattern (default <RecordDir>/%path/%Y-%m-%d/%H/<time>)
 	SegmentDuration time.Duration // min segment length (default 60s)
 	PartDuration    time.Duration // fMP4 fragment length (default 1s)
@@ -122,6 +123,7 @@ func OptionsFromSection(sec config.Section, dataDir string) Options {
 	o.IndexPath = sec.Get("index_path", filepath.Join(recordDir, "index.db"))
 	o.CacheDir = sec.Get("cache_dir", filepath.Join(filepath.Dir(recordDir), "cache"))
 	o.GapMessage = sec.Get("gap_message", "NO RECORDING")
+	o.NoVideoMessage = sec.Get("no_video_message", "NO VIDEO")
 	// Default layout groups by camera then date then hour, so each
 	// camera's day is one subtree (`<RecordDir>/<cam>/YYYY-MM-DD/HH/...`).
 	// The filename embeds the full timestamp so segments stay uniquely
@@ -331,7 +333,7 @@ func New(opts Options) (*Engine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open index: %w", err)
 		}
-		pb = &playback.Handler{Index: idx, CacheDir: opts.CacheDir, GapMessage: opts.GapMessage}
+		pb = &playback.Handler{Index: idx, CacheDir: opts.CacheDir, GapMessage: opts.GapMessage, NoVideoMessage: opts.NoVideoMessage}
 	}
 	var relay *liverelay.Relay
 	if opts.RelayEnabled {
@@ -388,6 +390,54 @@ func New(opts Options) (*Engine, error) {
 		go e.runIndexer()
 	}
 	return e, nil
+}
+
+// backfillVideo measures the video extent of segments indexed before it was
+// recorded, newest first, so playback can fill the spans where a camera sent
+// audio without video. It reads only the fragment headers of each file and
+// paces itself between batches; a file it cannot read keeps its unknown extent
+// (playback then treats the segment as before) and is stepped past.
+func (e *Engine) backfillVideo() {
+	const batch = 200
+	var cursor index.Segment
+	measured := 0
+	for {
+		segs, err := e.idx.VideoUnmeasured(cursor, batch)
+		if err != nil {
+			slog.Warn("media/video backfill query failed", "err", err)
+			return
+		}
+		if len(segs) == 0 {
+			break
+		}
+		done := make([]index.Segment, 0, len(segs))
+		for _, s := range segs {
+			if e.ctx.Err() != nil {
+				return
+			}
+			cursor = s
+			_, video, err := recovery.Measure(s.Fpath)
+			if err != nil {
+				slog.Debug("media/video backfill: skip", "file", s.Fpath, "err", err)
+				continue
+			}
+			s.Video = video
+			done = append(done, s)
+		}
+		if err := e.idx.SetVideo(done); err != nil {
+			slog.Warn("media/video backfill update failed", "err", err)
+			return
+		}
+		measured += len(done)
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if measured > 0 {
+		slog.Info("media: measured the video extent of older segments", "count", measured)
+	}
 }
 
 // runIndexer drains idxCh, performing every segment index.Insert on this single
@@ -512,6 +562,13 @@ func (e *Engine) Start(cams []camera.Camera) {
 			e.diskMon.Run(e.ctx)
 		}()
 		slog.Info("media: low-disk watcher enabled", "min_free_bytes", e.opts.MinFreeBytes, "record_dir", e.opts.RecordDir)
+	}
+	if e.idx != nil {
+		e.wg.Add(1)
+		go func() {
+			defer e.wg.Done()
+			e.backfillVideo()
+		}()
 	}
 	mode := "live-only"
 	if e.opts.RecordEnabled {
@@ -809,6 +866,10 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 				Duration:      s.Duration.Seconds(),
 				SegmentNumber: s.SegmentNumber,
 				StreamID:      s.StreamID,
+				Video: &index.VideoExtent{
+					Start:    s.VideoStart.Seconds(),
+					Duration: s.VideoDuration.Seconds(),
+				},
 			})
 		},
 	}
@@ -1013,6 +1074,7 @@ func (e *Engine) Retain() time.Duration { return e.opts.Retain }
 type CameraStatus struct {
 	ID        string
 	Connected bool // RTSP stream is connected and receiving video packets
+	AudioOnly bool // connected and receiving audio, but no video (still recorded)
 	Paused    bool // privacy-paused (recording + transmission stopped)
 	MSEActive bool // live MSE broadcaster has an active source
 	Recording bool // the engine is writing segments to disk for this camera
@@ -1036,7 +1098,8 @@ func (e *Engine) Status() []CameraStatus {
 		}
 		if ctrl.rec != nil {
 			s.Connected = ctrl.rec.IsConnected()
-			s.Recording = ctrl.rec.Record && s.Connected
+			s.AudioOnly = ctrl.rec.IsAudioOnly()
+			s.Recording = ctrl.rec.Record && (s.Connected || s.AudioOnly)
 		}
 		out = append(out, s)
 	}

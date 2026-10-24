@@ -2692,3 +2692,4 @@ kbd {
 .status-dot { display: inline-flex; font-size: 14px; }
 .status-dot-on { color: var(--good); }
 .status-dot-off { color: var(--border-strong); }
+.status-dot-warn { color: var(--warn); }
