@@ -155,13 +155,15 @@ func readHeader(r io.ReadSeeker) (*fmp4.Init, time.Duration, error) {
 
 // muxParts reads the moof/mdat fragments of one segment and feeds samples to
 // the muxer, shifting DTS by startDTS and stopping once duration is reached.
-// Returns the actual duration muxed from this segment.
+// Returns the actual duration muxed from this segment. A non-nil fill splices
+// its placeholder into the spans where the segment has no video.
 func muxParts(
 	r readSeekerAt,
 	startDTS time.Duration,
 	duration time.Duration,
 	tracks []*fmp4.InitTrack,
 	m muxer,
+	fill *videoFill,
 ) (time.Duration, error) {
 	var startDTSMP4 int64
 	var durationMP4 int64
@@ -176,6 +178,9 @@ func muxParts(
 		switch h.BoxInfo.Type.String() {
 		case "moof":
 			moofOffset = h.BoxInfo.Offset
+			if fill != nil {
+				fill.catchUp(m)
+			}
 			return h.Expand()
 
 		case "traf":
@@ -248,15 +253,26 @@ func muxParts(
 
 				payload := blob[rel : rel+uint64(e.SampleSize)]
 
-				err = m.writeSample(
-					dts,
-					e.SampleCompositionTimeOffsetV1,
-					(e.SampleFlags&sampleFlagIsNonSyncSample) != 0,
-					e.SampleSize,
-					func() ([]byte, error) { return payload, nil },
-				)
-				if err != nil {
-					return nil, err
+				write := true
+				if fill != nil {
+					if int(tfhd.TrackID) == fill.trackID {
+						write = fill.video(m, dts, e.SampleCompositionTimeOffsetV1, e.SampleDuration,
+							(e.SampleFlags&sampleFlagIsNonSyncSample) == 0)
+					} else {
+						fill.other(durationMp4ToGo(dts+int64(e.SampleDuration), timeScale))
+					}
+				}
+				if write {
+					err = m.writeSample(
+						dts,
+						e.SampleCompositionTimeOffsetV1,
+						(e.SampleFlags&sampleFlagIsNonSyncSample) != 0,
+						e.SampleSize,
+						func() ([]byte, error) { return payload, nil },
+					)
+					if err != nil {
+						return nil, err
+					}
 				}
 
 				rel += uint64(e.SampleSize)
@@ -279,6 +295,9 @@ func muxParts(
 	})
 	if err != nil && !errors.Is(err, errTerminated) {
 		return 0, err
+	}
+	if fill != nil {
+		fill.finish(m, duration)
 	}
 	return segmentDuration, nil
 }

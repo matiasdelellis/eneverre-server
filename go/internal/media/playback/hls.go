@@ -120,27 +120,70 @@ func (h *Handler) HandleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	// grant (`exp`/`sig`) so an authenticated playlist yields playable parts.
 	auth := hlsAuthQuery(r)
 
-	// init segment (track config) taken from the first segment of the range
-	initURL := "init.mp4?path=" + url.QueryEscape(path) +
-		"&start=" + url.QueryEscape(segs[0].Start.Format(time.RFC3339Nano)) + auth
-	b.WriteString(fmt.Sprintf("#EXT-X-MAP:URI=%q\n", initURL))
+	// The init segment carries the track configuration (SPS/PPS). A window can
+	// span a camera restart that changed resolution or codec, and the index
+	// records one stream_id per configuration: each change needs its own
+	// EXT-X-MAP (and a discontinuity), or the decoder keeps the first stream's
+	// parameters and renders garbage for the rest of the window.
+	//
+	// A segment where the camera kept sending audio without video gets a
+	// placeholder frame over that span (see videoFill). The placeholder has
+	// its own parameter sets, so those segments use an avc3 init of their own
+	// (`fill=1`), and the footage around them keeps the plain avc1 one.
+	writeInit := func(seg index.Segment, fill string) {
+		initURL := "init.mp4?path=" + url.QueryEscape(path) +
+			"&start=" + url.QueryEscape(seg.Start.Format(time.RFC3339Nano)) + fill + auth
+		b.WriteString(fmt.Sprintf("#EXT-X-MAP:URI=%q\n", initURL))
+	}
+
+	// The placeholder is H264-only: an H265 segment with a span lacking video
+	// is served as is (flagging it would only add an init and discontinuities
+	// with nothing to fill). The codec is read from one segment's init per
+	// stream, since a stream never changes it; rows without a stream id
+	// (legacy) can't be grouped and are checked one by one.
+	fillable := map[string]bool{}
+	canFill := func(s index.Segment) bool {
+		if s.StreamID == "" {
+			return segmentHasH264(s.Fpath)
+		}
+		ok, seen := fillable[s.StreamID]
+		if !seen {
+			ok = segmentHasH264(s.Fpath)
+			fillable[s.StreamID] = ok
+		}
+		return ok
+	}
 
 	base := 0.0 // cumulative presentation time (gaps collapsed)
 	var prevEnd time.Time
+	prevInit := ""
 	for i, s := range segs {
+		fill := ""
+		if s.VideoPartial(videoFillThreshold) && canFill(s) {
+			fill = "&fill=1"
+		}
 		// A coverage gap (wall-clock jump beyond tolerance from the
 		// previous segment's end) is a real discontinuity: the next
 		// segment has different decoder params and a wall-clock jump, so
 		// we emit EXT-X-DISCONTINUITY per the HLS spec. Generic players
 		// (VLC, ExoPlayer, AVPlayer, hls.js) reset decoder state and
 		// typically seek to the next keyframe. Matches
-		// segmentCanBeConcatenated's tolerance.
-		if i > 0 && s.Start.Sub(prevEnd) > concatenationTolerance {
+		// segmentCanBeConcatenated's tolerance. A stream change (or a switch
+		// to/from the placeholder's init) is a discontinuity even without a
+		// wall-clock gap.
+		gap := i > 0 && s.Start.Sub(prevEnd) > concatenationTolerance
+		initKey := s.StreamID + fill
+		initChanged := initKey != prevInit
+		if i > 0 && (gap || initChanged) {
 			b.WriteString("#EXT-X-DISCONTINUITY\n")
+		}
+		if i == 0 || initChanged {
+			writeInit(s, fill)
+			prevInit = initKey
 		}
 		segURL := "segment.m4s?path=" + url.QueryEscape(path) +
 			"&start=" + url.QueryEscape(s.Start.Format(time.RFC3339Nano)) +
-			"&base=" + strconv.FormatFloat(base, 'f', -1, 64) + auth
+			"&base=" + strconv.FormatFloat(base, 'f', -1, 64) + fill + auth
 		b.WriteString("#EXT-X-PROGRAM-DATE-TIME:" + s.Start.Format(time.RFC3339Nano) + "\n")
 		b.WriteString(fmt.Sprintf("#EXTINF:%.6f,\n", s.Duration))
 		b.WriteString(segURL + "\n")
@@ -153,7 +196,7 @@ func (h *Handler) HandleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(b.String())) //nolint:errcheck
 }
 
-// HandleHLSInit serves the CMAF init segment: GET /hls/init.mp4?path=&start=
+// HandleHLSInit serves the CMAF init segment: GET /hls/init.mp4?path=&start=[&fill=1]
 func (h *Handler) HandleHLSInit(w http.ResponseWriter, r *http.Request) {
 	seg, ok := h.hlsFindSegment(w, r)
 	if !ok {
@@ -178,6 +221,9 @@ func (h *Handler) HandleHLSInit(w http.ResponseWriter, r *http.Request) {
 	if err := clean.Marshal(&buf); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if r.URL.Query().Get("fill") == "1" {
+		patchAVC1toAVC3(buf.Bytes()) // the placeholder frame brings its own SPS/PPS
 	}
 
 	w.Header().Set("Content-Type", "video/mp4")
@@ -218,8 +264,13 @@ func (h *Handler) HandleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	baseDur := time.Duration(base * float64(time.Second))
 	segDur := time.Duration(seg.Duration * float64(time.Second))
 
+	var fill *videoFill
+	if r.URL.Query().Get("fill") == "1" {
+		fill = newVideoFill(init.Tracks, h.CacheDir, h.NoVideoMessage, baseDur)
+	}
+
 	// duration generous enough to never cut the segment short
-	if _, err := muxParts(f, baseDur, baseDur+segDur+2*time.Second, init.Tracks, m); err != nil {
+	if _, err := muxParts(f, baseDur, baseDur+segDur+2*time.Second, init.Tracks, m, fill); err != nil {
 		if !sw.started {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}

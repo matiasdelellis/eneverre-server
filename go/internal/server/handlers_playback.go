@@ -73,10 +73,18 @@ func (a *App) handlePlaybackList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(segs))
 	for _, s := range segs {
-		out = append(out, map[string]any{
+		item := map[string]any{
 			"start":    s.Start.UTC().Format(time.RFC3339Nano),
 			"duration": s.Duration,
-		})
+		}
+		// Where the video lies in the segment: a camera can keep sending
+		// audio while its video is down. Omitted while not yet measured
+		// (segments recorded by an older version, until the backfill).
+		if s.Video != nil {
+			item["video_start"] = s.Video.Start
+			item["video_duration"] = s.Video.Duration
+		}
+		out = append(out, item)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

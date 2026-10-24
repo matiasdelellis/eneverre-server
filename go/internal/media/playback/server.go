@@ -35,8 +35,10 @@ func (ww *writerWrapper) Write(p []byte) (int, error) {
 // using the mtxi box for gapless concatenation across files. When fillGaps is
 // set, coverage gaps between segments are filled with a black "SIN GRABACIÓN"
 // frame occupying the real gap time (so a download isn't silently trimmed),
-// and the stream is emitted as avc3 (see muxerFMP4.useAVC3).
-func seekAndMux(segments []index.Segment, start time.Time, duration time.Duration, m muxer, fillGaps bool, cacheDir, gapMessage string) error {
+// and the stream is emitted as avc3 (see muxerFMP4.useAVC3). Spans inside a
+// segment where the camera sent audio but no video get a "no video" frame the
+// same way (see videoFill).
+func seekAndMux(segments []index.Segment, start time.Time, duration time.Duration, m muxer, fillGaps bool, cacheDir, gapMessage, noVideoMessage string) error {
 	f, err := os.Open(segments[0].Fpath)
 	if err != nil {
 		return err
@@ -77,6 +79,12 @@ func seekAndMux(segments []index.Segment, start time.Time, duration time.Duratio
 		}
 	}
 
+	// Placeholder for the spans inside a segment that have audio but no video.
+	var noVideo *videoFill
+	if fillGaps {
+		noVideo = newVideoFill(firstInit.Tracks, cacheDir, noVideoMessage, 0)
+	}
+
 	firstMtxi := mtxi.Find(firstInit.UserData)
 	// startOffset is the first segment's start relative to the requested start,
 	// and doubles as the DTS base for that segment (see `dts := startOffset`).
@@ -90,7 +98,7 @@ func seekAndMux(segments []index.Segment, start time.Time, duration time.Duratio
 		writeBlackGap(m, vID, vTS, blackPayload, 0, min(startOffset, duration))
 	}
 
-	segDur, err := muxParts(f, startOffset, duration, firstInit.Tracks, m)
+	segDur, err := muxParts(f, startOffset, duration, firstInit.Tracks, m, noVideo.at(startOffset))
 	if err != nil {
 		return err
 	}
@@ -154,7 +162,7 @@ func seekAndMux(segments []index.Segment, start time.Time, duration time.Duratio
 			dts = seg.Start.Sub(start)
 		}
 
-		segDur, err := muxParts(sf, dts, duration, firstInit.Tracks, m)
+		segDur, err := muxParts(sf, dts, duration, firstInit.Tracks, m, noVideo.at(dts))
 		if err != nil {
 			return segmentEnd, prevInit, false, err
 		}
@@ -206,6 +214,9 @@ type Handler struct {
 	CacheDir string
 	// GapMessage is the caption burned into the gap-fill black frame.
 	GapMessage string
+	// NoVideoMessage is the caption of the frame filling the spans where a
+	// camera recorded audio but no video.
+	NoVideoMessage string
 }
 
 // HandleGet implements GET /get?path=&start=&duration=&format=fmp4
@@ -253,7 +264,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	ww := &writerWrapper{w: w}
 	m := &muxerFMP4{w: ww, useAVC3: fillGaps}
 
-	if err := seekAndMux(segments, start, duration, m, fillGaps, h.CacheDir, h.GapMessage); err != nil {
+	if err := seekAndMux(segments, start, duration, m, fillGaps, h.CacheDir, h.GapMessage, h.NoVideoMessage); err != nil {
 		if !ww.written {
 			if errors.Is(err, errNoSamples) {
 				http.Error(w, err.Error(), http.StatusNotFound)
