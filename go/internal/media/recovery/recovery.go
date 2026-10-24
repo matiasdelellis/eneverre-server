@@ -278,9 +278,9 @@ func CameraRoot(recordPath, camera string) string {
 }
 
 // probe reads a segment file and derives its index row: start/StreamID/segment
-// number from the mtxi box, and duration summed from the video track's fMP4
-// fragment sample durations (the on-disk mvhd duration is unreliable — a crashed
-// segment never had it written).
+// number from the mtxi box, and duration and video extent measured from the
+// fMP4 fragments (the on-disk mvhd duration is unreliable — a crashed segment
+// never had it written).
 func probe(path, camera string) (index.Segment, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -297,21 +297,7 @@ func probe(path, camera string) (index.Segment, error) {
 		return index.Segment{}, fmt.Errorf("no mtxi box (not a recorder segment)")
 	}
 
-	// Identify the video track (its timescale converts fragment ticks to time).
-	var videoID int
-	var videoTS uint32
-	for _, t := range init.Tracks {
-		if t.Codec.IsVideo() {
-			videoID = t.ID
-			videoTS = t.TimeScale
-			break
-		}
-	}
-	if videoTS == 0 {
-		return index.Segment{}, fmt.Errorf("no video track in init")
-	}
-
-	dur, err := videoDuration(path, videoID, videoTS)
+	dur, video, err := measure(f, init.Tracks)
 	if err != nil {
 		return index.Segment{}, err
 	}
@@ -326,7 +312,149 @@ func probe(path, camera string) (index.Segment, error) {
 		Duration:      dur.Seconds(),
 		SegmentNumber: m.SegmentNumber,
 		StreamID:      uuid.UUID(m.StreamID).String(),
+		Video:         video,
 	}, nil
+}
+
+// Measure returns a segment file's duration and the extent of its video, as
+// probe derives them. The engine uses it to backfill the video extent of rows
+// indexed before it was recorded.
+func Measure(path string) (time.Duration, *index.VideoExtent, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer f.Close()
+	init, err := readInit(f)
+	if err != nil {
+		return 0, nil, err
+	}
+	return measure(f, init.Tracks)
+}
+
+// stretchedSample is the sample duration past which a sample is taken to have
+// been stretched over a camera stall (older recorders gave the last frame
+// before an outage the whole outage as its duration). Such a sample counts as
+// one frame interval (the duration of the sample before it, or 1/25 s when it
+// is the track's first).
+const stretchedSample = 5 * time.Second
+
+// measure walks a segment's fragments and returns its duration (the end of its
+// longest track) and its video extent (nil-free: Duration 0 when the segment
+// holds no video). Positions come from each fragment's tfdt, which is relative
+// to the segment start, so holes between fragments are accounted for.
+func measure(f io.ReadSeeker, tracks []*fmp4.InitTrack) (time.Duration, *index.VideoExtent, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return 0, nil, err
+	}
+	timeScales := make(map[uint32]uint32, len(tracks))
+	var videoID uint32
+	for _, t := range tracks {
+		timeScales[uint32(t.ID)] = t.TimeScale
+		if t.Codec.IsVideo() && videoID == 0 {
+			videoID = uint32(t.ID)
+		}
+	}
+
+	lastSane := make(map[uint32]int64) // per track: last non-stretched sample duration
+	var (
+		trackID    uint32
+		base       uint64
+		end        time.Duration
+		hasVideo   bool
+		videoStart time.Duration
+		videoEnd   time.Duration
+	)
+	_, err := amp4.ReadBoxStructure(f, func(h *amp4.ReadHandle) (any, error) {
+		switch h.BoxInfo.Type.String() {
+		case "moof", "traf":
+			return h.Expand()
+		case "tfhd":
+			box, _, perr := h.ReadPayload()
+			if perr != nil {
+				return nil, perr
+			}
+			trackID = box.(*amp4.Tfhd).TrackID
+		case "tfdt":
+			box, _, perr := h.ReadPayload()
+			if perr != nil {
+				return nil, perr
+			}
+			tfdt := box.(*amp4.Tfdt)
+			base = tfdt.BaseMediaDecodeTimeV1
+			if tfdt.GetVersion() == 0 {
+				base = uint64(tfdt.BaseMediaDecodeTimeV0)
+			}
+		case "trun":
+			ts := timeScales[trackID]
+			if ts == 0 {
+				return nil, nil
+			}
+			box, _, perr := h.ReadPayload()
+			if perr != nil {
+				return nil, perr
+			}
+			trun := box.(*amp4.Trun)
+			if len(trun.Entries) == 0 {
+				return nil, nil
+			}
+			// A stretched sample counts as long as the track's sample before
+			// it (one frame interval), not the outage it was stretched over.
+			// The stretched sample often sits alone in the last fragment, so
+			// that interval is carried across fragments.
+			limit := int64(stretchedSample.Seconds() * float64(ts))
+			dts := int64(base)
+			for _, e := range trun.Entries {
+				d := int64(e.SampleDuration)
+				if d > limit {
+					d = lastSane[trackID]
+					if d == 0 { // nothing before it: one frame at 25 fps
+						d = int64(ts) / 25
+					}
+				} else {
+					lastSane[trackID] = d
+				}
+				if trackID == videoID {
+					// Video extent in presentation time (frames can be shown
+					// after they are decoded).
+					cto := int64(e.SampleCompositionTimeOffsetV1)
+					if trun.GetVersion() == 0 {
+						cto = int64(e.SampleCompositionTimeOffsetV0)
+					}
+					pts := ticksToDuration(dts+cto, ts)
+					if !hasVideo || pts < videoStart {
+						videoStart = pts
+					}
+					hasVideo = true
+					videoEnd = max(videoEnd, ticksToDuration(dts+cto+d, ts))
+				}
+				dts += d
+			}
+			end = max(end, ticksToDuration(dts, ts))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	video := &index.VideoExtent{}
+	if hasVideo {
+		video.Start = videoStart.Seconds()
+		video.Duration = (videoEnd - videoStart).Seconds()
+		// The segment lasts until its video is no longer shown, which can be
+		// past the decode end of every track (composition offsets).
+		end = max(end, videoEnd)
+	}
+	return end, video, nil
+}
+
+func ticksToDuration(ticks int64, timeScale uint32) time.Duration {
+	if ticks < 0 {
+		ticks = 0
+	}
+	ts := int64(timeScale)
+	return time.Duration(ticks/ts)*time.Second +
+		time.Duration(ticks%ts)*time.Second/time.Duration(ts)
 }
 
 // readInit parses the ftyp+moov init at the head of a segment file into an
@@ -366,52 +494,4 @@ func readInit(f *os.File) (*fmp4.Init, error) {
 		return nil, err
 	}
 	return &init, nil
-}
-
-// videoDuration sums the video track's sample durations across every fragment
-// (moof/traf/trun) and converts the total to wall-clock time via the track
-// timescale. This is the segment's true recorded length regardless of the
-// unwritten mvhd duration.
-func videoDuration(path string, videoID int, timeScale uint32) (time.Duration, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	var curTrackID uint32
-	var totalTicks int64
-	_, err = amp4.ReadBoxStructure(f, func(h *amp4.ReadHandle) (any, error) {
-		switch h.BoxInfo.Type.String() {
-		case "moof", "traf":
-			return h.Expand()
-		case "tfhd":
-			box, _, perr := h.ReadPayload()
-			if perr != nil {
-				return nil, perr
-			}
-			curTrackID = box.(*amp4.Tfhd).TrackID
-		case "trun":
-			if int(curTrackID) != videoID {
-				return nil, nil
-			}
-			box, _, perr := h.ReadPayload()
-			if perr != nil {
-				return nil, perr
-			}
-			for _, e := range box.(*amp4.Trun).Entries {
-				totalTicks += int64(e.SampleDuration)
-			}
-		}
-		return nil, nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	if totalTicks <= 0 {
-		return 0, nil
-	}
-	ts := int64(timeScale)
-	return time.Duration(totalTicks/ts)*time.Second +
-		time.Duration(totalTicks%ts)*time.Second/time.Duration(ts), nil
 }

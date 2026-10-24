@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver, no cgo
@@ -21,6 +22,30 @@ type Segment struct {
 	Duration      float64   `json:"duration"` // seconds
 	SegmentNumber uint64    `json:"segmentNumber"`
 	StreamID      string    `json:"streamId"`
+	// Video is the span the video covers; nil when unknown (a row indexed
+	// before it was recorded, until the engine's backfill reaches it).
+	Video *VideoExtent `json:"video,omitempty"`
+}
+
+// VideoExtent is where the video lies within a segment. A camera can stop
+// sending video while its audio keeps flowing, so the segment (which lasts as
+// long as its longest track) may be covered by video only in part, or not at
+// all (Duration 0).
+type VideoExtent struct {
+	Start    float64 `json:"start"`    // seconds from the segment start
+	Duration float64 `json:"duration"` // seconds
+}
+
+// VideoPartial reports whether the segment's video leaves more than tolerance
+// uncovered at its start or end, or there is no video at all. False when the
+// extent is unknown.
+func (s Segment) VideoPartial(tolerance time.Duration) bool {
+	if s.Video == nil {
+		return false
+	}
+	tol := tolerance.Seconds()
+	return s.Video.Duration == 0 || s.Video.Start > tol ||
+		s.Duration-(s.Video.Start+s.Video.Duration) > tol
 }
 
 // Gap is an interruption between two consecutive segments.
@@ -88,7 +113,47 @@ func Open(dbPath string) (*Index, error) {
 		db.Close()
 		return nil, err
 	}
+	// Columns added after the first release. -1 marks a row indexed before
+	// the video extent was recorded; the engine backfills it from the file.
+	for _, stmt := range []string{
+		`ALTER TABLE segments ADD COLUMN video_start_ns INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE segments ADD COLUMN video_duration_ns INTEGER NOT NULL DEFAULT -1`,
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, err
+		}
+	}
 	return &Index{db: db}, nil
+}
+
+// segmentColumns is the column list every segment SELECT scans, in
+// scanSegment's order.
+const segmentColumns = `fpath,path,start_ns,duration_ns,seg_number,stream_id,video_start_ns,video_duration_ns`
+
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanSegment(row rowScanner) (Segment, error) {
+	var s Segment
+	var startNs, durNs, vStartNs, vDurNs int64
+	if err := row.Scan(&s.Fpath, &s.Path, &startNs, &durNs, &s.SegmentNumber, &s.StreamID, &vStartNs, &vDurNs); err != nil {
+		return s, err
+	}
+	s.Start = time.Unix(0, startNs)
+	s.Duration = float64(durNs) / 1e9
+	if vDurNs >= 0 {
+		s.Video = &VideoExtent{Start: float64(vStartNs) / 1e9, Duration: float64(vDurNs) / 1e9}
+	}
+	return s, nil
+}
+
+// videoColumns maps a segment's video extent to its two columns (-1 duration
+// when unknown).
+func videoColumns(s Segment) (startNs, durNs int64) {
+	if s.Video == nil {
+		return 0, -1
+	}
+	return int64(s.Video.Start * 1e9), int64(s.Video.Duration * 1e9)
 }
 
 // Close closes the index.
@@ -96,10 +161,12 @@ func (i *Index) Close() error { return i.db.Close() }
 
 // Insert adds (or replaces) a segment.
 func (i *Index) Insert(s Segment) error {
+	vStart, vDur := videoColumns(s)
 	_, err := i.db.Exec(
-		`INSERT OR REPLACE INTO segments(fpath,path,start_ns,duration_ns,seg_number,stream_id)
-		 VALUES(?,?,?,?,?,?)`,
+		`INSERT OR REPLACE INTO segments(`+segmentColumns+`)
+		 VALUES(?,?,?,?,?,?,?,?)`,
 		s.Fpath, s.Path, s.Start.UnixNano(), int64(s.Duration*1e9), s.SegmentNumber, s.StreamID,
+		vStart, vDur,
 	)
 	return err
 }
@@ -111,7 +178,7 @@ func (i *Index) Insert(s Segment) error {
 // means no limit (returns every expired row in one shot — only safe
 // when the corpus is small).
 func (i *Index) Expired(cutoff time.Time, limit int) ([]Segment, error) {
-	q := `SELECT fpath,path,start_ns,duration_ns,seg_number,stream_id FROM segments
+	q := `SELECT ` + segmentColumns + ` FROM segments
 	      WHERE (start_ns + duration_ns) <= ? ORDER BY start_ns ASC`
 	args := []any{cutoff.UnixNano()}
 	if limit > 0 {
@@ -127,7 +194,7 @@ func (i *Index) Expired(cutoff time.Time, limit int) ([]Segment, error) {
 // free space crosses below the low-water mark — without depending on
 // the configured retain window. Same limit semantics as Expired.
 func (i *Index) Oldest(limit int) ([]Segment, error) {
-	q := `SELECT fpath,path,start_ns,duration_ns,seg_number,stream_id FROM segments
+	q := `SELECT ` + segmentColumns + ` FROM segments
 	      ORDER BY start_ns ASC`
 	args := []any{}
 	if limit > 0 {
@@ -149,13 +216,10 @@ func (i *Index) querySegments(q string, args ...any) ([]Segment, error) {
 
 	var out []Segment
 	for rows.Next() {
-		var s Segment
-		var startNs, durNs int64
-		if err := rows.Scan(&s.Fpath, &s.Path, &startNs, &durNs, &s.SegmentNumber, &s.StreamID); err != nil {
+		s, err := scanSegment(rows)
+		if err != nil {
 			return nil, err
 		}
-		s.Start = time.Unix(0, startNs)
-		s.Duration = float64(durNs) / 1e9
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -242,7 +306,7 @@ func (i *Index) Timeline(path string) (Timeline, error) {
 // Range returns segments overlapping [from,to], ordered by start.
 // A nil bound means unbounded on that side.
 func (i *Index) Range(path string, from, to *time.Time) ([]Segment, error) {
-	q := `SELECT fpath,path,start_ns,duration_ns,seg_number,stream_id FROM segments WHERE path=?`
+	q := `SELECT ` + segmentColumns + ` FROM segments WHERE path=?`
 	args := []any{path}
 	if to != nil {
 		q += ` AND start_ns < ?`
@@ -262,13 +326,10 @@ func (i *Index) Range(path string, from, to *time.Time) ([]Segment, error) {
 
 	var out []Segment
 	for rows.Next() {
-		var s Segment
-		var startNs, durNs int64
-		if err := rows.Scan(&s.Fpath, &s.Path, &startNs, &durNs, &s.SegmentNumber, &s.StreamID); err != nil {
+		s, err := scanSegment(rows)
+		if err != nil {
 			return nil, err
 		}
-		s.Start = time.Unix(0, startNs)
-		s.Duration = float64(durNs) / 1e9
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -295,4 +356,47 @@ func (i *Index) Gaps(path string, from, to *time.Time, tolerance time.Duration) 
 		}
 	}
 	return gaps, nil
+}
+
+// VideoUnmeasured returns up to limit segments whose video extent is unknown
+// (rows indexed before it was recorded) and that come before `after` in
+// (start, fpath) order, newest first: the footage most likely to be played
+// back is backfilled first. Paging by that key lets the caller step past rows
+// it could not measure, including rows that share a start time (two cameras
+// can). A zero `after` starts from the newest.
+func (i *Index) VideoUnmeasured(after Segment, limit int) ([]Segment, error) {
+	if after.Start.IsZero() {
+		return i.querySegments(`SELECT `+segmentColumns+` FROM segments
+			WHERE video_duration_ns < 0 ORDER BY start_ns DESC, fpath DESC LIMIT ?`, limit)
+	}
+	return i.querySegments(`SELECT `+segmentColumns+` FROM segments
+		WHERE video_duration_ns < 0 AND (start_ns < ? OR (start_ns = ? AND fpath < ?))
+		ORDER BY start_ns DESC, fpath DESC LIMIT ?`,
+		after.Start.UnixNano(), after.Start.UnixNano(), after.Fpath, limit)
+}
+
+// SetVideo records the measured video extent of several segments in one
+// transaction. Each Segment needs Fpath and Video.
+func (i *Index) SetVideo(segs []Segment) error {
+	if len(segs) == 0 {
+		return nil
+	}
+	tx, err := i.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`UPDATE segments SET video_start_ns=?, video_duration_ns=? WHERE fpath=?`)
+	if err != nil {
+		tx.Rollback() //nolint:errcheck
+		return err
+	}
+	defer stmt.Close()
+	for _, s := range segs {
+		vStart, vDur := videoColumns(s)
+		if _, err := stmt.Exec(vStart, vDur, s.Fpath); err != nil {
+			tx.Rollback() //nolint:errcheck
+			return err
+		}
+	}
+	return tx.Commit()
 }
