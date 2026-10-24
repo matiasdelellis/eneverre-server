@@ -70,6 +70,7 @@ type Options struct {
 	CacheDir        string        // generated-asset cache (gap-fill frames); default <RecordDir>/../cache
 	GapMessage      string        // caption burned into gap-fill black frames (default "NO RECORDING")
 	NoVideoMessage  string        // caption over audio recorded without video (default "NO VIDEO")
+	DTSFromPTS      bool          // video DTS = PTS until the stream reorders frames (default true; see recorder.Recorder.DTSFromPTS)
 	RecordPath      string        // segment path pattern (default <RecordDir>/%path/%Y-%m-%d/%H/<time>)
 	SegmentDuration time.Duration // min segment length (default 60s)
 	PartDuration    time.Duration // fMP4 fragment length (default 1s)
@@ -104,6 +105,7 @@ func DefaultOptions() Options {
 		MinFreeBytes:  1 << 30, // 1 GiB; force-purge oldest recordings below this
 		RTSPAddress:   ":8554",
 		Transport:     "auto",
+		DTSFromPTS:    true,
 	}
 }
 
@@ -124,6 +126,7 @@ func OptionsFromSection(sec config.Section, dataDir string) Options {
 	o.CacheDir = sec.Get("cache_dir", filepath.Join(filepath.Dir(recordDir), "cache"))
 	o.GapMessage = sec.Get("gap_message", "NO RECORDING")
 	o.NoVideoMessage = sec.Get("no_video_message", "NO VIDEO")
+	o.DTSFromPTS = sec.GetBool("dts_from_pts", true)
 	// Default layout groups by camera then date then hour, so each
 	// camera's day is one subtree (`<RecordDir>/<cam>/YYYY-MM-DD/HH/...`).
 	// The filename embeds the full timestamp so segments stay uniquely
@@ -849,6 +852,7 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 	rec := &recorder.Recorder{
 		URL:             cam.Source,
 		Transport:       transport,
+		DTSFromPTS:      e.opts.DTSFromPTS,
 		PathName:        id,
 		PathFormat:      e.opts.RecordPath,
 		SegmentDuration: e.opts.SegmentDuration,

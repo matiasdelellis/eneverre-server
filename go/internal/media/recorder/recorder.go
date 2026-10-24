@@ -101,6 +101,14 @@ type Recorder struct {
 	PartDuration    time.Duration
 	MaxPartSize     uint64
 	Transport       string // "auto" (default: UDP with TCP fallback) | "tcp" | "udp"
+	// DTSFromPTS takes a video frame's decode time from its presentation time
+	// while the stream shows no reordering (no B-frames), instead of from the
+	// codec's DTS extractor. The extractor mistakes a lost frame for
+	// reordering: each loss leaves a 1 ms frame and a growing PTS-DTS offset,
+	// and enough of them reset it ("too many reordered frames"), dropping up
+	// to a GOP. On the first frame shown before an earlier-decoded one the
+	// stream is known to reorder and the extractor takes over.
+	DTSFromPTS bool
 	// Record controls disk persistence. When false the recorder still
 	// connects, demuxes and forwards RTP to the live RTSP relay + browser MSE
 	// broadcaster, but does NOT write segments to disk and does NOT call
@@ -147,6 +155,12 @@ type Recorder struct {
 	videoCodecH265 *mcodecs.H265
 	dtsExtractor   videoDTS
 	videoStarted   bool
+	// reordering is set once the stream showed a frame presented before one
+	// decoded earlier (B-frames): DTS then comes from dtsExtractor. Until then,
+	// with DTSFromPTS, DTS = PTS; lastPTS is the previous frame's.
+	reordering bool
+	lastPTS    int64
+	hasLastPTS bool
 	// connStart is when the current session started playing (zero until PLAY
 	// succeeds). Audio arriving before the
 	// first video keyframe waits up to maxSampleGap for it (a session normally
@@ -215,6 +229,8 @@ func (r *Recorder) Start() error {
 	r.videoCodecH265 = nil
 	r.dtsExtractor = nil
 	r.videoStarted = false
+	r.reordering = !r.DTSFromPTS
+	r.hasLastPTS = false
 	r.resyncKeyframe = false
 	r.connStart = time.Time{} // set once PLAY succeeds
 	r.mu.Unlock()
@@ -769,6 +785,80 @@ func (r *Recorder) videoParamsKnown() bool {
 	return false
 }
 
+// maxReorderBack is how far back a frame's PTS may fall behind the previous
+// frame's for that to be B-frame reordering (a handful of frames). Further back
+// is a time-base discontinuity (camera clock reset), not reordering.
+const maxReorderBack = time.Second
+
+// videoDecodeTime returns the decode time of a video access unit with
+// presentation time pts (track clock), or false when the AU must be dropped.
+// Video starts on a random-access AU. With DTSFromPTS, DTS = PTS until the
+// stream shows reordering (see Recorder.DTSFromPTS); then, or without it, the
+// codec's DTS extractor (built by newExtractor) decides. Caller must hold r.mu.
+func (r *Recorder) videoDecodeTime(t *recTrack, au [][]byte, pts int64, randomAccess bool, newExtractor func() videoDTS) (int64, bool) {
+	if !r.reordering {
+		if !r.videoStarted {
+			if !randomAccess {
+				return 0, false // wait for the first keyframe
+			}
+			r.videoStarted = true
+		}
+		if r.hasLastPTS && pts < r.lastPTS {
+			back := timestampToDuration(r.lastPTS-pts, int(t.clockRate))
+			if back > maxReorderBack {
+				// The camera's clock went back: not reordering. End the
+				// segment and start over on the next keyframe in the new time
+				// base, dropping the frame held for lookahead (it belongs to
+				// the old one) and the stream-clock anchor.
+				r.Logf("video clock went back %s, resyncing", back.Round(time.Millisecond))
+				if r.currentSegment != nil {
+					if err := r.currentSegment.close(); err != nil {
+						r.Logf("segment close on clock jump: %v", err)
+					}
+					r.currentSegment = nil
+				}
+				r.resyncKeyframe = true
+				t.nextSample = nil
+				t.startInitialized = false
+				r.hasLastPTS = false
+				if !randomAccess {
+					r.videoStarted = false
+					return 0, false
+				}
+			} else {
+				// A frame shown before one decoded earlier: B-frames. Hand
+				// over to the extractor on the next keyframe. Only video is
+				// dropped meanwhile (at most a GOP, once per session); the
+				// segment and its audio go on.
+				r.Logf("video reorders frames (B-frames): taking DTS from the extractor")
+				r.reordering = true
+				r.dtsExtractor = nil
+				return 0, false
+			}
+		}
+		r.lastPTS = pts
+		r.hasLastPTS = true
+		return pts, true
+	}
+
+	if r.dtsExtractor == nil {
+		if !randomAccess {
+			return 0, false // wait for the first keyframe
+		}
+		r.dtsExtractor = newExtractor()
+		r.videoStarted = true
+	}
+	dts, err := r.dtsExtractor.Extract(au, pts)
+	if err != nil {
+		// reset so the extractor recovers on the next keyframe instead of
+		// staying in a bad state (e.g. after packet loss / reordering).
+		r.Logf("dts extract: %v (resetting)", err)
+		r.dtsExtractor = nil
+		return 0, false
+	}
+	return dts, true
+}
+
 // processH264 turns an access unit into a sample and feeds it to the video track.
 // Caller must hold r.mu.
 func (r *Recorder) processH264(t *recTrack, au [][]byte, pts int64, ntp time.Time) {
@@ -822,26 +912,17 @@ func (r *Recorder) processH264(t *recTrack, au [][]byte, pts int64, ntp time.Tim
 	// so waiting for an IDR (long GOP, extractor reset) is not a stall.
 	r.lastVideoNano.Store(time.Now().UnixNano())
 
-	if r.dtsExtractor == nil {
-		if !randomAccess {
-			return // wait for the first keyframe
-		}
-		r.dtsExtractor = &h264.DTSExtractor{}
-		r.dtsExtractor.Initialize()
-		r.videoStarted = true
-	}
-
-	dts, err := r.dtsExtractor.Extract(au, pts)
-	if err != nil {
-		// reset so the extractor recovers on the next keyframe instead of
-		// staying in a bad state (e.g. after packet loss / reordering).
-		r.Logf("dts extract: %v (resetting)", err)
-		r.dtsExtractor = nil
+	dts, ok := r.videoDecodeTime(t, au, pts, randomAccess, func() videoDTS {
+		ex := &h264.DTSExtractor{}
+		ex.Initialize()
+		return ex
+	})
+	if !ok {
 		return
 	}
 
 	var s fmp4.Sample
-	if err = s.FillH264(int32(pts-dts), au); err != nil {
+	if err := s.FillH264(int32(pts-dts), au); err != nil {
 		r.Logf("fill h264: %v", err)
 		return
 	}
@@ -910,27 +991,17 @@ func (r *Recorder) processH265(t *recTrack, au [][]byte, pts int64, ntp time.Tim
 	}
 	r.lastVideoNano.Store(time.Now().UnixNano()) // see processH264
 
-	if r.dtsExtractor == nil {
-		if !randomAccess {
-			return // wait for the first random-access AU
-		}
+	dts, ok := r.videoDecodeTime(t, au, pts, randomAccess, func() videoDTS {
 		ex := &h265.DTSExtractor{}
 		ex.Initialize()
-		r.dtsExtractor = ex
-		r.videoStarted = true
-	}
-
-	dts, err := r.dtsExtractor.Extract(au, pts)
-	if err != nil {
-		// reset so the extractor recovers on the next keyframe instead of
-		// staying in a bad state (e.g. after packet loss / reordering).
-		r.Logf("dts extract: %v (resetting)", err)
-		r.dtsExtractor = nil
+		return ex
+	})
+	if !ok {
 		return
 	}
 
 	var s fmp4.Sample
-	if err = s.FillH265(int32(pts-dts), au); err != nil {
+	if err := s.FillH265(int32(pts-dts), au); err != nil {
 		r.Logf("fill h265: %v", err)
 		return
 	}
