@@ -73,6 +73,10 @@ type Broadcaster struct {
 	// rather than an endless reconnect spinner.
 	unsupportedVideo string
 	gop              [][]byte // parts since (and including) the last keyframe part
+	gopBytes         int      // total size of gop
+	// gopDropped is set when gop outgrew maxGOPBytes: it stays empty (new
+	// viewers get the init and wait) until the next keyframe part.
+	gopDropped bool
 	subs             map[*subscriber]struct{}
 
 	// current part accumulation
@@ -228,7 +232,7 @@ func (b *Broadcaster) SetTracks(all []*fmp4.InitTrack) error {
 	b.tracks = incl
 	b.initBytes = append([]byte(nil), buf.Bytes()...)
 	b.mime = `video/mp4; codecs="` + codecs + `"`
-	b.gop = nil
+	b.gop, b.gopBytes, b.gopDropped = nil, 0, false
 	b.seq = 0
 	b.running = true
 	b.resetPartLocked()
@@ -256,7 +260,7 @@ func (b *Broadcaster) Stop() {
 	defer b.mu.Unlock()
 	b.running = false
 	b.initBytes = nil
-	b.gop = nil
+	b.gop, b.gopBytes, b.gopDropped = nil, 0, false
 	for s := range b.subs {
 		close(s.ch)
 		delete(b.subs, s)
@@ -360,11 +364,24 @@ func (b *Broadcaster) flushPartLocked() {
 	}
 	data := append([]byte(nil), buf.Bytes()...)
 
-	// maintain the current-GOP buffer (reset on a keyframe part)
-	if b.partKeyframe {
+	// maintain the current-GOP buffer (reset on a keyframe part). Without
+	// keyframes (a lossy link drops them whole while P-frames get through) it
+	// would grow at the video bitrate for as long as that lasts, so past
+	// maxGOPBytes it is dropped until the next keyframe.
+	switch {
+	case b.partKeyframe:
 		b.gop = [][]byte{data}
-	} else {
+		b.gopBytes = len(data)
+		b.gopDropped = false
+	case b.gopDropped:
+	case b.gopBytes+len(data) > maxGOPBytes:
+		b.Logf("live: no keyframe for %d MB of video, dropping the GOP buffer", b.gopBytes>>20)
+		b.gop = nil
+		b.gopBytes = 0
+		b.gopDropped = true
+	default:
 		b.gop = append(b.gop, data)
+		b.gopBytes += len(data)
 	}
 
 	// fan out without ever blocking the recorder. A subscriber whose buffer is
@@ -487,6 +504,10 @@ func (b *Broadcaster) HandleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- helpers ---
+
+// maxGOPBytes caps the buffered GOP a new viewer starts from: far above a real
+// GOP (10 s at 8 Mbit/s is 10 MB), so it only trips when keyframes stop coming.
+const maxGOPBytes = 32 << 20
 
 // liveWriteTimeout bounds one write of the live stream to a viewer.
 const liveWriteTimeout = 15 * time.Second

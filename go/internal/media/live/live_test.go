@@ -155,3 +155,38 @@ func TestBroadcasterShiftsNegativeDTS(t *testing.T) {
 		t.Errorf("second part base DTS = %d, want 3000 (spacing preserved)", second)
 	}
 }
+
+// A stream whose keyframes stop coming (a lossy link drops them whole while the
+// P-frames get through) must not buffer its video for as long as that lasts:
+// the GOP buffer is dropped past maxGOPBytes and restarts on the next keyframe.
+func TestBroadcasterGOPBoundedWithoutKeyframes(t *testing.T) {
+	b := &Broadcaster{}
+	b.Initialize()
+	defer b.Close()
+	primeConnected(b)
+
+	b.writeSample(1, vsample(true, 3600), 0)
+	dts := int64(0)
+	for range 25 * 600 { // 10 min of P-frames at 25 fps, 12 KB each (~2.4 Mbit/s)
+		dts += 3600
+		s := vsample(false, 3600)
+		s.Payload = make([]byte, 12000)
+		b.writeSample(1, s, dts)
+	}
+	b.mu.Lock()
+	n := b.gopBytes
+	b.mu.Unlock()
+	if n > maxGOPBytes {
+		t.Fatalf("gop holds %d MB without a keyframe, want <= %d MB", n>>20, maxGOPBytes>>20)
+	}
+
+	dts += 3600
+	b.writeSample(1, vsample(true, 3600), dts)
+	dts += 3600
+	b.writeSample(1, vsample(true, 3600), dts) // flushes the keyframe part
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.gopDropped || len(b.gop) != 1 {
+		t.Fatalf("after a keyframe: dropped=%v parts=%d, want a fresh GOP", b.gopDropped, len(b.gop))
+	}
+}

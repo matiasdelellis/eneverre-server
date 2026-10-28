@@ -48,6 +48,14 @@ const maxBasetime = 1 * time.Second
 // stream never trips it, but a stalled one recovers instead of hanging forever.
 const noVideoTimeout = 8 * time.Second
 
+// noKeyframeTimeout forces a reconnect when video keeps flowing but no keyframe
+// arrives for this long. On a lossy link a keyframe (many packets) is the frame
+// most likely to lose one and be dropped whole, while the small P-frames still
+// get through: the session looks alive, but nothing after a resync can be
+// recorded, and the live view has no GOP to start from. A fresh session starts
+// on a keyframe. Well above any camera's keyframe interval.
+const noKeyframeTimeout = time.Minute
+
 // audioOnlyTimeout is how long a session that still delivers audio may go
 // without video before the watchdog reconnects to try to get the video back.
 // Reconnecting costs a second or two of audio, so it doubles on every attempt
@@ -176,6 +184,9 @@ type Recorder struct {
 	// keeping the RTSP session half-alive (common on weak/distant links), which
 	// the transport-level read timeout doesn't always catch.
 	lastVideoNano atomic.Int64
+	// lastKeyframeNano is the UnixNano of the most recent coded keyframe
+	// (H264 IDR, H265 IRAP), for the watchdog's noKeyframeTimeout.
+	lastKeyframeNano atomic.Int64
 	// lastAudioNano is the UnixNano of the most recent decoded audio packet.
 	// A session whose video stalled but whose audio still flows is alive: the
 	// watchdog keeps it (the audio is still being recorded) and only retries
@@ -483,6 +494,7 @@ func (r *Recorder) Start() error {
 	// retrying the video with a fresh session.
 	connStart := time.Now()
 	r.lastVideoNano.Store(connStart.UnixNano())
+	r.lastKeyframeNano.Store(connStart.UnixNano())
 	r.lastAudioNano.Store(0)
 	watchdogDone := make(chan struct{})
 	go func() {
@@ -501,6 +513,13 @@ func (r *Recorder) Start() error {
 				since := time.Since(lastVideo)
 				if since <= noVideoTimeout {
 					audioOnly = false
+					// Pictures flowing without a keyframe (relay-only mode
+					// decodes nothing, so it cannot tell).
+					if noKey := time.Since(time.Unix(0, r.lastKeyframeNano.Load())); demux && noKey > noKeyframeTimeout {
+						r.Logf("no keyframe for %s while video flows, forcing reconnect", noKey.Round(time.Second))
+						c.Close()
+						return
+					}
 					continue
 				}
 				if time.Since(time.Unix(0, r.lastAudioNano.Load())) > noVideoTimeout {
@@ -911,6 +930,9 @@ func (r *Recorder) processH264(t *recTrack, au [][]byte, pts int64, ntp time.Tim
 	// would otherwise never trip it. Fed before the keyframe/DTS gates below,
 	// so waiting for an IDR (long GOP, extractor reset) is not a stall.
 	r.lastVideoNano.Store(time.Now().UnixNano())
+	if randomAccess {
+		r.lastKeyframeNano.Store(time.Now().UnixNano())
+	}
 
 	dts, ok := r.videoDecodeTime(t, au, pts, randomAccess, func() videoDTS {
 		ex := &h264.DTSExtractor{}
@@ -990,6 +1012,9 @@ func (r *Recorder) processH265(t *recTrack, au [][]byte, pts int64, ntp time.Tim
 		return
 	}
 	r.lastVideoNano.Store(time.Now().UnixNano()) // see processH264
+	if randomAccess {
+		r.lastKeyframeNano.Store(time.Now().UnixNano())
+	}
 
 	dts, ok := r.videoDecodeTime(t, au, pts, randomAccess, func() videoDTS {
 		ex := &h265.DTSExtractor{}
