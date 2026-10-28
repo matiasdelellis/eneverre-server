@@ -125,6 +125,9 @@ type Recorder struct {
 	Record    bool
 	OnSegment func(SegmentInfo)
 	Logf      func(string, ...any)
+	// Warnf logs what an operator should see without debug logging (a camera
+	// that needs reconnecting to recover). Defaults to Logf.
+	Warnf func(string, ...any)
 
 	// Live relay hooks (optional). OnSource is called with the camera description
 	// once connected; OnRTP is called for every incoming RTP packet (raw
@@ -216,6 +219,9 @@ type Recorder struct {
 func (r *Recorder) Start() error {
 	if r.Logf == nil {
 		r.Logf = func(string, ...any) {}
+	}
+	if r.Warnf == nil {
+		r.Warnf = r.Logf
 	}
 	if r.MaxPartSize == 0 {
 		r.MaxPartSize = 50 * 1024 * 1024
@@ -516,7 +522,7 @@ func (r *Recorder) Start() error {
 					// Pictures flowing without a keyframe (relay-only mode
 					// decodes nothing, so it cannot tell).
 					if noKey := time.Since(time.Unix(0, r.lastKeyframeNano.Load())); demux && noKey > noKeyframeTimeout {
-						r.Logf("no keyframe for %s while video flows, forcing reconnect", noKey.Round(time.Second))
+						r.Warnf("no keyframe for %s while video flows, forcing reconnect", noKey.Round(time.Second))
 						c.Close()
 						return
 					}

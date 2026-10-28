@@ -77,7 +77,7 @@ type Broadcaster struct {
 	// gopDropped is set when gop outgrew maxGOPBytes: it stays empty (new
 	// viewers get the init and wait) until the next keyframe part.
 	gopDropped bool
-	subs             map[*subscriber]struct{}
+	subs       map[*subscriber]struct{}
 
 	// current part accumulation
 	seq     uint32

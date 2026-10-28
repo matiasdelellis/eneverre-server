@@ -860,6 +860,7 @@ func (e *Engine) startCamera(cam camera.Camera, mseOn, relayOn, record bool) {
 		PartDuration:    e.opts.PartDuration,
 		MaxPartSize:     e.opts.MaxPartSize,
 		Logf:            func(f string, a ...any) { slog.Debug("media/recorder[" + id + "]: " + fmt.Sprintf(f, a...)) },
+		Warnf:           func(f string, a ...any) { slog.Warn("media/recorder[" + id + "]: " + fmt.Sprintf(f, a...)) },
 		OnSegment: func(s recorder.SegmentInfo) {
 			// Hand off to the async indexer so the WAL fsync never runs under the
 			// recorder mutex (this fires from segment.close() while r.mu is held).
