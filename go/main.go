@@ -132,6 +132,8 @@ func main() {
 		setupLogging(os.Getenv("ENEVERRE_LOG_LEVEL"))
 	}
 
+	startPprof()
+
 	cfg, err := config.Load(config.LoadOptions{
 		ConfigFile: opts.configFile,
 		CamerasDir: opts.camerasDir,
